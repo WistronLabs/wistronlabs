@@ -19,6 +19,12 @@ USER="falab"
 SCRIPTS_DIR="$SCRIPT_DIR/scripts"
 REMOTE_SCRIPTS_DIR="/home/$USER/scripts"
 
+BACKEND_DIR_LOCAL="$SCRIPT_DIR/website_backend"
+BACKEND_ENV_LOCAL="$BACKEND_DIR_LOCAL/env"
+BACKEND_DIR_REMOTE="/opt/docker/website_backend"
+BACKEND_ENV_REMOTE="$BACKEND_DIR_REMOTE/env"
+
+
 
 SSH_OPTS="-o BatchMode=yes -o PasswordAuthentication=no -o ConnectTimeout=5"
 
@@ -156,6 +162,16 @@ EOF
     echo "============================================================"
     echo ""
 
+    echo "Generating backend env/site.env for $loc (local)..."
+    mkdir -p "$SCRIPT_DIR/website_backend/env"
+
+    cat > "$SCRIPT_DIR/website_backend/env/site.env" <<EOF
+LOCATION=$loc
+FRONTEND_URL=https://$loc.$BASE_URL
+APP_HOST_PORT=4000
+EOF
+
+
     # # Ensure backup directory exists and is writable
     # ssh $SSH_OPTS "$USER@$loc.$BASE_URL" \
     #   "sudo mkdir -p /opt/docker/database_backups && sudo chown $USER /opt/docker/database_backups"
@@ -177,97 +193,68 @@ EOF
 
     # Upload new backend code using rsync, excluding .env
     echo ""
-    echo "Uploading fresh backend code to $loc (preserving .env)..."
-    if ! RSYNC_RSH="ssh $SSH_OPTS" rsync -av --delete --exclude='.env' \
+    echo "Uploading fresh backend code to $loc (preserving env/secrets.env)..."
+    if ! RSYNC_RSH="ssh $SSH_OPTS" rsync -av --delete \
+        --exclude='.env' \
+        --exclude='env/secrets.env' \
         website_backend/ "$USER@$loc.$BASE_URL:/opt/docker/website_backend/"; then
         echo "ERROR: Failed to upload backend code to $loc"
         exit 1
     fi
+
     echo "Backend code uploaded to $loc."
 
-  echo ""
-  echo "Ensuring .env and secrets exist on $loc..."
-  if ! ssh -T $SSH_OPTS "$USER@$loc.$BASE_URL" 'bash -s' <<'REMOTE'
+    echo ""
+    echo "Ensuring env/secrets.env exists on $loc (server-only secrets)..."
+    if ! ssh -T $SSH_OPTS "$USER@$loc.$BASE_URL" 'bash -s' <<'REMOTE'
+set -euo pipefail
+
 cd /opt/docker/website_backend || { echo "Missing /opt/docker/website_backend" >&2; exit 1; }
 
-# Ensure .env file exists
-[ -f .env ] || touch .env
+mkdir -p env
 
-# Normalize line endings, but don't die if something is weird
-if [ -s .env ]; then
-  tr -d '\r' < .env > .env.tmp 2>/dev/null || cp .env .env.tmp
-  mv .env.tmp .env 2>/dev/null || true
-fi
-
-ensure_newline() {
-  if [ -s .env ]; then
-    last_char=$(tail -c1 .env 2>/dev/null || echo "")
-    [ -n "$last_char" ] || return 0
-    echo >> .env
-  fi
-}
+# Lock down env dir a bit (optional; doesn't hurt)
+chmod 755 env || true
 
 generate_base64() {
   if command -v openssl >/dev/null 2>&1; then
-    openssl rand -base64 48 2>/dev/null || echo "fallback_b64_$(date +%s)"
+    openssl rand -base64 48
   else
-    head -c 48 /dev/urandom 2>/dev/null | base64 || echo "fallback_b64_$(date +%s)"
+    head -c 48 /dev/urandom | base64
   fi
 }
 
 generate_hex() {
   if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 32 2>/dev/null || echo "fallback_hex_$(date +%s)"
+    openssl rand -hex 32
   else
-    hexdump -vn 32 -e ' /1 "%02x"' /dev/urandom 2>/dev/null || echo "fallback_hex_$(date +%s)"
+    hexdump -vn 32 -e ' /1 "%02x"' /dev/urandom
   fi
 }
 
-# --- DATABASE_URL ---
-if ! grep -q '^DATABASE_URL=' .env; then
-  echo "Setting DATABASE_URL..."
-  ensure_newline
-  echo "DATABASE_URL=postgres://postgres:example@db:5432/mydb" >> .env
+# Create secrets file once; never overwrite
+if [ ! -f env/secrets.env ]; then
+  umask 077
+  {
+    echo "POSTGRES_PASSWORD=$(generate_hex)"
+    echo "JWT_SECRET=$(generate_base64)"
+    echo "INTERNAL_API_KEY=$(generate_hex)"
+    echo "WEBHOOK_TOKEN=$(generate_hex)"
+    # NOTE: SMTP_* are NOT auto-generated. Add them manually on the server.
+  } > env/secrets.env
+  chmod 600 env/secrets.env
 fi
 
-# --- PORT ---
-if ! grep -q '^PORT=' .env; then
-  echo "Setting PORT..."
-  ensure_newline
-  echo "PORT=3000" >> .env
-fi
+# Sanity check: file exists and is readable by current user
+test -f env/secrets.env
 
-# --- JWT_SECRET ---
-if ! grep -q '^JWT_SECRET=' .env; then
-  echo "Generating new JWT_SECRET..."
-  SECRET=$(generate_base64)
-  ensure_newline
-  echo "JWT_SECRET=$SECRET" >> .env
-fi
-
-# --- INTERNAL_API_KEY ---
-if ! grep -q '^INTERNAL_API_KEY=' .env; then
-  echo "Generating new INTERNAL_API_KEY..."
-  APIKEY=$(generate_hex)
-  ensure_newline
-  echo "INTERNAL_API_KEY=$APIKEY" >> .env
-fi
-
-# --- WEBHOOK_TOKEN ---
-if ! grep -q '^WEBHOOK_TOKEN=' .env; then
-  echo "Generating new WEBHOOK_TOKEN..."
-  TOKEN=$(generate_hex)
-  ensure_newline
-  echo "WEBHOOK_TOKEN=$TOKEN" >> .env
-fi
-
-# If we got here, everything is fine
 exit 0
 REMOTE
     then
-      echo "ERROR: Remote .env/secret setup failed on $loc"
+      echo "ERROR: Remote env/secrets.env setup failed on $loc"
       exit 1
     fi
+
 
 
 
