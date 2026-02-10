@@ -163,7 +163,7 @@ function TrackingPage() {
       setSnapshot(activeLocationSnapshotFirstDay);
       setDellCustomers(dpnsData.map((d) => d.dell_customer).filter((d,i, self) => d && i === self.indexOf(d)));
       setFactories(factoriesData.map((f) => f.code));
-      setConfigs([...new Set(dpnsData.map(x => x.config))].filter(x => x).sort())
+      setConfigs([...new Set(dpnsData.map(x => x.config))].filter(x => x).sort());
     } catch (err) {
       setError(err.message);
       console.error(err.message);
