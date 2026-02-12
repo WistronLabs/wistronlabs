@@ -47,6 +47,7 @@ function TrackingPage() {
   const [printFriendly, setPrintFriendly] = useState(true);
   const [dellCustomers, setDellCustomers] = useState([]);
   const [factories, setFactories] = useState([]);
+  const [configs, setConfigs] = useState([]);
 
   const [serverTime, setServerTime] = useState([]);
 
@@ -162,6 +163,7 @@ function TrackingPage() {
       setSnapshot(activeLocationSnapshotFirstDay);
       setDellCustomers(dpnsData.map((d) => d.dell_customer).filter((d,i, self) => d && i === self.indexOf(d)));
       setFactories(factoriesData.map((f) => f.code));
+      setConfigs([...new Set(dpnsData.map(x => x.config))].filter(x => x).sort());
     } catch (err) {
       setError(err.message);
       console.error(err.message);
@@ -626,7 +628,7 @@ function TrackingPage() {
               }
               possibleSearchTags={[
                 ...locations.map((l) => ({field: "location", value: l.name})),
-                ...[2, 4, 6, 7].map((c) => ({field: "config", value: c})),
+                ...configs.map(c => ({field: "config", value: c})),
                 ...dellCustomers.map((d) => ({field: "dell_customer", value: d})),
                 ...factories.map((f) => ({field: "factory", value: f})),
               ]}
