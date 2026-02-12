@@ -393,11 +393,8 @@ frontend_upload_to_site() {
 
   remote_check_var_www_html "$host" >/dev/null
 
-  echo "Clearing remote /var/www/html contents..."
-  remote_run "$host" "sudo -n rm -rf /var/www/html/* /var/www/html/.[!.]* /var/www/html/..?* 2>/dev/null || rm -rf /var/www/html/* /var/www/html/.[!.]* /var/www/html/..?* 2>/dev/null || true"
-
   echo "Uploading dist/* ..."
-  RSYNC_RSH="ssh $SSH_OPTS" rsync -av --delete "$FRONTEND_LOCAL/dist/" "$USER@$host:/var/www/html/"
+  RSYNC_RSH="ssh $SSH_OPTS" rsync -av "$FRONTEND_LOCAL/dist/" "$USER@$host:/var/www/html/"
 
   echo "Frontend uploaded to $site."
 }
