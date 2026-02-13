@@ -56,7 +56,7 @@ function useApi() {
         res.statusText;
 
       const error = new Error(
-        `API ${endpoint} failed: ${res.status} ${errMsg}`
+        `API ${endpoint} failed: ${res.status} ${errMsg}`,
       );
       error.status = res.status;
       error.body = data;
@@ -201,8 +201,8 @@ function useApi() {
     if (!(bothProvided || bothNull)) {
       return Promise.reject(
         new Error(
-          "Provide both root_cause_id and root_cause_sub_category_id, or set both to null."
-        )
+          "Provide both root_cause_id and root_cause_sub_category_id, or set both to null.",
+        ),
       );
     }
 
@@ -620,6 +620,42 @@ function useApi() {
       method: "DELETE",
     });
 
+  // -----------------------------
+  // Tags API
+  // -----------------------------
+
+  // List tags (optionally search by q)
+  const getTags = ({ q } = {}) =>
+    fetchJSON(`/tags${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+  // Create a tag { name }
+  const createTag = ({ code }) =>
+    fetchJSON(`/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: String(code || "").trim() }),
+    });
+
+  // List tags on a system
+  const getSystemTags = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`);
+
+  // Attach an existing tag to a system
+  const addSystemTag = (service_tag, tag_code) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_code: String(tag_code || "").trim() }),
+    });
+
+  // Remove a tag from a system
+  const removeSystemTag = (service_tag, tag_code) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_code: String(tag_code || "").trim() }),
+    });
+
   return {
     getSystems,
     getHistory,
@@ -679,6 +715,11 @@ function useApi() {
     deletePartItem,
     getRootCauses,
     getRootCauseSubCategories,
+    getTags,
+    createTag,
+    getSystemTags,
+    addSystemTag,
+    removeSystemTag,
   };
 }
 

@@ -52,6 +52,9 @@ FRONTEND_LOCAL="$SCRIPT_DIR/website_frontend"
 FRONTEND_ENV_FILE="$FRONTEND_LOCAL/.env"
 MIGRATIONS_LOCAL_DIR="$BACKEND_LOCAL/db_migrations"
 
+SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+REMOTE_SCRIPTS_DIR="/home/$USER/scripts"
+
 BASE_DOMAIN="wistronlabs.com"
 
 RED='\033[0;31m'; NC='\033[0m'
@@ -314,6 +317,39 @@ pick_bootstrap_source_for_target() {
   [[ -n "$candidate" ]] || die "Bootstrap needed for '$target' but no alternative PROD site exists besides '$default'"
   echo "$candidate"
 }
+
+deploy_scripts_to_site() {
+  local site="$1"
+  local host="${HOST[$site]}"
+
+  echo ""
+  echo "============================================================"
+  echo "SCRIPTS DEPLOY"
+  echo "  Site  : $site"
+  echo "  Host  : $USER@$host"
+  echo "  From  : $SCRIPTS_DIR/"
+  echo "  To    : $REMOTE_SCRIPTS_DIR/"
+  echo "============================================================"
+
+  if [[ ! -d "$SCRIPTS_DIR" ]]; then
+    die "Local scripts directory '$SCRIPTS_DIR' does not exist."
+  fi
+
+  echo "Making local script files executable (non-recursive)..."
+  find "$SCRIPTS_DIR" -maxdepth 1 -type f -exec chmod +x {} \;
+
+  echo "Ensuring remote scripts directory exists: $REMOTE_SCRIPTS_DIR"
+  ssh -T $SSH_OPTS "$USER@$host" "mkdir -p '$REMOTE_SCRIPTS_DIR' && chmod 755 '$REMOTE_SCRIPTS_DIR' || true"
+
+  echo "Uploading scripts -> $REMOTE_SCRIPTS_DIR..."
+  RSYNC_RSH="ssh $SSH_OPTS" rsync -av \
+    --no-perms --no-owner --no-group \
+    --omit-dir-times \
+    "$SCRIPTS_DIR/" "$USER@$host:$REMOTE_SCRIPTS_DIR/"
+
+  echo "Scripts deployed: $site"
+}
+
 
 # -----------------------------------------------------------------------------
 # Frontend deploy (local build, remote upload)
@@ -1043,6 +1079,7 @@ for site in "${targets[@]}"; do
   frontend_build_for_site "$site"
   frontend_upload_to_site "$site"
   backend_deploy_one "$site"
+  deploy_scripts_to_site "$site"
 
   echo ""
   echo "============================================================"

@@ -79,12 +79,13 @@ function TrackingPage() {
     setLoading(true);
 
     try {
-      const [locationsData, serverTimeData, dpnsData, factoriesData] = await Promise.all([
-        getLocations(),
-        getServerTime(),
-        getDpns(),
-        getFactories(),
-      ]);
+      const [locationsData, serverTimeData, dpnsData, factoriesData] =
+        await Promise.all([
+          getLocations(),
+          getServerTime(),
+          getDpns(),
+          getFactories(),
+        ]);
 
       const activeLocationNames = locationsData
         .filter((loc) => activeLocationIDs.includes(loc.id))
@@ -94,7 +95,7 @@ function TrackingPage() {
       const serverLocalNow = DateTime.fromFormat(
         serverTimeData.localtime,
         "MM/dd/yyyy, hh:mm:ss a",
-        { zone: serverTimeData.zone }
+        { zone: serverTimeData.zone },
       );
 
       let activeLocationSnapshotFirstDay,
@@ -160,7 +161,11 @@ function TrackingPage() {
       setLocationChartHistory(filteredHistory);
       setServerTime(serverTimeData);
       setSnapshot(activeLocationSnapshotFirstDay);
-      setDellCustomers(dpnsData.map((d) => d.dell_customer).filter((d,i, self) => d && i === self.indexOf(d)));
+      setDellCustomers(
+        dpnsData
+          .map((d) => d.dell_customer)
+          .filter((d, i, self) => d && i === self.indexOf(d)),
+      );
       setFactories(factoriesData.map((f) => f.code));
     } catch (err) {
       setError(err.message);
@@ -200,7 +205,7 @@ function TrackingPage() {
     const inactive = inactiveSystems.find(
       (sys) =>
         sys.service_tag.trim().toUpperCase() ===
-        service_tag.trim().toUpperCase()
+        service_tag.trim().toUpperCase(),
     );
 
     try {
@@ -221,7 +226,7 @@ function TrackingPage() {
           `${service_tag} moved back to received`,
           "success",
           3000,
-          "top-right"
+          "top-right",
         );
       } else {
         await createSystem(payload);
@@ -269,7 +274,9 @@ function TrackingPage() {
         return;
       }
       if (issue.length > 50) {
-        setAddSystemFormError(`Please keep issue field under 50 characters (current: ${issue.length})`);
+        setAddSystemFormError(
+          `Please keep issue field under 50 characters (current: ${issue.length})`,
+        );
         return;
       }
       setAddSystemFormError(null);
@@ -281,7 +288,7 @@ function TrackingPage() {
         service_tag,
         issue,
         ppid,
-        rack_service_tag
+        rack_service_tag,
       );
 
       // ---------- PDF for single ----------
@@ -289,7 +296,7 @@ function TrackingPage() {
         await delay(500);
         try {
           const blob = await pdf(
-            <SystemPDFLabel systems={[printable]} />
+            <SystemPDFLabel systems={[printable]} />,
           ).toBlob();
 
           const url = URL.createObjectURL(blob);
@@ -300,7 +307,7 @@ function TrackingPage() {
         setTimeout(
           () =>
             showToast("Successfully added unit", "success", 3000, "top-right"),
-          3000
+          3000,
         );
       } else if (printable) {
         setAddSystemFormError(printable);
@@ -332,15 +339,15 @@ function TrackingPage() {
           parts.length === 4 && rawTag && issue && ppid && rackServiceTag;
 
         if (!ok) badLines.push(idx + 1); // 1-based line number
-        if (issue.length > 50) longIssues.push(idx+1);
+        if (issue.length > 50) longIssues.push(idx + 1);
         return { rawTag, issue, ppid, rackServiceTag };
       });
 
       if (badLines.length > 0) {
         setAddSystemFormError(
           `Bulk import error: lines missing required 4 fields → ${badLines.join(
-            ", "
-          )}`
+            ", ",
+          )}`,
         );
         // showToast(
         //   `Bulk import error: lines missing required 4 fields → ${badLines.join(
@@ -355,8 +362,8 @@ function TrackingPage() {
       if (longIssues.length > 0) {
         setAddSystemFormError(
           `Issue error: issues on lines exceed 50 characters → ${longIssues.join(
-            ", "
-          )}`
+            ", ",
+          )}`,
         );
         return;
       }
@@ -372,7 +379,7 @@ function TrackingPage() {
             rawTag.toUpperCase(),
             issue, // required & non-empty from validation
             ppid.toUpperCase(),
-            rackServiceTag
+            rackServiceTag,
           );
         } catch (err) {
           console.error("Error processing line:", rawTag, err);
@@ -383,7 +390,7 @@ function TrackingPage() {
           systemsPDF.push(printable);
         } else {
           setAddSystemFormError(
-            `Stopped processing at ${rawTag}: ${printable}`
+            `Stopped processing at ${rawTag}: ${printable}`,
           );
           addOrUpdateSysrtemError = true;
           break; // stop processing on error message
@@ -395,7 +402,7 @@ function TrackingPage() {
         await delay(500);
         try {
           const blob = await pdf(
-            <SystemPDFLabel systems={systemsPDF} />
+            <SystemPDFLabel systems={systemsPDF} />,
           ).toBlob();
           const url = URL.createObjectURL(blob);
           window.open(url, "_blank");
@@ -412,7 +419,7 @@ function TrackingPage() {
       setTimeout(
         () =>
           showToast("Successfully added units", "success", 3000, "top-right"),
-        3000
+        3000,
       );
     }
   }
@@ -456,7 +463,7 @@ function TrackingPage() {
       if (idiotProof) params.set("simplified", "true");
 
       const resp = await fetch(
-        `${BACKEND_URL}/systems/snapshot?${params.toString()}`
+        `${BACKEND_URL}/systems/snapshot?${params.toString()}`,
       );
       if (!resp.ok) throw new Error(await resp.text());
 
@@ -476,7 +483,7 @@ function TrackingPage() {
         `Report for ${reportDate} downloading`,
         "success",
         3000,
-        "top-right"
+        "top-right",
       );
     } catch (err) {
       console.error("Failed to generate report", err);
@@ -492,7 +499,7 @@ function TrackingPage() {
         serverZone: serverTime.zone,
       });
     },
-    [showActive, showInactive, serverTime]
+    [showActive, showInactive, serverTime],
   );
 
   return (
@@ -508,17 +515,19 @@ function TrackingPage() {
             position="botom"
             show={!token == true}
           >
-            <button
-              onClick={() => {
-                setAddSystemFormError(null);
-                setShowModal(true);
-              }}
-              className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
-                !token ? "opacity-30 pointer-events-none" : ""
-              }`}
-            >
-              + Add System
-            </button>
+            {token && (
+              <button
+                onClick={() => {
+                  setAddSystemFormError(null);
+                  setShowModal(true);
+                }}
+                className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
+                  !token ? "opacity-30 pointer-events-none" : ""
+                }`}
+              >
+                + Add System
+              </button>
+            )}
           </Tooltip>
         </div>
 
@@ -608,8 +617,11 @@ function TrackingPage() {
                   ["Sent to L11", "RMA CID", "RMA VID", "RMA PID"].includes(val)
                     ? { type: "pill", color: "bg-green-100 text-green-800" }
                     : ["Received", "In Debug - Wistron", "In L10"].includes(val)
-                    ? { type: "pill", color: "bg-red-100 text-red-800" }
-                    : { type: "pill", color: "bg-yellow-100 text-yellow-800" },
+                      ? { type: "pill", color: "bg-red-100 text-red-800" }
+                      : {
+                          type: "pill",
+                          color: "bg-yellow-100 text-yellow-800",
+                        },
               }}
               linkType="internal"
               truncate={true}
@@ -625,10 +637,13 @@ function TrackingPage() {
                     ]
               }
               possibleSearchTags={[
-                ...locations.map((l) => ({field: "location", value: l.name})),
-                ...[2, 4, 6, 7].map((c) => ({field: "config", value: c})),
-                ...dellCustomers.map((d) => ({field: "dell_customer", value: d})),
-                ...factories.map((f) => ({field: "factory", value: f})),
+                ...locations.map((l) => ({ field: "location", value: l.name })),
+                ...[2, 4, 6, 7].map((c) => ({ field: "config", value: c })),
+                ...dellCustomers.map((d) => ({
+                  field: "dell_customer",
+                  value: d,
+                })),
+                ...factories.map((f) => ({ field: "factory", value: f })),
               ]}
             />
             <button

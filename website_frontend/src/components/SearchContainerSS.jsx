@@ -61,18 +61,27 @@ export default function SearchContainerSS({
       sort_by: sortBy,
       sort_order: sortAsc ? "asc" : "desc",
       search: debouncedSearchTerm || undefined,
-      filters: tagGroups.some((tg) => tg.searchTags.length > 0) ? { op: "AND", conditions: [
-        { op: "OR", conditions: tagGroups.filter((tg) => tg.searchTags.length > 0).map((tg) => ({
+      filters: tagGroups.some((tg) => tg.searchTags.length > 0)
+        ? {
             op: "AND",
-            conditions: tg.searchTags.map((t) => ({
-              field: t.field,
-              values: [t.value],
-              op: "=",
-            }))
-          })) 
-        },
-        { field: "issue", values: [debouncedSearchTerm], op: "ILIKE" }
-      ]} : null,
+            conditions: [
+              {
+                op: "OR",
+                conditions: tagGroups
+                  .filter((tg) => tg.searchTags.length > 0)
+                  .map((tg) => ({
+                    op: "AND",
+                    conditions: tg.searchTags.map((t) => ({
+                      field: t.field,
+                      values: [t.value],
+                      op: "=",
+                    })),
+                  })),
+              },
+              { field: "issue", values: [debouncedSearchTerm], op: "ILIKE" },
+            ],
+          }
+        : null,
     })
       .then((res) => {
         setData(res.data);
@@ -80,7 +89,15 @@ export default function SearchContainerSS({
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, [debouncedSearchTerm, page, sortBy, sortAsc, pageSize, fetchData, searchTags]);
+  }, [
+    debouncedSearchTerm,
+    page,
+    sortBy,
+    sortAsc,
+    pageSize,
+    fetchData,
+    searchTags,
+  ]);
 
   useEffect(() => {
     if (!loading) setDisplayedData(data);
@@ -98,10 +115,11 @@ export default function SearchContainerSS({
       displayedData.some(
         (item) =>
           item &&
-          item[actionButtonVisibleIf.field] === actionButtonVisibleIf.equals
+          item[actionButtonVisibleIf.field] === actionButtonVisibleIf.equals,
       ));
 
-  const matchTag = (word, tag) => `${tag.field}: ${tag.value}`.toLowerCase().includes(word.toLowerCase());
+  const matchTag = (word, tag) =>
+    `${tag.field}: ${tag.value}`.toLowerCase().includes(word.toLowerCase());
 
   const getHeaderLabel = (data, field) => {
     const titleField = `${field}_title`;
@@ -114,14 +132,14 @@ export default function SearchContainerSS({
         <h1 className="text-2xl font-semibold">{title}</h1>
         {allowSearch && (
           <div className={"relative"}>
-            {tagGroups.length > 0 && (
+            {tagGroups.length > 0 &&
               tagGroups.map((tg, i) => (
                 <TagBar
                   possibleTags={tg.availableTags}
                   tags={tg.searchTags}
                   isActive={i === currentGroup && open}
                   handleChange={(st, at) => {
-                    tagGroups[i] = {searchTags: st, availableTags: at};
+                    tagGroups[i] = { searchTags: st, availableTags: at };
                     setTagGroups([...tagGroups]);
                   }}
                   handleClick={() => {
@@ -132,20 +150,20 @@ export default function SearchContainerSS({
                   }}
                   handleRemoval={() => {
                     setCurrentGroup(0);
-                    const filteredTagGroups = tagGroups.filter((t, j) => j !== i);
+                    const filteredTagGroups = tagGroups.filter(
+                      (t, j) => j !== i,
+                    );
                     if (filteredTagGroups.length < 1) {
                       setSearchTags([]);
                       setAvailableTags(possibleSearchTags);
-                    }
-                    else {
+                    } else {
                       setSearchTags(filteredTagGroups[0].searchTags);
                       setAvailableTags(filteredTagGroups[0].availableTags);
                     }
                     setTagGroups(filteredTagGroups);
                   }}
                 />
-              ))
-            )}
+              ))}
             <input
               type="text"
               placeholder="Search…"
@@ -165,42 +183,53 @@ export default function SearchContainerSS({
               }}
             />
 
-            {(open) && (
+            {open && (
               <div
                 className="absolute z-20 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-36 overflow-auto"
                 onMouseDown={(e) => e.preventDefault()}
               >
-                {(availableTags.some((t) => matchTag(searchTerm, t)) && searchTerm.length > 0) &&
-                  availableTags.filter((t) => matchTag(searchTerm, t)).map((t,i) => (
-                    <div 
-                      key={`tag-${i}`}
-                      onClick={() => {
-                        setAvailableTags(availableTags.filter((at) => !matchTag(`${at.field}: ${at.value}`, t)));
-                        setSearchTags([...searchTags, t]);
-                        tagGroups[currentGroup] = {
-                          searchTags: [...searchTags, t], 
-                          availableTags: availableTags.filter((at) => !matchTag(`${at.field}: ${at.value}`, t))
-                        };
-                        setTagGroups([...tagGroups]);
-                        setSearchTerm("");
-                        searchRef.current.blur();
-                        setOpen(false);
-                      }}
-                      className="block px-3 py-2 text-sm hover:bg-gray-50"
-                    >
-                      {`${t.field}: ${t.value}`}
-                    </div>
-                  ))
-                }
-                <div 
+                {availableTags.some((t) => matchTag(searchTerm, t)) &&
+                  searchTerm.length > 0 &&
+                  availableTags
+                    .filter((t) => matchTag(searchTerm, t))
+                    .map((t, i) => (
+                      <div
+                        key={`tag-${i}`}
+                        onClick={() => {
+                          setAvailableTags(
+                            availableTags.filter(
+                              (at) => !matchTag(`${at.field}: ${at.value}`, t),
+                            ),
+                          );
+                          setSearchTags([...searchTags, t]);
+                          tagGroups[currentGroup] = {
+                            searchTags: [...searchTags, t],
+                            availableTags: availableTags.filter(
+                              (at) => !matchTag(`${at.field}: ${at.value}`, t),
+                            ),
+                          };
+                          setTagGroups([...tagGroups]);
+                          setSearchTerm("");
+                          searchRef.current.blur();
+                          setOpen(false);
+                        }}
+                        className="block px-3 py-2 text-sm hover:bg-gray-50"
+                      >
+                        {`${t.field}: ${t.value}`}
+                      </div>
+                    ))}
+                <div
                   className="block px-3 py-2 text-sm hover:bg-gray-50"
                   onClick={() => {
                     //Set the current focused group to the new group
                     setCurrentGroup(tagGroups.length);
-                    setTagGroups([...tagGroups, {
-                      searchTags: [],
-                      availableTags: possibleSearchTags
-                    }]);
+                    setTagGroups([
+                      ...tagGroups,
+                      {
+                        searchTags: [],
+                        availableTags: possibleSearchTags,
+                      },
+                    ]);
                     setSearchTags([]);
                     setAvailableTags(possibleSearchTags);
                     // setOpen(false);
@@ -238,8 +267,8 @@ export default function SearchContainerSS({
                   const alignment = isFirst
                     ? "text-left"
                     : isLast
-                    ? "text-right"
-                    : "text-left";
+                      ? "text-right"
+                      : "text-left";
 
                   return (
                     <button
@@ -275,8 +304,8 @@ export default function SearchContainerSS({
                     const alignment = isFirst
                       ? "text-left"
                       : isLast
-                      ? "text-right"
-                      : "text-left";
+                        ? "text-right"
+                        : "text-left";
 
                     const value = item[field];
                     let content = value ?? "";
@@ -314,7 +343,7 @@ export default function SearchContainerSS({
                         {content}
                       </span>
                     );
-                  }
+                  },
                 );
 
                 const isButtonVisible =
@@ -380,14 +409,12 @@ export default function SearchContainerSS({
                     className="flex items-center gap-x-4 bg-transparent px-4 py-2 my-1"
                     style={{ minHeight: "42px" }} // same height as a row
                   />
-                )
+                ),
               )}
 
               {/* Pagination */}
-              <div
-                className="flex center"
-              >
-                <div className="mx-auto">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div className="mx-auto sm:mx-0">
                   <ReactPaginate
                     breakLabel="…"
                     nextLabel="›"
@@ -395,7 +422,9 @@ export default function SearchContainerSS({
                     pageRangeDisplayed={1}
                     marginPagesDisplayed={1}
                     pageCount={pageCount}
-                    onPageChange={({ selected }) => handlePageChange(selected + 1)}
+                    onPageChange={({ selected }) =>
+                      handlePageChange(selected + 1)
+                    }
                     forcePage={page - 1}
                     containerClassName="flex flex-wrap justify-center items-center gap-1 mt-4 text-xs sm:text-sm"
                     pageLinkClassName="cursor-pointer select-none px-2 sm:px-3 py-1 rounded-md border border-gray-300"
@@ -405,19 +434,86 @@ export default function SearchContainerSS({
                     breakLinkClassName="select-none px-2 sm:px-3 py-1 text-gray-400"
                   />
                 </div>
-                <div>
-                  <label>Page Count: </label>
+                <div className="flex items-center gap-2 ml-3 mt-4 sm:mt-0">
+                  <span className="text-xs sm:text-sm text-gray-600 whitespace-nowrap">
+                    Rows:
+                  </span>
+
                   <Select
-                    className={"react-select-container"}
+                    className="react-select-container"
+                    classNamePrefix="rs"
                     isSearchable={false}
-                    value={
-                      {value: pageSize, label: pageSize}
-                    }
+                    menuPlacement="auto"
+                    value={{ value: pageSize, label: String(pageSize) }}
                     onChange={(option) => {
                       setPageSize(option ? option.value : itemsPerPage);
                       handlePageChange(1);
                     }}
-                    options={pageSizes.map((s) => ({value: s, label: s}))}
+                    options={pageSizes.map((s) => ({
+                      value: s,
+                      label: String(s),
+                    }))}
+                    styles={{
+                      container: (base) => ({
+                        ...base,
+                        width: 84, // compact width
+                        minWidth: 84,
+                      }),
+                      control: (base, state) => ({
+                        ...base,
+                        minHeight: 30,
+                        height: 30,
+                        borderRadius: 8,
+                        borderColor: state.isFocused
+                          ? "#93c5fd"
+                          : base.borderColor,
+                        boxShadow: state.isFocused
+                          ? "0 0 0 2px rgba(59,130,246,0.15)"
+                          : "none",
+                      }),
+                      valueContainer: (base) => ({
+                        ...base,
+                        height: 30,
+                        padding: "0 8px",
+                      }),
+                      singleValue: (base) => ({
+                        ...base,
+                        fontSize: 13,
+                      }),
+                      input: (base) => ({
+                        ...base,
+                        margin: 0,
+                        padding: 0,
+                      }),
+                      indicatorsContainer: (base) => ({
+                        ...base,
+                        height: 30,
+                      }),
+                      dropdownIndicator: (base) => ({
+                        ...base,
+                        padding: 6,
+                      }),
+                      clearIndicator: (base) => ({
+                        ...base,
+                        padding: 6,
+                      }),
+                      menu: (base) => ({
+                        ...base,
+                        zIndex: 50,
+                      }),
+                      option: (base, state) => ({
+                        ...base,
+                        fontSize: 13,
+                        paddingTop: 6,
+                        paddingBottom: 6,
+                        backgroundColor: state.isSelected
+                          ? "rgba(59,130,246,0.10)"
+                          : state.isFocused
+                            ? "rgba(0,0,0,0.04)"
+                            : "white",
+                        color: "black",
+                      }),
+                    }}
                   />
                 </div>
               </div>
