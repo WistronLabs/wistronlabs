@@ -222,7 +222,7 @@ GB300_MASTER_MODULE_LIST=(
 if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
     DIAG_FOLDER="$GB200_FOLDER"
-elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" ]]; then
+elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "F" ]]; then
     MASTER_MODULE_LIST=("${GB300_MASTER_MODULE_LIST[@]}")
     DIAG_FOLDER="$GB300_FOLDER"
 else
@@ -284,6 +284,17 @@ case "$CONFIG" in
         )
         ;;
     B)
+        SKIPPED_MODULES=(
+            "BF3PcieInterfaceTraffic"
+            "CxeyegradeStop"
+            "Cx8GpuDirectLoopback"
+            "Cx8GpuDirectCrossGpu_ETH"
+            "CpuCx8Phy"
+            "Cx8GpuDirectCrossGpu_IB"
+        )
+        ;;
+
+    F)
         SKIPPED_MODULES=(
             "BF3PcieInterfaceTraffic"
             "CxeyegradeStop"
@@ -408,10 +419,19 @@ done
 
 echo ""
 
+# Define the IPMI base command based on Config
+if [[ "$CONFIG" == "F" ]]; then
+    # Special credentials and Cipher for Config F (OpenBMC)
+    IPMI_CMD="ipmitool -I lanplus -H $BMC_IP -C 17 -U root -P 0penBmc"
+else
+    # Default credentials for all other configs
+    IPMI_CMD="ipmitool -I lanplus -H $BMC_IP -U admin -P admin"
+fi
+
 IPMI_PING_TIMEOUT=$((5 * 60)) #10 minutes timeout
 IPMI_PING_START_TIME=$(date +%s)
 
-while ! ipmitool -I lanplus -H $BMC_IP -U admin -P admin chassis power 2>/dev/null; do
+while ! $IPMI_CMD chassis power 2>/dev/null; do
     
     CURRENT_TIME=$(date +%s)
     ELAPSED_TIME=$((CURRENT_TIME - IPMI_PING_START_TIME))
@@ -432,7 +452,7 @@ echo "INFO - IPMI response received!"
 echo ""
 
 echo "INFO - verifying system PPID"
-SYSTEM_PPID=$(ipmitool -I lanplus -U admin -P admin -H $BMC_IP fru print 0 | grep "Product Serial" | cut -d':' -f2 | xargs)
+SYSTEM_PPID=$($IPMI_CMD fru print 0 | grep "Product Serial" | cut -d':' -f2 | xargs)
 
 # Exit if empty
 if [[ -z "$SYSTEM_PPID" ]]; then
@@ -468,12 +488,12 @@ fi
 
 
 echo "INFO - Changing Boot Device to PXE"
-ipmitool -I lanplus -H $BMC_IP -U admin -P admin chassis bootdev pxe
+$IPMI_CMD chassis bootdev pxe
 
 echo ""
 
 echo "INFO - Powering on system"
-ipmitool -I lanplus -H $BMC_IP -U admin -P admin chassis power on
+$IPMI_CMD chassis power on
 
 echo ""
 
@@ -552,10 +572,10 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=5 nvidia@"$HOST_IP" "exit" 2>/dev/nu
     echo "      ./bios_serial <-i IP_ADDRESS | -m MAC_ADDRESS>" 
     echo ""
     echo "INFO - Changing Boot Device to PXE"
-    ipmitool -I lanplus -H $BMC_IP -U admin -P admin chassis bootdev pxe
+    $IPMI_CMD chassis bootdev pxe
     echo ""
     echo "Powering off system"
-    ipmitool -I lanplus -U admin -P admin -H "$BMC_IP" chassis power off
+    $IPMI_CMD chassis power off
     exit 1
 fi
 
@@ -590,7 +610,7 @@ cat "$LOG_DIR/diag_output.log"
 echo ""
 
 echo "INFO - Powering off system"
-ipmitool -I lanplus -H $BMC_IP -U admin -P admin chassis power off
+$IPMI_CMD chassis power off
 
 log_off
 rm "$LOG_DIR/diag_output.log"
