@@ -89,28 +89,47 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     exit 0
 fi
 
-# Probe IPMI quickly (don’t hang forever)
-if timeout 4 ipmitool -I lanplus -U "$IPMI_USER" -P "$IPMI_PASS" -H "$IP" chassis power status >/dev/null 2>&1; then
-    # IPMI works -> use SOL
-    ipmitool -I lanplus -U "$IPMI_USER" -P "$IPMI_PASS" -H "$IP" sol deactivate >/dev/null 2>&1 || true
-    tmux new-session -s "$SESSION_NAME" "ipmitool -I lanplus -U '$IPMI_USER' -P '$IPMI_PASS' -H '$IP' sol activate"
+# Probe IPMI quickly (don’t hang forever) - try admin/admin first, then root/0penBmc with -C 17
+if timeout 4 ipmitool -I lanplus -U "admin" -P "admin" -H "$IP" chassis power status >/dev/null 2>&1; then
+    IPMI_USER="admin"
+    IPMI_PASS="admin"
+    IPMI_CIPHER=""   # none
+
+elif timeout 4 ipmitool -I lanplus -U "root" -P "0penBmc" -H "$IP" -C 17 chassis power status >/dev/null 2>&1; then
+    IPMI_USER="root"
+    IPMI_PASS="0penBmc"
+    IPMI_CIPHER="-C 17"
+
+else
+    IPMI_USER=""
+    IPMI_PASS=""
+    IPMI_CIPHER=""
+fi
+
+if [[ -n "$IPMI_USER" ]]; then
+    # IPMI works -> use SOL (with whatever cipher was selected)
+    ipmitool -I lanplus -U "$IPMI_USER" -P "$IPMI_PASS" -H "$IP" $IPMI_CIPHER sol deactivate >/dev/null 2>&1 || true
+
+    tmux new-session -s "$SESSION_NAME" \
+      "ipmitool -I lanplus -U '$IPMI_USER' -P '$IPMI_PASS' -H '$IP' $IPMI_CIPHER sol activate"
 else
     sshpass -p "$SSH_PASS" ssh \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=10 \
-    "${SSH_USER}@${IP}" \
-    "stop -script HOST/console" >/dev/null 2>&1 || true
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=10 \
+      "${SSH_USER}@${IP}" \
+      "stop -script HOST/console" >/dev/null 2>&1 || true
 
-     tmux new-session -s "$SESSION_NAME" \
+    tmux new-session -s "$SESSION_NAME" \
       "sshpass -p '$SSH_PASS' ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${SSH_USER}@${IP} 'start -script HOST/console'"
 
     # If SSH failed immediately, tmux session won't exist -> show error
     if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-        err "Unable to connect to $IP via IPMI or SSH console (Config 7)." >&2
+        err "Unable to connect to $IP via IPMI (admin/admin or root/0penBmc -C 17) or SSH console (Config 7)." >&2
         echo "Please ensure the system is powered on and accessible." >&2
         exit 2
     fi
 fi
+
 
 tmux attach -t "$SESSION_NAME"

@@ -956,6 +956,7 @@ router.get("/snapshot", async (req, res) => {
       )
       SELECT 
         s.service_tag,
+        s.ppid,
         COALESCE(f.code, 'Not Entered Yet') AS factory_code,
         s.issue,
         d.name   AS dpn,
@@ -1091,6 +1092,7 @@ router.get("/snapshot", async (req, res) => {
       "From",
       "Status",
       "Service Tag",
+      "PPID",
       "DPN",
       "Config",
       ...(!simplifiedFlag ? ["Dell Customer"] : []),
@@ -1192,6 +1194,7 @@ router.get("/snapshot", async (req, res) => {
         r.factory_code ?? "",
         r.location ?? "",
         r.service_tag ?? "",
+        r.ppid ?? "",
         r.dpn ?? "",
         r.config != null ? `Config ${r.config}` : "",
         ...(!simplifiedFlag ? [r.dell_customer ?? ""] : []),

@@ -7,9 +7,6 @@ err() {
     echo -e "${RED}Error:${NC} $*" >&2
 }
 
-GB200_FOLDER="/home/nvidia/l10_diag_r8_386/"
-GB300_FOLDER=/home/nvidia/629-24059-0000-FLD-43538/
-
 # Check if SERVER_LOCATION environment variable is set
 if [[ -z "${SERVER_LOCATION:-}" ]]; then
   err "Environment variable SERVER_LOCATION is not set." >&2
@@ -60,8 +57,7 @@ fi
 
 
 SESSION_NAME=$(tmux display-message -p '#S')
-SESSION_NAME_PREFIX=$(echo "$SESSION_NAME" | cut -d_ -f1)
-SESSION_NUMBER=$(echo "$SESSION_NAME" | cut -d_ -f2)
+SESSION_NUMBER="${SESSION_NAME#stn_}"
 
 found=0
 for name in "${STATION_NAMES[@]}"; do
@@ -124,6 +120,13 @@ if [[ -z "$CONFIG" || "$CONFIG" == "null" ]]; then
   exit 1
 fi
 
+ipmi() {
+  if [[ "${CONFIG:-}" == "F" ]]; then
+    ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
+  else
+    ipmitool -I lanplus -H "$BMC_IP" -U admin -P admin "$@"
+  fi
+}
 
 
 if [[ "$CURRENT_REMOTE_SERVICE_TAG" == "null" ]]; then
@@ -141,49 +144,49 @@ if [[ "$CURRENT_REMOTE_SERVICE_TAG" != "$SERVICE_TAG" ]]; then
     exit 1
 fi
 
-# list of all possible test modules
-GB200_MASTER_MODULE_LIST=(
-    "Inventory"
-    "CxPcieProperties"
-    "BfPcieProperties"
-    "BfMgmtPcieProperties"
-    "TegraCpu"
-    "TegraMemory"
-    "CpuMemorySweep"
-    "TegraClink"
-    "Gpustress"
-    "Gpumem"
-    "Pcie"
-    "Connectivity"
-    "ThermalSteadyState"
-    "IbStressCables"
-    "Bf3PcieInterfaceTraffic"
-    "CxeyegradeStart"
-    "IbStressBf3PhyLoopback"
-    "IbStressBf3Loopout"
-    "IbStressCx7PhyLoopback"
-    "IbStressLoopout400G_8X"
-    "IbStressLoopout400G_4X"
-    "CxeyegradeStop"
-    "Ssd"
-    "C2C"
-    "DimmStress"
-    "WisSsdPcieProperties"
-    "NvlBwStress"
-    "NvlBwStressBg610"
-    "CpuGpuSyncPulsePower3Hz50duty"
-    "CpuGpuSyncPulsePower10Hz50duty"
-    "CpuGpuSyncPulsePower100Hz50duty"
-    "CpuGpuSyncPulsePower500Hz50duty"
-    "CpuGpuSyncPulsePower1kHz50duty"
-    "CpuGpuSyncPulsePower2kHz50duty"
-    "CpuGpuSyncPulsePower4KHz50duty"
-    "CpuGpuSyncPulsePower5KHz50duty"
-    "IbConfigureCx7Cables400G_8X"
-    "IbConfigureCx7Cables400G_4X"
-    "Cx8GpuDirectLoopback"
-    "Cx8GpuDirectCrossGpu"
-)
+# # list of all possible test modules
+# GB200_MASTER_MODULE_LIST=(
+#     "Inventory"
+#     "CxPcieProperties"
+#     "BfPcieProperties"
+#     "BfMgmtPcieProperties"
+#     "TegraCpu"
+#     "TegraMemory"
+#     "CpuMemorySweep"
+#     "TegraClink"
+#     "Gpustress"
+#     "Gpumem"
+#     "Pcie"
+#     "Connectivity"
+#     "ThermalSteadyState"
+#     "IbStressCables"
+#     "Bf3PcieInterfaceTraffic"
+#     "CxeyegradeStart"
+#     "IbStressBf3PhyLoopback"
+#     "IbStressBf3Loopout"
+#     "IbStressCx7PhyLoopback"
+#     "IbStressLoopout400G_8X"
+#     "IbStressLoopout400G_4X"
+#     "CxeyegradeStop"
+#     "Ssd"
+#     "C2C"
+#     "DimmStress"
+#     "WisSsdPcieProperties"
+#     "NvlBwStress"
+#     "NvlBwStressBg610"
+#     "CpuGpuSyncPulsePower3Hz50duty"
+#     "CpuGpuSyncPulsePower10Hz50duty"
+#     "CpuGpuSyncPulsePower100Hz50duty"
+#     "CpuGpuSyncPulsePower500Hz50duty"
+#     "CpuGpuSyncPulsePower1kHz50duty"
+#     "CpuGpuSyncPulsePower2kHz50duty"
+#     "CpuGpuSyncPulsePower4KHz50duty"
+#     "CpuGpuSyncPulsePower5KHz50duty"
+#     "IbConfigureCx7Cables400G_8X"
+#     "IbConfigureCx7Cables400G_4X"
+#     "Cx8GpuDirectLoopback"
+#     "Cx8GpuDirectCrossGpu"
+# )
 
 GB300_MASTER_MODULE_LIST=(
   "Inventory"
@@ -219,62 +222,166 @@ GB300_MASTER_MODULE_LIST=(
   "DimmStress"
 )
 
+GB200_MASTER_MODULE_LIST=(
+  "inforom"
+  "Checkinforom"
+  "environmentcheck"
+  "Inventory"
+  "CxPcieProperties"
+  "BfPcieProperties"
+  "BfMgmtPcieProperties"
+  "TegraCpu"
+  "TegraMemory"
+  "CpuMemorySweep"
+  "TegraClink"
+  "Gpustress"
+  "Gpumem"
+  "Pcie"
+  "Connectivity"
+  "NvlBwStress"
+  "NvlBwStressBg610"
+  "NvlBwStressBg610Pulsy"
+  "CpuGpuSyncPulsePower"
+  "ThermalSteadyState"
+  "CxeyegradeStart"
+  "IbStressBf3PhyLoopback"
+  "IbStressBf3Loopout"
+  "CxeyegradeStop"
+  "Cx8CpuCrossNIC_ETH"
+  "Cx8CpuCrossNIC_IB"
+  "Cx8GpuDirectLoopback"
+  "Cx8GpuDirectCrossNIC_ETH"
+  "Cx8GpuDirectCrossNIC_IB"
+  "Bf3PcieInterfaceTraffic"
+  "Ssd"
+  "DimmStress"
+)
+
+CONFIG_F_MASTER_MODULE_LIST=(
+  "inforom"
+  "Checkinforom"
+  "Inventory"
+  "CxPcieProperties"
+  "CxPcieProperties_C8240"
+  "WisSsdPcieProperties_M2"
+  "SsdPciePropertiesE1S"
+  "UsbPcieProperties"
+  "TegraCpu"
+  "TegraMemory"
+  "CpuMemorySweep"
+  "TegraClink"
+  "Gpustress"
+  "Gpumem"
+  "Pcie"
+  "Connectivity"
+  "NvlBwStress"
+  "NvlBwStressBg610"
+  "C2C"
+  "CpuGpuSyncPulsePower"
+  "ThermalSteadyState"
+  "CxeyegradeStart"
+  "DisableAcs"
+  "CxeyegradeStop"
+  "Cx8GpuDirectLoopback_ETH"
+  "Cx8GpuDirectCrossNIC_ETH"
+  "Cx8GpuDirectCrossNIC_IB"
+  "Cx8CpuCrossNIC_ETH"
+  "Cx8CpuCrossNIC_IB"
+  "Cx8CpuLoopback"
+  "BF3PcieInterfaceTraffic"
+  "Ssd"
+  "DimmStress"
+  "SyslogErrorCheck"
+  "KernLogErrorCheck"
+  "DmesgLogErrorCheck"
+  "SyslogAERCheck"
+  "KernLogAERCheck"
+  "DmesgLogAERCheck"
+)
+
+
 if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
-    DIAG_FOLDER="$GB200_FOLDER"
-elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "F" ]]; then
+    DIAG_FILE="l10_diag_r8_386.tgz"
+elif [[ "$CONFIG" == "7" ]]; then
+    MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
+     DIAG_FILE="diag_629-24975-0000-FLD-43749_rev13.tgz"
+elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" ]]; then
     MASTER_MODULE_LIST=("${GB300_MASTER_MODULE_LIST[@]}")
-    DIAG_FOLDER="$GB300_FOLDER"
+    DIAG_FILE="629-24059-0000-FLD-43538.tgz"
+elif [[ "$CONFIG" == "F" ]]; then
+    MASTER_MODULE_LIST=("${CONFIG_F_MASTER_MODULE_LIST[@]}")
+    DIAG_FILE="629-24059-0000-FLD-50611-rev1.tgz"
 else
     err "This config ($CONFIG) has not been implemented at L10 yet."
     exit 1
 fi
+
+# Per-config HTTP folder under /var/www/html (ex: config_6, config_F)
+WIS_FOLDER="config_${CONFIG}"
+
 
 # defines the base modules that need to be skipped over for each configuration. 
 # note that these might change as we get more testing equiptment
 case "$CONFIG" in
     2)
         SKIPPED_MODULES=(
-            "IbStressCables"
             "Bf3PcieInterfaceTraffic"
             "CxeyegradeStart"
+            "CxeyegradeStop"
             "IbStressBf3PhyLoopback"
             "IbStressBf3Loopout"
-            "IbStressCx7PhyLoopback"
-            "IbStressLoopout400G_8X"
-            "IbStressLoopout400G_4X"
-            "CxeyegradeStop"
+            "Cx8CpuCrossNIC_ETH"
+            "Cx8CpuCrossNIC_IB"
+            "Cx8GpuDirectCrossNIC_ETH"
+            "Cx8GpuDirectCrossNIC_IB"
         )
         ;;
     4)
         SKIPPED_MODULES=(
-            "IbStressCables"
             "Bf3PcieInterfaceTraffic"
             "CxeyegradeStart"
+            "CxeyegradeStop"
             "IbStressBf3PhyLoopback"
             "IbStressBf3Loopout"
-            "IbStressCx7PhyLoopback"
-            "IbStressLoopout400G_8X"
-            "IbStressLoopout400G_4X"
-            "CxeyegradeStop"
-            "WisSsdPcieProperties_E1S"
+            "Cx8CpuCrossNIC_ETH"
+            "Cx8CpuCrossNIC_IB"
+            "Cx8GpuDirectCrossNIC_ETH"
+            "Cx8GpuDirectCrossNIC_IB"
         )
         ;;
     6)
         SKIPPED_MODULES=(
+            "Bf3PcieInterfaceTraffic"
+            "CxeyegradeStart"
+            "CxeyegradeStop"
+            "IbStressBf3PhyLoopback"
             "IbStressBf3Loopout"
-            #IbStressBf3PhyLoopback
-            "IbStressCx7PhyLoopback"
+            "Cx8CpuCrossNIC_ETH"
+            "Cx8CpuCrossNIC_IB"
+            "Cx8GpuDirectCrossNIC_ETH"
+            "Cx8GpuDirectCrossNIC_IB"
+            "Cx8GpuDirectLoopback"
             "IbStressLoopout400G_8X"
             "IbStressLoopout400G_4X"
-            "IbStressCables"
-            "Cx8GpuDirectLoopback"
-            "Cx8GpuDirectCrossGpu"
-            "Bf3PcieInterfaceTraffic"
-            #"CxeyegradeStop"
         )
         ;;
-      A)
+     7)
+        SKIPPED_MODULES=(
+            "BfPcieProperties"
+            "BfMgmtPcieProperties"
+            "Bf3PcieInterfaceTraffic"
+            "Connectivity"
+            "NvlBwStress"
+            "NvlBwStressBg610"
+            "Cx8CpuCrossNIC_ETH"
+            "Cx8CpuCrossNIC_IB"
+            "Cx8GpuDirectCrossNIC_IB"
+            "Cx8GpuDirectLoopback"
+	    "Cx8GpuDirectCrossNIC_ETH" #needs to be fixed
+        )
+        ;;
+    A)
         SKIPPED_MODULES=(
             "BF3PcieInterfaceTraffic"
             "Cx8GpuDirectLoopback"
@@ -293,15 +400,11 @@ case "$CONFIG" in
             "Cx8GpuDirectCrossGpu_IB"
         )
         ;;
-
     F)
         SKIPPED_MODULES=(
-            "BF3PcieInterfaceTraffic"
-            "CxeyegradeStop"
-            "Cx8GpuDirectLoopback"
-            "Cx8GpuDirectCrossGpu_ETH"
-            "CpuCx8Phy"
-            "Cx8GpuDirectCrossGpu_IB"
+            "Cx8GpuDirectCrossNIC_IB"
+            "Cx8CpuCrossNIC_IB"
+            "SsdPciePropertiesE1S"
         )
         ;;
     *)
@@ -359,6 +462,62 @@ SKIPPED_MODULES_FORMATTED=$(IFS=,; echo "${SKIPPED_MODULES[*]}")
 
 BMC_MAC=$(echo "$BMC_MAC" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
 HOST_MAC=$(echo "$HOST_MAC" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
+
+
+# Normalize MAC:
+# - remove separators if present (: or -)
+# - lowercase
+# - reinsert dashes every 2 chars: abcdefghijkl -> ab-cd-ef-gh-ij-kl
+MAC_RAW="$(echo "$HOST_MAC" | tr -d ':-' | tr '[:upper:]' '[:lower:]')"
+MAC_DASH="$(echo "$MAC_RAW" | sed -E 's/(..)/\1-/g; s/-$//')"
+
+OUT="/srv/tftp/grub/grub.cfg-${MAC_DASH}"
+
+case "$CONFIG" in
+  F)
+    sudo tee "$OUT" >/dev/null <<EOF
+set timeout=5
+
+menuentry "${WIS_FOLDER} L10 Image" {
+    linux (http,192.168.1.2:8080)/${WIS_FOLDER}/vmlinuz \
+        boot=live root=/dev/ram0 live-netdev=enP5p9s0 \
+        fetch=http://192.168.1.2:8080/${WIS_FOLDER}/${WIS_FOLDER}.iso \
+        console=ttyS0,115200 console=tty1 fsck.mode=skip ip=dhcp rw vga=0x314 nomodeset ---
+    initrd (http,192.168.1.2:8080)/${WIS_FOLDER}/initrd.img
+}
+EOF
+    ;;
+  7)
+    sudo tee "$OUT" >/dev/null <<EOF
+set timeout=5
+
+menuentry "${WIS_FOLDER}L10 Image" {
+        linux (http,192.168.1.2:8080)/${WIS_FOLDER}/vmlinuz \\
+                boot=live live-media-path=/live netboot=http \\
+                fetch=http://192.168.1.2:8080/${WIS_FOLDER}/filesystem.squashfs \\
+                ip=dhcp rw fsck.mode=skip console=ttyS0,115200 console=tty1 nomodeset ---
+        initrd (http,192.168.1.2:8080)/${WIS_FOLDER}/initrd.img
+}
+EOF
+    ;;
+  2|4|6|A|B)
+    sudo tee "$OUT" >/dev/null <<EOF
+set timeout=5
+
+menuentry "Configs 2-6 A,B Wistron Image (RAM)" {
+        linux   (http,192.168.1.2:8080)/wis_vmlinuz ip=dhcp root=/dev/nfs nfsroot=192.168.1.2:/srv/tftp/wis_rootfs_copy
+        initrd  (http,192.168.1.2:8080)/wis_initrd_1
+}
+EOF
+    ;;
+  *)
+    err "No grub.cfg template defined for config $CONFIG"
+    exit 1
+    ;;
+esac
+
+sudo chmod 0644 "$OUT"
+echo "Wrote: $OUT"
 
 echo ""
 clear
@@ -419,81 +578,107 @@ done
 
 echo ""
 
-# Define the IPMI base command based on Config
-if [[ "$CONFIG" == "F" ]]; then
-    # Special credentials and Cipher for Config F (OpenBMC)
-    IPMI_CMD="ipmitool -I lanplus -H $BMC_IP -C 17 -U root -P 0penBmc"
-else
-    # Default credentials for all other configs
-    IPMI_CMD="ipmitool -I lanplus -H $BMC_IP -U admin -P admin"
-fi
-
-IPMI_PING_TIMEOUT=$((5 * 60)) #10 minutes timeout
+IPMI_PING_TIMEOUT=$((5 * 60)) # 5 minutes timeout
 IPMI_PING_START_TIME=$(date +%s)
 
-while ! $IPMI_CMD chassis power 2>/dev/null; do
-    
-    CURRENT_TIME=$(date +%s)
-    ELAPSED_TIME=$((CURRENT_TIME - IPMI_PING_START_TIME))
+# assumes: CONFIG, BMC_IP, IPMI_PING_START_TIME, IPMI_PING_TIMEOUT, err() exist
 
-    if ((ELAPSED_TIME > IPMI_PING_TIMEOUT)); then
-        err "It is taking too long to get a IPMI response"
-        echo "This is most likey a BMC hardware issue"
-        exit 1
-    fi
+bmc_check_cmd() {
+  if [[ "${CONFIG:-}" == "7" ]]; then
+    sshpass -p changeme ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=5 \
+      -o LogLevel=ERROR \
+      root@"$BMC_IP" 'exit' >/dev/null 2>&1
+  else
+    ipmi chassis power status >/dev/null 2>&1
+  fi
+}
 
-    echo ""
-    printf "%02dh %02dm %02ds - Waiting for valid IPMI response...... \n" $((ELAPSED_TIME/3600)) $(( (ELAPSED_TIME%3600)/60 )) $((ELAPSED_TIME%60))
 
-    sleep 5
+while ! bmc_check_cmd; do
+  CURRENT_TIME=$(date +%s)
+  ELAPSED_TIME=$((CURRENT_TIME - IPMI_PING_START_TIME))
+
+  if (( ELAPSED_TIME > IPMI_PING_TIMEOUT )); then
+    err "It is taking too long to get a valid BMC response"
+    echo "This is most likely a BMC hardware issue"
+    exit 1
+  fi
+
+  echo ""
+  printf "%02dh %02dm %02ds - Waiting for valid BMC response...... \n" \
+    $((ELAPSED_TIME/3600)) $(((ELAPSED_TIME%3600)/60)) $((ELAPSED_TIME%60))
+
+  sleep 5
 done
+
 
 echo "INFO - IPMI response received!"
 echo ""
 
-echo "INFO - verifying system PPID"
-SYSTEM_PPID=$($IPMI_CMD fru print 0 | grep "Product Serial" | cut -d':' -f2 | xargs)
 
-# Exit if empty
-if [[ -z "$SYSTEM_PPID" ]]; then
-  echo "ERROR: Could not get PPID, something might be wrong with the FRU data"
-  exit 1
-fi
+if [[ "${CONFIG:-}" != "7" ]]; then
 
-echo "Info - PPID is $SYSTEM_PPID"
+    echo "INFO - verifying system PPID"
+    SYSTEM_PPID=$(ipmi fru print 0 | grep "Product Serial" | cut -d':' -f2 | xargs)
 
-# Send PPID to tracking API and capture response
-response=$(curl -sS -X PATCH "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG/ppid" \
-  -H "Authorization: Bearer $INTERNAL_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"ppid\": \"$SYSTEM_PPID\"}")
-
-# Extract fields
-msg=$(echo "$response" | jq -r '.message // empty')
-err_msg=$(echo "$response" | jq -r '.error // empty')
-
-# Output accordingly
-if [[ -n "$err_msg" ]]; then
-    err "Cannot update PPID, $err_msg" 
-    echo ""
+    # Exit if empty
+    if [[ -z "$SYSTEM_PPID" ]]; then
+    echo "ERROR: Could not get PPID, something might be wrong with the FRU data"
     exit 1
-elif [[ -n "$msg" ]]; then
-    echo "INFO - $msg"
+    fi
+
+    echo "Info - PPID is $SYSTEM_PPID"
+
+    # Send PPID to tracking API and capture response
+    response=$(curl -sS -X PATCH "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG/ppid" \
+    -H "Authorization: Bearer $INTERNAL_API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"ppid\": \"$SYSTEM_PPID\"}")
+
+    # Extract fields
+    msg=$(echo "$response" | jq -r '.message // empty')
+    err_msg=$(echo "$response" | jq -r '.error // empty')
+
+    # Output accordingly
+    if [[ -n "$err_msg" ]]; then
+        err "Cannot update PPID, $err_msg" 
+        echo ""
+        exit 1
+    elif [[ -n "$msg" ]]; then
+        echo "INFO - $msg"
+        echo ""
+    else
+        echo "Unexpected response: $response"
+        echo ""
+    fi
+fi  
+
+
+if [[ "${CONFIG:-}" == "7" ]]; then
+
     echo ""
+    echo "INFO - Powering on system"
+
+    sshpass -p changeme ssh -tt \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=5 \
+    -o LogLevel=ERROR \
+    root@"$BMC_IP" 'start -script /SYS'
 else
-    echo "Unexpected response: $response"
+
+    echo "INFO - Changing Boot Device to PXE"
+    ipmi chassis bootdev pxe
+
     echo ""
+    echo "INFO - Powering on system"
+
+  ipmi chassis power on
 fi
 
-
-
-echo "INFO - Changing Boot Device to PXE"
-$IPMI_CMD chassis bootdev pxe
-
-echo ""
-
-echo "INFO - Powering on system"
-$IPMI_CMD chassis power on
 
 echo ""
 
@@ -533,32 +718,42 @@ done
 
 echo ""
 
-SSH_PING_TIMEOUT=$((15 * 60)) #15 minute timeout
-SSH_PING_START_TIME=$(date +%s)
+SSH_READY_TIMEOUT=$((15 * 60))
+SSH_READY_START=$(date +%s)
 
-while ! nc -z $HOST_IP 22; do
+ssh_ready() {
+  ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o ConnectionAttempts=1 \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o PreferredAuthentications=publickey \
+    -o PasswordAuthentication=no \
+    nvidia@"$HOST_IP" 'echo READY' >/dev/null 2>&1
+}
 
-    CURRENT_TIME=$(date +%s)
-    ELAPSED_TIME=$((CURRENT_TIME - SSH_PING_START_TIME))
+while ! ssh_ready; do
+  now=$(date +%s)
+  elapsed=$((now - SSH_READY_START))
 
-    if ((ELAPSED_TIME > SSH_PING_TIMEOUT)); then
-        err "It is taking too long to ping the ssh service on the host"
-        echo "Make sure the system is on AND is booted to the correct image (Wistron L10 Image)"
-        echo "Recommended Action:"
-        echo "  - Re-run this l10_test.sh while monitoring the system via BIOS serial to confirm the system is booting correctly."
-        echo "  - You can monitor the BIOS serial output using:"
-        echo "      ./bios_serial <-i IP_ADDRESS | -m MAC_ADDRESS>" 
-        echo ""
-        exit 1
-    fi
+  if (( elapsed > SSH_READY_TIMEOUT )); then
+    err "SSH is not fully up (handshake/command) on $HOST_IP after $SSH_READY_TIMEOUT seconds."
+    echo "Note: port 22 may be open before sshd is ready (banner exchange timeouts)."
+    exit 1
+  fi
 
-    printf "%02dh %02dm %02ds - Waiting for SSH service up on HOST %s... \n" $((ELAPSED_TIME/3600)) $(( (ELAPSED_TIME%3600)/60 )) $((ELAPSED_TIME%60)) "$HOST_IP"    
-    sleep 5
+  printf "%02dh %02dm %02ds - Waiting for SSH handshake/command on HOST %s...\n" \
+    $((elapsed/3600)) $(((elapsed%3600)/60)) $((elapsed%60)) "$HOST_IP"
+  sleep 5
 done
+
+echo "INFO - SSH is fully up on $HOST_IP"
+
 
 echo ""
 echo "INFO - Adding SSH host to known_hosts file"
-ssh-keyscan -H $HOST_IP >> ~/.ssh/known_hosts #&>/dev/null
+ssh-keyscan -H "$HOST_IP" >> ~/.ssh/known_hosts 2>/dev/null
 echo ""
 
 # check if the authentication key works when SSHing into the Gaines system
@@ -572,12 +767,29 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=5 nvidia@"$HOST_IP" "exit" 2>/dev/nu
     echo "      ./bios_serial <-i IP_ADDRESS | -m MAC_ADDRESS>" 
     echo ""
     echo "INFO - Changing Boot Device to PXE"
-    $IPMI_CMD chassis bootdev pxe
+    ipmi chassis bootdev pxe
     echo ""
     echo "Powering off system"
-    $IPMI_CMD chassis power off
+    ipmi chassis power off
     exit 1
 fi
+
+echo ""
+echo "INFO - Uploading diag bundle to DUT (nvidia@$HOST_IP)..."
+echo ""
+scp "/var/www/html/l10_diags/$DIAG_FILE" nvidia@"$HOST_IP":~/ >/dev/null
+
+
+echo ""
+echo "INFO - Extracting diag bundle on DUT and cleaning up archive..."
+echo ""
+ssh nvidia@"$HOST_IP" "tar -xzf ~/$DIAG_FILE && rm ~/$DIAG_FILE"
+
+DIAG_FOLDER="/home/nvidia/$(basename "$DIAG_FILE" .tgz)/"
+echo ""
+echo "INFO - Using diag folder on DUT: $DIAG_FOLDER"
+echo ""
+
 
 log_off
 # Runs the L10 validation test by SSHing into the remote system and attaching to a tmux session.
@@ -592,12 +804,12 @@ ssh -t nvidia@"$HOST_IP" 'tmux new-session -As '"$SERVICE_TAG"' "
         --run_on_error --no_bmc \
         --skip_tests='"$SKIPPED_MODULES_FORMATTED$ADDED_SKIPPED_MODULES_FORMATTED"' \
         2>&1 | tee /home/nvidia/output.log
-    ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts
+    ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts 2>/dev/null || true
     sleep 2
     cd logs
     LATEST=\$(ls -1 logs-*.tgz | sort | tail -n1)
     ssh falab@'"$SERVER_LOCATION"'.wistronlabs.com mkdir -p '"$LOG_DIR"'
-    scp -r '"$DIAG_FOLDER"'logs/\$LATEST falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/\$LATEST
+    scp -r '"$DIAG_FOLDER"'/logs/\$LATEST falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/\$LATEST
     scp /home/nvidia/output.log falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/diag_output.log
     sleep 8
 "'
@@ -610,9 +822,20 @@ cat "$LOG_DIR/diag_output.log"
 echo ""
 
 echo "INFO - Powering off system"
-$IPMI_CMD chassis power off
+if [[ "${CONFIG:-}" == "7" ]]; then
+    sshpass -p changeme ssh -tt \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=5 \
+    -o LogLevel=ERROR \
+    root@"$BMC_IP" 'stop -script /SYS'
+else
+  ipmi chassis power off
+fi
+
 
 log_off
 rm "$LOG_DIR/diag_output.log"
+#sudo rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
 
