@@ -87,6 +87,7 @@ function useApi() {
    */
   const getSystems = ({
     filters, // advanced filters JSON string or object
+    tags,
     service_tag,
     issue,
     location_id,
@@ -104,6 +105,7 @@ function useApi() {
       sort_order,
     };
 
+    const body = {};
     if (filters) {
       params.filters =
         typeof filters === "string" ? filters : JSON.stringify(filters);
@@ -113,7 +115,10 @@ function useApi() {
       if (issue) params.issue = issue;
       if (location_id) params.location_id = location_id;
     }
-
+    if (tags) {
+      params.tags = 
+        typeof tags === "string" ? tags : JSON.stringify(tags);
+    }
     const qs = buildQueryString(params);
     return fetchJSON(`/systems${qs}`);
   };

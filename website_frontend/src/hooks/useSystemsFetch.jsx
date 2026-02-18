@@ -31,6 +31,7 @@ export function useSystemsFetch() {
       inactive = true,
       all = false,
       filters,
+      tags,
       serverZone = "UTC",
     } = options;
 
@@ -79,6 +80,9 @@ export function useSystemsFetch() {
 
     if (conditions.length > 0) {
       params.filters = JSON.stringify({ op: "AND", conditions });
+    }
+    if (tags) {
+      params.tags = tags;
     }
 
     const response = await getSystems(params);

@@ -47,6 +47,7 @@ function TrackingPage() {
   const [printFriendly, setPrintFriendly] = useState(true);
   const [dellCustomers, setDellCustomers] = useState([]);
   const [factories, setFactories] = useState([]);
+  const [customTags, setCustomTags] = useState([]);
 
   const [serverTime, setServerTime] = useState([]);
 
@@ -73,20 +74,22 @@ function TrackingPage() {
     getSnapshot,
     getSystemHistory,
     getSystem,
+    getTags,
   } = useApi();
 
   const fetchData = async () => {
     setLoading(true);
 
     try {
-      const [locationsData, serverTimeData, dpnsData, factoriesData] =
+      const [locationsData, serverTimeData, dpnsData, factoriesData, tagsData] =
         await Promise.all([
           getLocations(),
           getServerTime(),
           getDpns(),
           getFactories(),
+          getTags(),
         ]);
-
+      
       const activeLocationNames = locationsData
         .filter((loc) => activeLocationIDs.includes(loc.id))
         .map((loc) => loc.name);
@@ -167,6 +170,7 @@ function TrackingPage() {
           .filter((d, i, self) => d && i === self.indexOf(d)),
       );
       setFactories(factoriesData.map((f) => f.code));
+      setCustomTags(tagsData.map(t => t.code));
     } catch (err) {
       setError(err.message);
       console.error(err.message);
@@ -644,6 +648,7 @@ function TrackingPage() {
                   value: d,
                 })),
                 ...factories.map((f) => ({ field: "factory", value: f })),
+                ...customTags.map((t) => ({ field: "tags", value: t })),
               ]}
             />
             <button
