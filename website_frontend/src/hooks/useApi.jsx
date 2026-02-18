@@ -105,7 +105,6 @@ function useApi() {
       sort_order,
     };
 
-    const body = {};
     if (filters) {
       params.filters =
         typeof filters === "string" ? filters : JSON.stringify(filters);
