@@ -609,12 +609,14 @@ router.get("/", async (req, res) => {
   }
   if (tags) {
     const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
-    const tagsSQL = parsed.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ");
-    whereSQL = whereSQL
-      ? `${whereSQL} AND (${tagsSQL})`
-      : `WHERE ${tagsSQL}`;
+    if (parsed.length > 0) {
+      const tagsSQL = parsed.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ");
+      whereSQL = whereSQL
+        ? `${whereSQL} AND (${tagsSQL})`
+        : `WHERE ${tagsSQL}`;
+    }
   }
-
+  console.log(whereSQL);
   // --- free-text search (NEW) ---
   // AND across terms, OR across fields per term
   // e.g. search="KR7T5 bianca" -> matches rows that contain "KR7T5" AND "bianca" somewhere among these columns
