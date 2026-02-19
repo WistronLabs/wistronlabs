@@ -573,6 +573,7 @@ router.get("/root-cause-sub-categories/:id", async (req, res) => {
 router.get("/", async (req, res) => {
   const {
     filters,
+    tags,
     page = 1,
     page_size = 50,
     all,
@@ -605,6 +606,13 @@ router.get("/", async (req, res) => {
       });
       if (filtersSQL) whereSQL = `WHERE ${filtersSQL}`;
     }
+  }
+  if (tags) {
+    const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
+    const tagsSQL = parsed.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ");
+    whereSQL = whereSQL
+      ? `${whereSQL} AND (${tagsSQL})`
+      : `WHERE ${tagsSQL}`;
   }
 
   // --- free-text search (NEW) ---
@@ -751,6 +759,25 @@ router.get("/", async (req, res) => {
             LEFT JOIN dpn d ON s.dpn_id = d.id
             LEFT JOIN root_cause rc                 ON rc.id  = s.root_cause_id
             LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(
+                JSONB_AGG(
+                  JSONB_BUILD_OBJECT(
+                    'tag_id', x.id,
+                    'code', x.code,
+                    'description', x.description
+                  )
+                  ORDER BY x.code
+                ),
+                '[]'::jsonb
+              ) AS tags
+              FROM (
+                SELECT DISTINCT t.id, t.code, t.description
+                FROM system_tag st
+                JOIN tag t ON t.id = st.tag_id
+                WHERE st.system_id = s.id
+              ) x
+            ) AS tags_agg ON TRUE
             ${whereSQL}
             `,
             params,

@@ -61,26 +61,32 @@ export default function SearchContainerSS({
       sort_by: sortBy,
       sort_order: sortAsc ? "asc" : "desc",
       search: debouncedSearchTerm || undefined,
-      filters: tagGroups.some((tg) => tg.searchTags.length > 0)
+      filters: tagGroups.some((tg) => tg.searchTags.length > 0 && tg.searchTags.some((st) => st.field !== "tags"))
         ? {
             op: "AND",
             conditions: [
               {
                 op: "OR",
                 conditions: tagGroups
-                  .filter((tg) => tg.searchTags.length > 0)
+                  .filter((tg) => tg.searchTags.length > 0 && tg.searchTags.some((st) => st.field !== "tags"))
                   .map((tg) => ({
                     op: "AND",
-                    conditions: tg.searchTags.map((t) => ({
-                      field: t.field,
-                      values: [t.value],
-                      op: "=",
-                    })),
+                    conditions: tg.searchTags.filter((t) => t.field !== "tags").map((t) => (
+                      {
+                        field: t.field,
+                        values: [t.value],
+                        op: "=",
+                      }
+                    )),
                   })),
               },
               { field: "issue", values: [debouncedSearchTerm], op: "ILIKE" },
             ],
           }
+        : null,
+      tags: tagGroups.some((tg) => tg.searchTags.length > 0)
+        ? tagGroups.map((tg) => tg.searchTags.filter((st) => st.field === "tags").map((st) => st.value))
+          .reduce((acc, e) => [...acc, ...e], [])
         : null,
     })
       .then((res) => {
