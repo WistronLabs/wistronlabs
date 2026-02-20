@@ -610,10 +610,10 @@ router.get("/", async (req, res) => {
   if (tags) {
     const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
     if (parsed.length > 0) {
-      const tagsSQL = parsed.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ");
-      whereSQL = whereSQL
-        ? `${whereSQL} AND (${tagsSQL})`
-        : `WHERE ${tagsSQL}`;
+      const tagsSQL = parsed
+        .map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`)
+        .join(" AND ");
+      whereSQL = whereSQL ? `${whereSQL} AND (${tagsSQL})` : `WHERE ${tagsSQL}`;
     }
   }
   console.log(whereSQL);
@@ -2163,6 +2163,35 @@ router.patch("/:service_tag/issue", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update issue" });
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/rack_service_tag
+router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { rack_service_tag } = req.body;
+
+  if (rack_service_tag === undefined) {
+    return res.status(400).json({ error: "rack_service_tag is required" });
+  }
+
+  // optional: allow clearing by sending null or "" (normalize "" -> null)
+  const normalized = rack_service_tag === "" ? null : rack_service_tag;
+
+  try {
+    const result = await db.query(
+      "UPDATE system SET rack_service_tag = $1 WHERE service_tag = $2 RETURNING service_tag",
+      [normalized, service_tag],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    res.json({ message: "Rack service tag updated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update rack_service_tag" });
   }
 });
 

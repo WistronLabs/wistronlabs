@@ -115,8 +115,7 @@ function useApi() {
       if (location_id) params.location_id = location_id;
     }
     if (tags) {
-      params.tags = 
-        typeof tags === "string" ? tags : JSON.stringify(tags);
+      params.tags = typeof tags === "string" ? tags : JSON.stringify(tags);
     }
     const qs = buildQueryString(params);
     return fetchJSON(`/systems${qs}`);
@@ -261,7 +260,7 @@ function useApi() {
       method: "DELETE",
     });
 
-  const moveSystemToReceived = async (service_tag, issue, note) => {
+  const moveSystemToReceived = async (service_tag, issue, rack_service_tag) => {
     // First fetch: move system
     const updateLocation = await fetchJSON(`/systems/${service_tag}/location`, {
       method: "PATCH",
@@ -287,7 +286,16 @@ function useApi() {
       }),
     });
 
-    return { updateLocation, updateIssue };
+    // Forth fetch: update rack service tag
+    const updateRackTag = await fetchJSON(`/systems/${service_tag}/rack`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rack_service_tag: rack_service_tag,
+      }),
+    });
+
+    return { updateLocation, updateIssue, updateRackTag };
   };
 
   const getSnapshot = ({
