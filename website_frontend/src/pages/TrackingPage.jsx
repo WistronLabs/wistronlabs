@@ -89,7 +89,7 @@ function TrackingPage() {
           getFactories(),
           getTags(),
         ]);
-      
+
       const activeLocationNames = locationsData
         .filter((loc) => activeLocationIDs.includes(loc.id))
         .map((loc) => loc.name);
@@ -170,7 +170,7 @@ function TrackingPage() {
           .filter((d, i, self) => d && i === self.indexOf(d)),
       );
       setFactories(factoriesData.map((f) => f.code));
-      setCustomTags(tagsData.map(t => t.code));
+      setCustomTags(tagsData.map((t) => t.code));
     } catch (err) {
       setError(err.message);
       console.error(err.message);
@@ -225,7 +225,7 @@ function TrackingPage() {
           return null;
         }
 
-        await moveSystemToReceived(service_tag, issue, "added to system");
+        await moveSystemToReceived(service_tag, issue, rack_service_tag);
         showToast(
           `${service_tag} moved back to received`,
           "success",
