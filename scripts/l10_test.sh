@@ -475,7 +475,7 @@ OUT="/srv/tftp/grub/grub.cfg-${MAC_DASH}"
 
 case "$CONFIG" in
   F)
-    sudo tee "$OUT" >/dev/null <<EOF
+    tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
 menuentry "${WIS_FOLDER} L10 Image" {
@@ -488,7 +488,7 @@ menuentry "${WIS_FOLDER} L10 Image" {
 EOF
     ;;
   7)
-    sudo tee "$OUT" >/dev/null <<EOF
+    tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
 menuentry "${WIS_FOLDER}L10 Image" {
@@ -501,7 +501,7 @@ menuentry "${WIS_FOLDER}L10 Image" {
 EOF
     ;;
   2|4|6|A|B)
-    sudo tee "$OUT" >/dev/null <<EOF
+    tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
 menuentry "Configs 2-6 A,B Wistron Image (RAM)" {
@@ -516,7 +516,7 @@ EOF
     ;;
 esac
 
-sudo chmod 0644 "$OUT"
+chmod 0644 "$OUT"
 echo "Wrote: $OUT"
 
 echo ""
@@ -836,6 +836,6 @@ fi
 
 log_off
 rm "$LOG_DIR/diag_output.log"
-#sudo rm -f -- "$OUT"
+rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
 
