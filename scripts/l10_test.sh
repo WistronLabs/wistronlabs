@@ -28,11 +28,17 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- flags ---
 SKIP_BACKEND_MAC_PULL=0
-if [[ "${1:-}" == "-m" ]]; then
-  SKIP_BACKEND_MAC_PULL=1
-fi
+RUN_OPTION_PICKER=0
+
+while getopts ":mo" opt; do
+  case "$opt" in
+    m) SKIP_BACKEND_MAC_PULL=1 ;;
+    o) RUN_OPTION_PICKER=1 ;;
+    *) ;;
+  esac
+done
+shift $((OPTIND - 1))
 
 api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
 
@@ -58,8 +64,7 @@ backend_patch_mac() {
   local val="$2"
 
   local payload
-  payload="$(jq -nc --arg v "$val" '{($ENV.field): $v}' --arg field "$field")"
-
+  payload="$(jq -nc --arg field "$field" --arg v "$val" '{($field): $v}')"
   curl -sS -X PATCH "${api_base}/systems/${SERVICE_TAG}/${field}" \
     "${api_auth_hdr[@]}" \
     -H "Content-Type: application/json" \
@@ -126,29 +131,7 @@ CURRENT_REMOTE_SERVICE_TAG=$(curl -s \
 
 read -p "Enter Service Tag (e.g., A1B264): " SERVICE_TAG
 
-BMC_MAC=""
-HOST_MAC=""
 
-if [[ "$SKIP_BACKEND_MAC_PULL" -eq 0 ]]; then
-  if sys_json="$(backend_get_system 2>/dev/null)"; then
-    # backend values may be null
-    bmc_raw="$(echo "$sys_json" | jq -r '.bmc_mac // empty')"
-    host_raw="$(echo "$sys_json" | jq -r '.host_mac // empty')"
-
-    if [[ -n "$bmc_raw" && -n "$host_raw" && "$bmc_raw" != "null" && "$host_raw" != "null" ]]; then
-      # Accept backend values; normalize later to colon format
-      BMC_MAC="$bmc_raw"
-      HOST_MAC="$host_raw"
-      echo "INFO - Using BMC/HOST MAC from backend for $SERVICE_TAG"
-    fi
-  fi
-fi
-
-# If either missing, fall back to old prompts
-if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
-  read -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
-  read -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
-fi
 
 CONFIG_TMP=$(mktemp)
 
@@ -180,13 +163,7 @@ if [[ -z "$CONFIG" || "$CONFIG" == "null" ]]; then
   exit 1
 fi
 
-ipmi() {
-  if [[ "${CONFIG:-}" == "F" ]]; then
-    ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
-  else
-    ipmitool -I lanplus -H "$BMC_IP" -U admin -P admin "$@"
-  fi
-}
+
 
 
 if [[ "$CURRENT_REMOTE_SERVICE_TAG" == "null" ]]; then
@@ -203,6 +180,39 @@ if [[ "$CURRENT_REMOTE_SERVICE_TAG" != "$SERVICE_TAG" ]]; then
     echo "  2. Move $CURRENT_REMOTE_SERVICE_TAG back to 'In Debug - Wistron'."
     exit 1
 fi
+
+
+BMC_MAC=""
+HOST_MAC=""
+
+if [[ "$SKIP_BACKEND_MAC_PULL" -eq 0 ]]; then
+  if sys_json="$(backend_get_system 2>/dev/null)"; then
+    # backend values may be null
+    bmc_raw="$(echo "$sys_json" | jq -r '.bmc_mac // empty')"
+    host_raw="$(echo "$sys_json" | jq -r '.host_mac // empty')"
+
+    if [[ -n "$bmc_raw" && -n "$host_raw" && "$bmc_raw" != "null" && "$host_raw" != "null" ]]; then
+      # Accept backend values; normalize later to colon format
+      BMC_MAC="$bmc_raw"
+      HOST_MAC="$host_raw"
+      echo "INFO - Using BMC/HOST MAC from backend for $SERVICE_TAG"
+    fi
+  fi
+fi
+
+# If either missing, fall back to old prompts
+if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
+  read -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
+  read -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
+fi
+
+ipmi() {
+  if [[ "${CONFIG:-}" == "F" ]]; then
+    ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
+  else
+    ipmitool -I lanplus -H "$BMC_IP" -U admin -P admin "$@"
+  fi
+}
 
 # # list of all possible test modules
 # GB200_MASTER_MODULE_LIST=(
@@ -490,7 +500,7 @@ for mod in "${MASTER_MODULE_LIST[@]}"; do
 done
 
 # if the -o (option) flaag is set, it will set up an interactive prompt where you can pick the module(s) you would like to test
-if [[ "${1:-}" == "-o" ]]; then
+if [[ "$RUN_OPTION_PICKER" -eq 1 ]]; then
 
     while true; do
         selected=$(printf "%s\n" "${CONFIG_LIST[@]}" | fzf --multi \
