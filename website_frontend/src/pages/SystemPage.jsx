@@ -161,7 +161,7 @@ function TagBubblesRow({
   onOpenAdd,
   onDeleteTag,
 }) {
-  const canEdit = !!token; // ✅ logged in => can delete
+  const canEdit = !!token;
 
   const list = Array.isArray(tags) ? tags : [];
   const total = list.length;
@@ -325,7 +325,7 @@ function TagBubblesRow({
             onMouseEnter={() => canEdit && setDeleteHoverId(id)}
             onMouseLeave={() => canEdit && setDeleteHoverId(null)}
             onClick={() => {
-              if (!canEdit) return; // ✅ logged out: do nothing
+              if (!canEdit) return; // logged out: do nothing
               setDeleteHoverId(null);
               setExpandHoverId(null);
               onDeleteTag?.(t);
@@ -484,9 +484,9 @@ function AddTagModal({
               const code = String(t.code || "").trim();
               return { t, code, key: code.toLowerCase() };
             })
-            // ✅ remove ones already on the system
+            // remove ones already on the system
             .filter(({ key }) => !sysTagCodes.has(key))
-            // ✅ build react-select options
+            // build react-select options
             .map(({ t, code }) => ({
               value: String(t.tag_id),
               label: code.toUpperCase(),
@@ -768,11 +768,10 @@ function SystemPage() {
     const key = tagKey(tag);
     if (!key) return;
 
-    // ✅ Always exit focused mode and re-truncate immediately
+    // Always exit focused mode and re-truncate immediately
     setFocusedTagId((cur) => (String(cur) === key ? null : cur));
     setShowTopUntruncated(false);
 
-    // ✅ Optimistic: remove from UI immediately (by code key)
     setSystemTags((prev) =>
       (Array.isArray(prev) ? prev : []).filter((t) => tagKey(t) !== key),
     );
@@ -1573,7 +1572,7 @@ function SystemPage() {
             original_bad_ppid: chosen.ppid,
           };
 
-          // ✅ Only force Defective if this is from a non-live *unit* donor
+          // Only force Defective if this is from a non-live *unit* donor
           // Inventory originals should NEVER force "Defective".
           const isNonLiveDonor =
             chosen.place === "unit" &&
@@ -2702,13 +2701,12 @@ function SystemPage() {
       }
 
       // 3) Move the unit
-      // ⬅️ Backend now returns { message, pallet_number?, dpn?, factory_code? } when moving into RMA
       const resp = await updateSystemLocation(serviceTag, {
         to_location_id: toId,
         note: noteToSend,
       });
 
-      // ✅ Update station mapping
+      // Update station mapping
       if (selectedStationObj && toId === 5) {
         await updateStation(selectedStationObj.station_name, {
           system_id: system.id,
@@ -2738,7 +2736,7 @@ function SystemPage() {
         window.open(url);
       }
 
-      // ✅ If RMA destination, print RMA label (prefer backend response)
+      // If RMA destination, print RMA label (prefer backend response)
       if (RMA_LOCATION_IDS.includes(toId)) {
         // Prefer values from response; fall back to current system or a single read of getSystemPallet()
         let palletNumber = resp?.pallet_number || null;

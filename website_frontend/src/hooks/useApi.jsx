@@ -369,6 +369,13 @@ function useApi() {
       method: "DELETE",
     });
 
+  const updateRackServiceTag = (service_tag, rack_service_tag) =>
+    fetchJSON(`/systems/${service_tag}/rack`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rack_service_tag }),
+    });
+
   const getPallets = ({
     filters, // advanced filters JSON string or object
     pallet_number,
@@ -403,6 +410,20 @@ function useApi() {
     const qs = buildQueryString(params);
     return fetchJSON(`/pallets${qs}`);
   };
+
+  const updateHostMac = (service_tag, host_mac) =>
+    fetchJSON(`/systems/${service_tag}/host_mac`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host_mac }),
+    });
+
+  const updateBmcMac = (service_tag, bmc_mac) =>
+    fetchJSON(`/systems/${service_tag}/bmc_mac`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bmc_mac }),
+    });
 
   const getPallet = (pallet_number) =>
     fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
@@ -732,6 +753,9 @@ function useApi() {
     getSystemTags,
     addSystemTag,
     removeSystemTag,
+    updateHostMac,
+    updateBmcMac,
+    updateRackServiceTag,
   };
 }
 
