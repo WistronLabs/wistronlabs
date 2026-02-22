@@ -55,6 +55,20 @@ async function getDeletedUserId() {
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
 
+function requireMac12Hex(value, fieldName = "mac") {
+  const s = String(value ?? "")
+    .trim()
+    .toUpperCase();
+
+  // STRICT: must be exactly 12 hex chars, no separators
+  if (!/^[0-9A-F]{12}$/.test(s)) {
+    throw new Error(
+      `${fieldName} must be exactly 12 hex chars (example: A1B2C3D4E5F6)`,
+    );
+  }
+  return s;
+}
+
 function parseAndValidatePPID(ppidRaw) {
   const ppid = (ppidRaw || "").trim().toUpperCase();
 
@@ -603,6 +617,8 @@ router.get("/", async (req, res) => {
         ppid: "s.ppid",
         root_cause: "rc.name",
         root_cause_sub_category: "rcs.name",
+        host_mac: "s.host_mac",
+        bmc_mac: "s.bmc_mac",
       });
       if (filtersSQL) whereSQL = `WHERE ${filtersSQL}`;
     }
@@ -617,7 +633,6 @@ router.get("/", async (req, res) => {
     }
   }
   console.log(whereSQL);
-  // --- free-text search (NEW) ---
   // AND across terms, OR across fields per term
   // e.g. search="KR7T5 bianca" -> matches rows that contain "KR7T5" AND "bianca" somewhere among these columns
   if (search && String(search).trim()) {
@@ -625,10 +640,10 @@ router.get("/", async (req, res) => {
     const searchClauses = terms.map((t) => {
       const p = `%${t}%`;
       // push one param per field below (keep order consistent with SQL)
-      params.push(p, p, p, p, p, p, p, p, p, p);
-      //            1  2  3  4  5  6  7  8   9   10
+      params.push(p, p, p, p, p, p, p, p, p, p, p, p);
+      //            1  2  3  4  5  6   7   8   9   10  11  12
       // fields: service_tag, issue, location, dpn, dpn.config, dell_customer,
-      //         ppid, factory_code, rc.name, rcs.name
+      //         ppid, factory_code, rc.name, rcs.name, host_mac, bmc_mac
       return `(
         s.service_tag ILIKE $${params.length - 9} OR
         s.issue       ILIKE $${params.length - 8} OR
@@ -640,6 +655,8 @@ router.get("/", async (req, res) => {
         f.code        ILIKE $${params.length - 2} OR
         rc.name       ILIKE $${params.length - 1} OR
         rcs.name      ILIKE $${params.length - 0}
+        s.host_mac::text ILIKE $${params.length - 1} OR
+        s.bmc_mac::text  ILIKE $${params.length - 0}
       )`;
     });
 
@@ -693,6 +710,8 @@ router.get("/", async (req, res) => {
         s.serial,
         s.rev,
         s.ppid,
+        s.host_mac,
+        s.bmc_mac,
         s.rack_service_tag AS rack_id, 
         l.name AS location,
         f.code AS factory_code,
@@ -1642,19 +1661,29 @@ router.get("/:service_tag/history", async (req, res) => {
 
 // POST /api/v1/systems
 router.post("/", authenticateToken, async (req, res) => {
-  const { service_tag, issue, location_id, ppid, rack_service_tag } = req.body;
+  const {
+    service_tag,
+    issue,
+    location_id,
+    ppid,
+    rack_service_tag,
+    host_mac,
+    bmc_mac,
+  } = req.body;
 
   if (
     !service_tag?.trim() ||
     !location_id ||
     !ppid?.trim() ||
-    !rack_service_tag?.trim()
+    !rack_service_tag?.trim() ||
+    !host_mac?.toString().trim() ||
+    !bmc_mac?.toString().trim()
   ) {
     return res.status(400).json({
-      error: "Service Tag, Location, PPID, and Rack Service Tag are required",
+      error:
+        "Service Tag, Location, PPID, Rack Service Tag, Host MAC, and BMC MAC are required",
     });
   }
-
   // normalize rack id
   const rackUpper = rack_service_tag.trim().toUpperCase();
 
@@ -1682,6 +1711,7 @@ router.post("/", authenticateToken, async (req, res) => {
     "BLANK",
     "???",
     "XXX",
+    "COOLANT",
   ];
 
   // to make matching easier, remove spaces and slashes for the check
@@ -1696,6 +1726,14 @@ router.post("/", authenticateToken, async (req, res) => {
   let parsed;
   try {
     parsed = parseAndValidatePPID(ppid);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  let hostMac12, bmcMac12;
+  try {
+    hostMac12 = requireMac12Hex(host_mac, "host_mac");
+    bmcMac12 = requireMac12Hex(bmc_mac, "bmc_mac");
   } catch (e) {
     return res.status(400).json({ error: e.message });
   }
@@ -1727,9 +1765,10 @@ router.post("/", authenticateToken, async (req, res) => {
       `
       INSERT INTO system
         (service_tag, issue, location_id, ppid, dpn_id, factory_id,
-         manufactured_date, serial, rev, rack_service_tag)
+        manufactured_date, serial, rev, rack_service_tag,
+        host_mac, bmc_mac)
       VALUES
-        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id
       `,
       [
@@ -1742,7 +1781,9 @@ router.post("/", authenticateToken, async (req, res) => {
         parsed.manufacturedDate,
         parsed.serial,
         parsed.rev,
-        rackUpper, // already uppercased above
+        rackUpper,
+        hostMac12,
+        bmcMac12,
       ],
     );
     const system_id = ins.rows[0].id;
@@ -1806,6 +1847,15 @@ router.post("/", authenticateToken, async (req, res) => {
           error: "PPID already exists (this unit is already in the system)",
         });
       }
+      if (err.constraint === "uq_system_host_mac") {
+        return res.status(409).json({ error: "Host MAC already exists" });
+      }
+      if (err.constraint === "uq_system_bmc_mac") {
+        return res.status(409).json({ error: "BMC MAC already exists" });
+      }
+      if (err.code === "23514") {
+        return res.status(400).json({ error: "MAC format invalid" });
+      }
       // fallback if some other unique hits in future
       return res
         .status(409)
@@ -1836,6 +1886,8 @@ router.get("/:service_tag", async (req, res) => {
         s.serial,
         s.rev,
         s.ppid,
+        s.host_mac,
+        s.bmc_mac,
         s.rack_service_tag AS rack_id,
         l.name AS location,
         f.code AS factory_code,
@@ -1908,6 +1960,41 @@ router.get("/:service_tag", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch system" });
+  }
+});
+
+router.patch("/:service_tag/bmc_mac", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { bmc_mac } = req.body;
+
+  if (typeof bmc_mac === "undefined") {
+    return res.status(400).json({ error: "bmc_mac is required" });
+  }
+
+  let mac12;
+  try {
+    mac12 = requireMac12Hex(bmc_mac, "bmc_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE system SET bmc_mac = $1 WHERE service_tag = $2 RETURNING service_tag`,
+      [mac12, service_tag],
+    );
+
+    if (!result.rowCount)
+      return res.status(404).json({ error: "System not found" });
+    return res.json({ message: "BMC MAC updated" });
+  } catch (err) {
+    console.error(err);
+    if (err.code === "23505" && err.constraint === "uq_system_bmc_mac") {
+      return res.status(409).json({ error: "BMC MAC already exists" });
+    }
+    if (err.code === "23514")
+      return res.status(400).json({ error: "MAC format invalid" });
+    return res.status(500).json({ error: "Failed to update bmc_mac" });
   }
 });
 

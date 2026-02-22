@@ -28,6 +28,44 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# --- flags ---
+SKIP_BACKEND_MAC_PULL=0
+if [[ "${1:-}" == "-m" ]]; then
+  SKIP_BACKEND_MAC_PULL=1
+fi
+
+api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
+
+api_auth_hdr=(-H "Authorization: Bearer $INTERNAL_API_KEY")
+
+normalize_mac_colon() {
+  # input: AABBCCDDEEFF or aa:bb:... or aa-bb-...
+  # output: aa:bb:cc:dd:ee:ff
+  local raw
+  raw="$(echo "${1:-}" | tr -d ':-' | tr '[:upper:]' '[:lower:]')"
+  [[ ${#raw} -eq 12 ]] || return 1
+  echo "$raw" | sed 's/\(..\)/\1:/g; s/:$//'
+}
+
+backend_get_system() {
+  # prints JSON on stdout; returns nonzero on failure
+  curl -fsS --max-time 5 "${api_base}/systems/${SERVICE_TAG}"
+}
+
+backend_patch_mac() {
+  # $1 = endpoint suffix ("bmc_mac" | "host_mac"), $2 = mac (AA.. no separators OK)
+  local field="$1"
+  local val="$2"
+
+  local payload
+  payload="$(jq -nc --arg v "$val" '{($ENV.field): $v}' --arg field "$field")"
+
+  curl -sS -X PATCH "${api_base}/systems/${SERVICE_TAG}/${field}" \
+    "${api_auth_hdr[@]}" \
+    -H "Content-Type: application/json" \
+    -d "$payload"
+}
+
 # Get JSON from API
 if ! json=$(curl -fsS --max-time 5 "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations"); then
   err "Unable to reach backend" >&2
@@ -86,9 +124,31 @@ CURRENT_REMOTE_SERVICE_TAG=$(curl -s \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')
 
 
-read -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
-read -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
 read -p "Enter Service Tag (e.g., A1B264): " SERVICE_TAG
+
+BMC_MAC=""
+HOST_MAC=""
+
+if [[ "$SKIP_BACKEND_MAC_PULL" -eq 0 ]]; then
+  if sys_json="$(backend_get_system 2>/dev/null)"; then
+    # backend values may be null
+    bmc_raw="$(echo "$sys_json" | jq -r '.bmc_mac // empty')"
+    host_raw="$(echo "$sys_json" | jq -r '.host_mac // empty')"
+
+    if [[ -n "$bmc_raw" && -n "$host_raw" && "$bmc_raw" != "null" && "$host_raw" != "null" ]]; then
+      # Accept backend values; normalize later to colon format
+      BMC_MAC="$bmc_raw"
+      HOST_MAC="$host_raw"
+      echo "INFO - Using BMC/HOST MAC from backend for $SERVICE_TAG"
+    fi
+  fi
+fi
+
+# If either missing, fall back to old prompts
+if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
+  read -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
+  read -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
+fi
 
 CONFIG_TMP=$(mktemp)
 
@@ -460,8 +520,28 @@ fi
 #creates the formatted added modules string (one liner, comma separated)
 SKIPPED_MODULES_FORMATTED=$(IFS=,; echo "${SKIPPED_MODULES[*]}")
 
-BMC_MAC=$(echo "$BMC_MAC" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
-HOST_MAC=$(echo "$HOST_MAC" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
+BMC_MAC="$(normalize_mac_colon "$BMC_MAC")" || { err "Invalid BMC MAC"; exit 1; }
+HOST_MAC="$(normalize_mac_colon "$HOST_MAC")" || { err "Invalid HOST MAC"; exit 1; }
+
+# --- PATCH MACs to backend (always do this once we have them) ---
+resp_bmc="$(backend_patch_mac "bmc_mac" "$(echo "$BMC_MAC" | tr -d ':')" )"
+bmc_err="$(echo "$resp_bmc" | jq -r '.error // empty' 2>/dev/null || true)"
+if [[ -n "$bmc_err" ]]; then
+  err "Cannot update BMC MAC, $bmc_err"
+  echo ""
+  exit 1
+fi
+
+resp_host="$(backend_patch_mac "host_mac" "$(echo "$HOST_MAC" | tr -d ':')" )"
+host_err="$(echo "$resp_host" | jq -r '.error // empty' 2>/dev/null || true)"
+if [[ -n "$host_err" ]]; then
+  err "Cannot update HOST MAC, $host_err"
+  echo ""
+  exit 1
+fi
+
+echo "INFO - Updated BMC/HOST MAC in tracking website"
+echo ""
 
 
 # Normalize MAC:
