@@ -1963,6 +1963,41 @@ router.get("/:service_tag", async (req, res) => {
   }
 });
 
+router.patch("/:service_tag/host_mac", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { host_mac } = req.body;
+
+  if (typeof host_mac === "undefined") {
+    return res.status(400).json({ error: "host_mac is required" });
+  }
+
+  let mac12;
+  try {
+    mac12 = requireMac12Hex(host_mac, "host_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE system SET host_mac = $1 WHERE service_tag = $2 RETURNING service_tag`,
+      [mac12, service_tag],
+    );
+
+    if (!result.rowCount)
+      return res.status(404).json({ error: "System not found" });
+    return res.json({ message: "HOST MAC updated" });
+  } catch (err) {
+    console.error(err);
+    if (err.code === "23505" && err.constraint === "uq_system_host_mac") {
+      return res.status(409).json({ error: "HOST MAC already exists" });
+    }
+    if (err.code === "23514")
+      return res.status(400).json({ error: "MAC format invalid" });
+    return res.status(500).json({ error: "Failed to update host_mac" });
+  }
+});
+
 router.patch("/:service_tag/bmc_mac", authenticateToken, async (req, res) => {
   const { service_tag } = req.params;
   const { bmc_mac } = req.body;
