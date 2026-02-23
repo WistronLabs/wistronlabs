@@ -25,6 +25,11 @@ export default function useDetailsModal(showToast, onUpdated) {
     () => ["ppid", "host_mac", "bmc_mac", "rack_id"],
     [],
   );
+  const isResolvedLocation = useMemo(() => {
+    const loc = String(details?.location || details?.current_location || "").trim();
+    if (!loc) return false;
+    return /^RMA\b/i.test(loc) || /^Sent to L11$/i.test(loc);
+  }, [details?.location, details?.current_location]);
 
   const openDetails = useCallback((data) => {
     setDetails(data);
@@ -324,14 +329,16 @@ export default function useDetailsModal(showToast, onUpdated) {
         )}
 
         <div className="mt-6 flex justify-end gap-2">
-          <button
-            onClick={toggleEditOrCopy}
-            type="button"
-            disabled={loading || !details}
-            className="px-5 py-2 rounded-lg bg-blue-600 text-white font-medium text-sm shadow hover:bg-blue-700 focus:outline-none transition disabled:opacity-50"
-          >
-            {isEditing ? "Copy" : "Edit"}
-          </button>
+          {!isResolvedLocation && (
+            <button
+              onClick={toggleEditOrCopy}
+              type="button"
+              disabled={loading || !details}
+              className="px-5 py-2 rounded-lg bg-blue-600 text-white font-medium text-sm shadow hover:bg-blue-700 focus:outline-none transition disabled:opacity-50"
+            >
+              {isEditing ? "Copy" : "Edit"}
+            </button>
+          )}
 
           <button
             onClick={closeDetails}

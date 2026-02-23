@@ -42,6 +42,7 @@ export default function SearchContainerSS({
   const [currentGroup, setCurrentGroup] = useState(0);
 
   const searchRef = useRef(null);
+  const tagGroupsScrollRef = useRef(null);
 
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
@@ -55,13 +56,30 @@ export default function SearchContainerSS({
 
   useEffect(() => {
     setLoading(true);
+
+    const hasNonTagGroupFilters = tagGroups.some(
+      (tg) =>
+        tg.searchTags.length > 0 &&
+        tg.searchTags.some((st) => st.field !== "tags"),
+    );
+    const normalizedSearch = String(debouncedSearchTerm || "").trim();
+    const includeSearchInFilters = normalizedSearch.length > 0;
+
+    const searchOrConditions = includeSearchInFilters
+      ? [
+          { field: "location", values: [normalizedSearch], op: "ILIKE" },
+          { field: "service_tag", values: [normalizedSearch], op: "ILIKE" },
+          { field: "issue", values: [normalizedSearch], op: "ILIKE" },
+        ]
+      : [];
+
     fetchData({
       page,
       page_size: pageSize,
       sort_by: sortBy,
       sort_order: sortAsc ? "asc" : "desc",
       search: debouncedSearchTerm || undefined,
-      filters: tagGroups.some((tg) => tg.searchTags.length > 0 && tg.searchTags.some((st) => st.field !== "tags"))
+      filters: hasNonTagGroupFilters
         ? {
             op: "AND",
             conditions: [
@@ -80,7 +98,9 @@ export default function SearchContainerSS({
                     )),
                   })),
               },
-              { field: "issue", values: [debouncedSearchTerm], op: "ILIKE" },
+              ...(includeSearchInFilters
+                ? [{ op: "OR", conditions: searchOrConditions }]
+                : []),
             ],
           }
         : null,
@@ -126,11 +146,61 @@ export default function SearchContainerSS({
 
   const matchTag = (word, tag) =>
     `${tag.field}: ${tag.value}`.toLowerCase().includes(word.toLowerCase());
+  const prettyField = (field) => {
+    const raw = String(field || "").trim().toLowerCase();
+    const known = {
+      dpn: "DPN",
+      ppid: "PPID",
+      host_mac: "Host MAC",
+      bmc_mac: "BMC MAC",
+      service_tag: "Service Tag",
+    };
+    if (known[raw]) return known[raw];
+    return raw
+      .replace(/_/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/\b\w/g, (m) => m.toUpperCase());
+  };
+  const prettyValue = (field, value) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+
+    const f = String(field || "").trim().toLowerCase();
+    if (
+      (f === "location" || f === "from_location" || f === "to_location") &&
+      raw.includes(" - ")
+    ) {
+      const [main, ...rest] = raw.split(" - ");
+      const suffix = rest.join(" - ").trim();
+      return suffix ? `${main} (${suffix})` : main;
+    }
+
+    return raw;
+  };
 
   const getHeaderLabel = (data, field) => {
     const titleField = `${field}_title`;
     return data?.[0]?.[titleField] || field;
   };
+
+  const syncCurrentGroupView = (groups, idx) => {
+    if (!groups.length) {
+      setCurrentGroup(0);
+      setSearchTags([]);
+      setAvailableTags(possibleSearchTags);
+      return;
+    }
+    const safeIdx = Math.max(0, Math.min(idx, groups.length - 1));
+    setCurrentGroup(safeIdx);
+    setSearchTags(groups[safeIdx].searchTags);
+    setAvailableTags(groups[safeIdx].availableTags);
+  };
+
+  useEffect(() => {
+    const el = tagGroupsScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [tagGroups.length]);
 
   return (
     <div className="flex flex-col pt-2 space-y-2">
@@ -138,42 +208,64 @@ export default function SearchContainerSS({
         <h1 className="text-2xl font-semibold">{title}</h1>
         {allowSearch && (
           <div className={"relative"}>
-            {tagGroups.length > 0 &&
-              tagGroups.map((tg, i) => (
-                <TagBar
-                  possibleTags={tg.availableTags}
-                  tags={tg.searchTags}
-                  isActive={i === currentGroup && open}
-                  handleChange={(st, at) => {
-                    tagGroups[i] = { searchTags: st, availableTags: at };
-                    setTagGroups([...tagGroups]);
-                  }}
-                  handleClick={() => {
-                    setCurrentGroup(i);
-                    setSearchTags(tagGroups[i].searchTags);
-                    setAvailableTags(tagGroups[i].availableTags);
-                    searchRef.current.focus();
-                  }}
-                  handleRemoval={() => {
-                    setCurrentGroup(0);
-                    const filteredTagGroups = tagGroups.filter(
-                      (t, j) => j !== i,
-                    );
-                    if (filteredTagGroups.length < 1) {
-                      setSearchTags([]);
-                      setAvailableTags(possibleSearchTags);
-                    } else {
-                      setSearchTags(filteredTagGroups[0].searchTags);
-                      setAvailableTags(filteredTagGroups[0].availableTags);
-                    }
-                    setTagGroups(filteredTagGroups);
-                  }}
-                />
-              ))}
+            {tagGroups.length > 0 && (
+              <div className="mb-2 space-y-1">
+                <div
+                  ref={tagGroupsScrollRef}
+                  className={`flex flex-col gap-1 overflow-y-auto pr-1 ${
+                    tagGroups.length >= 2 ? "h-44 max-h-44" : "max-h-44"
+                  }`}
+                  style={{ scrollbarGutter: "stable" }}
+                >
+                  {tagGroups.map((tg, i) => (
+                    <React.Fragment key={`group-${i}`}>
+                      {i > 0 && (
+                        <div className="flex justify-center">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                            OR
+                          </span>
+                        </div>
+                      )}
+                      <TagBar
+                        possibleTags={tg.availableTags}
+                        tags={tg.searchTags}
+                        isActive={i === currentGroup && open}
+                        handleChange={(st, at) => {
+                          // Auto-remove groups that became empty
+                          if (!st.length) {
+                            const filtered = tagGroups.filter((_, j) => j !== i);
+                            setTagGroups(filtered);
+                            syncCurrentGroupView(filtered, i - 1);
+                            return;
+                          }
+                          const next = [...tagGroups];
+                          next[i] = { searchTags: st, availableTags: at };
+                          setTagGroups(next);
+                          syncCurrentGroupView(next, i);
+                        }}
+                        handleClick={() => {
+                          setCurrentGroup(i);
+                          setSearchTags(tagGroups[i].searchTags);
+                          setAvailableTags(tagGroups[i].availableTags);
+                          searchRef.current.focus();
+                        }}
+                        handleRemoval={() => {
+                          const filteredTagGroups = tagGroups.filter(
+                            (t, j) => j !== i,
+                          );
+                          setTagGroups(filteredTagGroups);
+                          syncCurrentGroupView(filteredTagGroups, i - 1);
+                        }}
+                      />
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+            )}
             <input
               type="text"
               placeholder="Search…"
-              className="border rounded px-2 py-1 text-sm w-64 md:w-96 lg:w-[32rem]" // 👈 wider
+              className="w-64 md:w-96 lg:w-[32rem] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-800 shadow-sm transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               value={searchTerm}
               ref={searchRef}
               onChange={(e) => {
@@ -191,7 +283,8 @@ export default function SearchContainerSS({
 
             {open && (
               <div
-                className="absolute z-20 mt-1 w-full bg-white border rounded-lg shadow-lg max-h-36 overflow-auto"
+                className="absolute z-20 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-44 overflow-y-auto"
+                style={{ scrollbarGutter: "stable" }}
                 onMouseDown={(e) => e.preventDefault()}
               >
                 {availableTags.some((t) => matchTag(searchTerm, t)) &&
@@ -202,46 +295,67 @@ export default function SearchContainerSS({
                       <div
                         key={`tag-${i}`}
                         onClick={() => {
-                          setAvailableTags(
-                            availableTags.filter(
-                              (at) => !matchTag(`${at.field}: ${at.value}`, t),
-                            ),
+                          const nextAvailableTags = availableTags.filter(
+                            (at) => !matchTag(`${at.field}: ${at.value}`, t),
                           );
-                          setSearchTags([...searchTags, t]);
-                          tagGroups[currentGroup] = {
-                            searchTags: [...searchTags, t],
-                            availableTags: availableTags.filter(
-                              (at) => !matchTag(`${at.field}: ${at.value}`, t),
-                            ),
+                          const nextSearchTags = [...searchTags, t];
+
+                          setAvailableTags(
+                            nextAvailableTags,
+                          );
+                          setSearchTags(nextSearchTags);
+
+                          const nextGroups = [...tagGroups];
+                          if (!nextGroups[currentGroup]) {
+                            nextGroups[currentGroup] = {
+                              searchTags: [],
+                              availableTags: possibleSearchTags,
+                            };
+                          }
+                          nextGroups[currentGroup] = {
+                            searchTags: nextSearchTags,
+                            availableTags: nextAvailableTags,
                           };
-                          setTagGroups([...tagGroups]);
+                          setTagGroups(nextGroups);
                           setSearchTerm("");
                           searchRef.current.blur();
                           setOpen(false);
                         }}
                         className="block px-3 py-2 text-sm hover:bg-gray-50"
                       >
-                        {`${t.field}: ${t.value}`}
+                        <div className="inline-flex items-center gap-2 max-w-full">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700 text-[10px] font-semibold uppercase tracking-wide shrink-0">
+                            {prettyField(t.field)}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-800 truncate">
+                            {prettyValue(t.field, t.value)}
+                          </span>
+                        </div>
                       </div>
                     ))}
                 <div
-                  className="block px-3 py-2 text-sm hover:bg-gray-50"
+                  className="mx-2 my-2 px-3 py-2 text-sm rounded-lg border border-blue-200 bg-blue-50 text-blue-700 font-medium hover:bg-blue-100 cursor-pointer"
                   onClick={() => {
                     //Set the current focused group to the new group
                     setCurrentGroup(tagGroups.length);
-                    setTagGroups([
+                    const next = [
                       ...tagGroups,
                       {
                         searchTags: [],
                         availableTags: possibleSearchTags,
                       },
-                    ]);
+                    ];
+                    setTagGroups(next);
                     setSearchTags([]);
                     setAvailableTags(possibleSearchTags);
+                    setTimeout(() => {
+                      const el = tagGroupsScrollRef.current;
+                      if (el) el.scrollTop = el.scrollHeight;
+                    }, 0);
                     // setOpen(false);
                   }}
                 >
-                  Create new tag group
+                  Create new Group of Tags
                 </div>
               </div>
             )}

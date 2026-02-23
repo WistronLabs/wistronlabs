@@ -3211,7 +3211,7 @@ function SystemPage() {
                                       />
                                     </div>
                                   )}
-                                  {!isInPendingParts && (
+                                  {!isInPendingParts && !isResolved && (
                                     <div className="md:w-auto">
                                       {(() => {
                                         // Is there a chosen replacement PPID that exists in the GOOD inventory cache?
