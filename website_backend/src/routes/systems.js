@@ -932,10 +932,16 @@ router.get("/snapshot", async (req, res) => {
             'is_functional', pl.is_functional,
             'ppid', pl.ppid,
             'part_name', p.name,
+            'part_dpn', p.dpn,
             'line',
               CASE WHEN pl.is_functional
                 THEN 'Good Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
-                ELSE 'BAD PART - '  || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
+                ELSE
+                  CASE
+                    WHEN trim(l.name) ILIKE 'RMA%' OR trim(l.name) = 'Sent to L11'
+                      THEN 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '') || ' - ' || COALESCE(pl.ppid,'')
+                    ELSE 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '')
+                  END
               END
           )
           ORDER BY pl.created_at DESC
@@ -2288,32 +2294,129 @@ router.patch("/:service_tag/issue", authenticateToken, async (req, res) => {
   }
 });
 
-// PATCH /api/v1/systems/:service_tag/rack_service_tag
+// PATCH /api/v1/systems/:service_tag/rack
 router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
   const { service_tag } = req.params;
   const { rack_service_tag } = req.body;
 
-  if (rack_service_tag === undefined) {
-    return res.status(400).json({ error: "rack_service_tag is required" });
+  // rack must exist (no null / no "")
+  if (rack_service_tag === undefined || rack_service_tag === null) {
+    return res.status(400).json({ error: "Rack Service Tag is required" });
+  }
+  if (!String(rack_service_tag).trim()) {
+    return res.status(400).json({ error: "Rack Service Tag is required" });
   }
 
-  // optional: allow clearing by sending null or "" (normalize "" -> null)
-  const normalized = rack_service_tag === "" ? null : rack_service_tag;
+  const stUpper = String(service_tag).trim().toUpperCase();
+  const rackUpper = String(rack_service_tag).trim().toUpperCase();
 
+  // SAME checks as POST
+  if (rackUpper.length !== 7) {
+    return res.status(400).json({
+      error: "Rack Service Tag must be exactly 7 characters long",
+    });
+  }
+
+  const fillerTokens = [
+    "UNK",
+    "UNKN",
+    "N/A",
+    "NA",
+    "NONE",
+    "NULL",
+    "(NULL)",
+    "NODATA",
+    "NOINFO",
+    "TBD",
+    "TBA",
+    "N/R",
+    "BLANK",
+    "???",
+    "XXX",
+    "COOLANT",
+  ];
+
+  const rackForMatch = rackUpper.replace(/[\s/.-]/g, "");
+  const hasFiller = fillerTokens.some((tok) => rackForMatch.includes(tok));
+  if (hasFiller) {
+    return res.status(400).json({
+      error: "Please provide a valid Rack Service Tag, not a filler value",
+    });
+  }
+
+  const client = await db.connect();
   try {
-    const result = await db.query(
-      "UPDATE system SET rack_service_tag = $1 WHERE service_tag = $2 RETURNING service_tag",
-      [normalized, service_tag],
+    await client.query("BEGIN");
+
+    // lock row + get old value so we can avoid firing webhook on no-op
+    const sel = await client.query(
+      `SELECT id, rack_service_tag
+         FROM system
+        WHERE service_tag = $1
+        FOR UPDATE`,
+      [stUpper],
     );
 
-    if (result.rowCount === 0) {
+    if (sel.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ error: "System not found" });
     }
 
+    const oldRack = sel.rows[0].rack_service_tag; // may be null in DB, but we won't set null
+    const changed = String(oldRack ?? "") !== String(rackUpper);
+
+    await client.query(
+      `UPDATE system
+          SET rack_service_tag = $1
+        WHERE service_tag = $2
+      RETURNING service_tag`,
+      [rackUpper, stUpper],
+    );
+
+    await client.query("COMMIT");
+
+    // respond first
     res.json({ message: "Rack service tag updated" });
+
+    // webhook AFTER response
+    if (changed) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000); // 5s for ACK
+
+        const resp = await fetch("http://172.17.0.1:9000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Auth-Token": process.env.WEBHOOK_TOKEN || "",
+          },
+          body: JSON.stringify({
+            script: "/opt/hooks/on-system-created.sh",
+            args: [stUpper, rackUpper],
+            wait: "ack",
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+
+        const text = await resp.text();
+        if (!resp.ok) {
+          console.warn(`host-runner ack failed: ${resp.status} ${text}`);
+        } else {
+          console.log(`host-runner ack: ${text}`);
+        }
+      } catch (e) {
+        console.error("host-runner call failed:", e);
+      }
+    }
   } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
     console.error(err);
-    res.status(500).json({ error: "Failed to update rack_service_tag" });
+    return res.status(500).json({ error: "Failed to update Rack Service Tag" });
+  } finally {
+    client.release();
   }
 });
 

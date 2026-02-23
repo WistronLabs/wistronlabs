@@ -366,6 +366,7 @@ export default function PartsInventory() {
             ? "RMA (Inactive)"
             : "—"
           : "";
+      const shouldBlankPpid = place === "unit" && funcBool === false;
 
       return {
         // Display fields expected by SearchContainer:
@@ -378,7 +379,7 @@ export default function PartsInventory() {
         dpn: p.dpn || "—",
         dpn_title: "DPN",
         part_name: p.name || `#${r.part_id}`,
-        ppid: r.ppid,
+        ppid: shouldBlankPpid ? "" : r.ppid,
         place: place === "inventory" ? "Inventory" : "Unit",
         unit_service_tag:
           place === "unit" ? r.unit_service_tag || r.service_tag || "" : "",

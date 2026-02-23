@@ -218,19 +218,6 @@ export default function useDetailsModal(showToast, onUpdated) {
               />
 
               <CopyBar
-                label="BMC MAC"
-                value={isEditing ? draft.bmc_mac : details?.bmc_mac}
-                isEditing={isEditing}
-                editable={editableKeys.includes("bmc_mac")}
-                copied={copiedKey === "bmc_mac"}
-                onChange={(v) => setDraftValue("bmc_mac", v)}
-                onAction={() =>
-                  isEditing ? saveField("bmc_mac") : handleCopy("bmc_mac")
-                }
-                loading={loading}
-              />
-
-              <CopyBar
                 label="HOST MAC"
                 value={isEditing ? draft.host_mac : details?.host_mac}
                 isEditing={isEditing}
@@ -239,6 +226,19 @@ export default function useDetailsModal(showToast, onUpdated) {
                 onChange={(v) => setDraftValue("host_mac", v)}
                 onAction={() =>
                   isEditing ? saveField("host_mac") : handleCopy("host_mac")
+                }
+                loading={loading}
+              />
+
+              <CopyBar
+                label="BMC MAC"
+                value={isEditing ? draft.bmc_mac : details?.bmc_mac}
+                isEditing={isEditing}
+                editable={editableKeys.includes("bmc_mac")}
+                copied={copiedKey === "bmc_mac"}
+                onChange={(v) => setDraftValue("bmc_mac", v)}
+                onAction={() =>
+                  isEditing ? saveField("bmc_mac") : handleCopy("bmc_mac")
                 }
                 loading={loading}
               />
@@ -279,7 +279,7 @@ export default function useDetailsModal(showToast, onUpdated) {
                 <span>{details.factory_code}</span>
               </div>
               <div className="flex justify-between">
-                <span className="font-medium">Manufactured Date:</span>
+                <span className="font-medium">Manufacture Date:</span>
                 <span>
                   {DateTime.fromISO(details.manufactured_date, {
                     zone: "utc",
