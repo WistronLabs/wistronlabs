@@ -3,6 +3,12 @@ import useApi from "../hooks/useApi";
 import useConfirm from "../hooks/useConfirm";
 
 import useToast from "../hooks/useToast";
+import AdminTabs from "../components/admin/AdminTabs";
+import UsersSection from "../components/admin/sections/UsersSection";
+import DpnsSection from "../components/admin/sections/DpnsSection";
+import FactoriesSection from "../components/admin/sections/FactoriesSection";
+import PartsSection from "../components/admin/sections/PartsSection";
+import PartCategoriesSection from "../components/admin/sections/PartCategoriesSection";
 
 function AdminPage() {
   const [tab, setTab] = useState("users");
@@ -66,8 +72,6 @@ function AdminPage() {
   const [deletingPartId, setDeletingPartId] = useState(null);
 
   const [partCategories, setPartCategories] = useState([]);
-  const [catLoading, setCatLoading] = useState(false);
-  const [catErr, setCatErr] = useState(null);
 
   // Part Categories
   const [partCats, setPartCats] = useState([]);
@@ -91,7 +95,6 @@ function AdminPage() {
       if (tab !== "parts") return;
       try {
         if (!partCategories.length) {
-          setCatLoading(true);
           const cats = await getPartCategories();
           if (!alive) return;
           setPartCategories(cats || []);
@@ -105,10 +108,9 @@ function AdminPage() {
         }
       } catch (e) {
         if (!alive) return;
-        setCatErr(e.message || "Failed to load part categories");
+        setPartErr(e.message || "Failed to load parts");
       } finally {
         if (alive) {
-          setCatLoading(false);
           setPartLoading(false);
         }
       }
@@ -332,7 +334,11 @@ function AdminPage() {
   const filteredParts = useMemo(() => {
     const q = partQ.trim().toLowerCase();
     if (!q) return parts;
-    return parts.filter((p) => (p.name || "").toLowerCase().includes(q));
+    return parts.filter(
+      (p) =>
+        (p.name || "").toLowerCase().includes(q) ||
+        (p.dpn || "").toLowerCase().includes(q),
+    );
   }, [parts, partQ]);
 
   const partHasChanges = useMemo(() => {
@@ -349,8 +355,6 @@ function AdminPage() {
       );
     });
   }, [parts, partBaselineMap]);
-  const sanitizePartName = (s = "") => s.trim().toUpperCase(); // match your DPN/Factory style
-
   const addBlankPartRow = () => {
     const newId = `new-${Date.now().toString(36)}-${Math.random()
       .toString(36)
@@ -815,7 +819,9 @@ function AdminPage() {
         const listRes = await getUsers({ page: 1, page_size: 100 });
         setUsers(listRes?.users ?? []);
         setBaselineUsers(listRes?.users ?? []);
-      } catch {}
+      } catch (reloadErr) {
+        console.error("Reload users failed:", reloadErr);
+      }
     } finally {
       setSaving(false);
     }
@@ -943,769 +949,97 @@ function AdminPage() {
       <main className="mx-auto mt-10 w-11/12 md:w-10/12 max-w-screen-xl bg-white rounded-2xl shadow-lg p-6 space-y-6">
         <h1 className="text-3xl font-semibold text-gray-800">Admin</h1>
 
-        <div className="flex gap-4 mt-2 border-b border-gray-200">
-          <button
-            onClick={() => setTab("users")}
-            className={`px-4 py-2 -mb-px text-sm font-medium border-b-2 ${
-              tab === "users"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            Users
-          </button>
-          <button
-            onClick={() => setTab("dpns")}
-            className={`px-4 py-2 -mb-px text-sm font-medium border-b-2 ${
-              tab === "dpns"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            DPNs
-          </button>
-          <button
-            onClick={() => setTab("factories")}
-            className={`px-4 py-2 -mb-px text-sm font-medium border-b-2 ${
-              tab === "factories"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            Factories
-          </button>
-          <button
-            onClick={() => setTab("parts")}
-            className={`px-4 py-2 -mb-px text-sm font-medium border-b-2 ${
-              tab === "parts"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            Parts
-          </button>
-          <button
-            onClick={() => setTab("part-categories")}
-            className={`px-4 py-2 -mb-px text-sm font-medium border-b-2 ${
-              tab === "part-categories"
-                ? "border-blue-600 text-blue-600"
-                : "border-transparent text-gray-500 hover:text-gray-700"
-            }`}
-          >
-            Part Categories
-          </button>
-        </div>
+        <AdminTabs tab={tab} setTab={setTab} />
 
         {tab === "users" && (
-          <form onSubmit={handleSave} className="space-y-4">
-            {err && <div className="text-red-600">{err}</div>}
-            {loading ? (
-              <div>Loading…</div>
-            ) : (
-              <>
-                <ul className="divide-y">
-                  {users.map((u) => {
-                    const checked = !!u.isAdmin;
-                    const isSelf =
-                      me?.username?.toLowerCase() === u.username?.toLowerCase();
-
-                    return (
-                      <li
-                        key={u.username}
-                        className="py-2 flex items-center justify-between"
-                      >
-                        <div>
-                          <div className="font-medium">{u.username}</div>
-                          <div className="text-xs text-gray-500">
-                            {checked ? "Admin" : "User"} ·{" "}
-                            {u.createdAt
-                              ? new Date(u.createdAt).toLocaleString()
-                              : ""}
-                            {isSelf ? " · you" : ""}
-                          </div>
-                        </div>
-
-                        <label className="flex items-center gap-2">
-                          <input
-                            type="checkbox"
-                            className="h-4 w-4"
-                            checked={checked}
-                            onChange={(e) => {
-                              const next = e.target.checked;
-                              if (isSelf && checked && !next) {
-                                showToast(
-                                  "You cannot remove your own Admin Role",
-                                  "error",
-                                  3000,
-                                  "bottom-right"
-                                );
-                                e.preventDefault();
-                                return;
-                              }
-                              handleLocalToggle(u, next); // local-only
-                            }}
-                            disabled={!me?.isAdmin}
-                            aria-label={`Make ${u.username} an admin`}
-                          />
-                          <span className="text-sm">Admin</span>
-                        </label>
-                      </li>
-                    );
-                  })}
-                  {users.length === 0 && (
-                    <li className="py-2 text-gray-500">No users.</li>
-                  )}
-                </ul>
-
-                <div className="flex justify-end gap-3 pt-4 border-t">
-                  <button
-                    type="button"
-                    onClick={handleDiscard}
-                    disabled={saving || !hasChanges}
-                    className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50"
-                  >
-                    Discard changes
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={saving || !hasChanges}
-                    className={`px-4 py-2 rounded-lg text-white ${
-                      hasChanges
-                        ? "bg-blue-600 hover:bg-blue-700"
-                        : "bg-blue-300 cursor-not-allowed"
-                    }`}
-                  >
-                    {saving ? "Saving…" : "Save changes"}
-                  </button>
-                </div>
-              </>
-            )}
-          </form>
+          <UsersSection
+            err={err}
+            loading={loading}
+            users={users}
+            me={me}
+            showToast={showToast}
+            handleLocalToggle={handleLocalToggle}
+            handleDiscard={handleDiscard}
+            handleSave={handleSave}
+            hasChanges={hasChanges}
+            saving={saving}
+          />
         )}
 
         {tab === "dpns" && (
-          <form onSubmit={onDpnSave} className="space-y-4">
-            {/* Toolbar */}
-            <div className="flex flex-col md:flex-row md:items-center gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={addBlankRow}
-                  className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  + Add row
-                </button>
-                <div className="relative">
-                  <input
-                    value={dpnQ}
-                    onChange={(e) => setDpnQ(e.target.value)}
-                    placeholder="Search DPN, config, customer"
-                    className="rounded-lg border border-gray-300 px-3 py-2 pl-9 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-
-                  <span className="absolute left-3 top-2.5 text-gray-400">
-                    🔎
-                  </span>
-                </div>
-              </div>
-              <div className="flex-1" />
-              {dpnErr && <div className="text-red-600 text-sm">{dpnErr}</div>}
-            </div>
-
-            {/* Grid */}
-            <div className="overflow-auto rounded-xl border border-gray-200">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2">DPN</th>
-                    <th className="text-left font-medium px-3 py-2">Config</th>
-                    <th className="text-left font-medium px-3 py-2">
-                      Dell Customer
-                    </th>
-                    <th className="text-right font-medium px-3 py-2 w-28">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {dpnLoading ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        Loading…
-                      </td>
-                    </tr>
-                  ) : filteredDpns.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        No matching DPNs
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredDpns.map((d) => {
-                      const isNew = typeof d.id !== "number";
-                      const base = isNew ? null : dpnBaselineMap.get(d.id);
-                      const changed =
-                        isNew ||
-                        (base &&
-                          (base.name !== d.name ||
-                            (base.config ?? "") !== (d.config ?? "") ||
-                            (base.dell_customer ?? "") !==
-                              (d.dell_customer ?? "")));
-
-                      return (
-                        <tr
-                          key={d.id}
-                          className={changed ? "bg-amber-50/40" : ""}
-                        >
-                          <td className="px-3 py-2 align-middle">
-                            <input
-                              value={d.name ?? ""}
-                              onChange={(e) =>
-                                onCellChange(d.id, "name", e.target.value)
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                              placeholder="e.g. 7RC0V"
-                            />
-                          </td>
-                          <td className="px-3 py-2 align-middle">
-                            <input
-                              value={d.config ?? ""}
-                              onChange={(e) =>
-                                onCellChange(d.id, "config", e.target.value)
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                              placeholder="e.g. B1"
-                            />
-                          </td>
-                          <td className="px-3 py-2 align-middle">
-                            <input
-                              value={d.dell_customer ?? ""}
-                              onChange={(e) =>
-                                onCellChange(
-                                  d.id,
-                                  "dell_customer",
-                                  e.target.value
-                                )
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                              placeholder="e.g. META / NVIDIA"
-                            />
-                          </td>
-                          <td className="px-3 py-2 align-middle">
-                            <div className="flex justify-end">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteDpn(d)}
-                                disabled={deletingId === d.id || dpnSaving}
-                                className="px-3 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                title="Delete DPN"
-                              >
-                                {deletingId === d.id ? "Deleting…" : "Delete"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Actions */}
-            <div className="sticky bottom-0 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-t pt-3 pb-4 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={onDpnDiscard}
-                disabled={dpnSaving || !dpnHasChanges}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Discard changes
-              </button>
-              <button
-                type="submit"
-                disabled={dpnSaving || !dpnHasChanges}
-                className={`px-4 py-2 rounded-lg text-white ${
-                  dpnHasChanges
-                    ? "bg-blue-600 hover:bg-blue-700"
-                    : "bg-blue-300 cursor-not-allowed"
-                }`}
-              >
-                {dpnSaving ? "Saving…" : "Save DPNs"}
-              </button>
-            </div>
-          </form>
+          <DpnsSection
+            onDpnSave={onDpnSave}
+            addBlankRow={addBlankRow}
+            dpnQ={dpnQ}
+            setDpnQ={setDpnQ}
+            dpnErr={dpnErr}
+            dpnLoading={dpnLoading}
+            filteredDpns={filteredDpns}
+            dpnBaselineMap={dpnBaselineMap}
+            onCellChange={onCellChange}
+            handleDeleteDpn={handleDeleteDpn}
+            deletingId={deletingId}
+            dpnSaving={dpnSaving}
+            onDpnDiscard={onDpnDiscard}
+            dpnHasChanges={dpnHasChanges}
+          />
         )}
         {tab === "factories" && (
-          <form onSubmit={onFactorySave} className="space-y-4">
-            <div className="flex flex-col md:flex-row md:items-center gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={addBlankFactoryRow}
-                  className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  + Add row
-                </button>
-                <div className="relative">
-                  <input
-                    value={factoryQ}
-                    onChange={(e) => setFactoryQ(e.target.value)}
-                    placeholder="Search factory name/code"
-                    className="rounded-lg border border-gray-300 px-3 py-2 pl-9 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <span className="absolute left-3 top-2.5 text-gray-400">
-                    🔎
-                  </span>
-                </div>
-              </div>
-              <div className="flex-1" />
-              {factoryErr && (
-                <div className="text-red-600 text-sm">{factoryErr}</div>
-              )}
-            </div>
-
-            <div className="overflow-auto rounded-xl border border-gray-200">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2">Name</th>
-                    <th className="text-left font-medium px-3 py-2">Code</th>
-                    <th className="text-left font-medium px-3 py-2">
-                      PPID Code
-                    </th>
-                    <th className="text-right font-medium px-3 py-2 w-28">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {factoryLoading ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        Loading…
-                      </td>
-                    </tr>
-                  ) : filteredFactories.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        No matching factories
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredFactories.map((f) => {
-                      const isNew = typeof f.id !== "number";
-                      const base = isNew ? null : factoryBaselineMap.get(f.id);
-                      const changed =
-                        isNew ||
-                        (base &&
-                          (base.name !== f.name ||
-                            base.code !== f.code ||
-                            (base.ppid_code ?? "") !== (f.ppid_code ?? "")));
-
-                      return (
-                        <tr
-                          key={f.id}
-                          className={changed ? "bg-amber-50/40" : ""}
-                        >
-                          {["name", "code", "ppid_code"].map((field) => (
-                            <td key={field} className="px-3 py-2 align-middle">
-                              <input
-                                value={f[field] ?? ""}
-                                onChange={(e) =>
-                                  onFactoryCellChange(
-                                    f.id,
-                                    field,
-                                    e.target.value
-                                  )
-                                }
-                                className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                  changed
-                                    ? "border-amber-300"
-                                    : "border-gray-300"
-                                }`}
-                                placeholder={`e.g. ${
-                                  field === "name"
-                                    ? "Juarez"
-                                    : field === "code"
-                                    ? "MX"
-                                    : "WSJ00"
-                                }`}
-                              />
-                            </td>
-                          ))}
-                          <td className="px-3 py-2 align-middle">
-                            <div className="flex justify-end">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteFactory(f)}
-                                disabled={
-                                  deletingFactoryId === f.id || factorySaving
-                                }
-                                className="px-3 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-                              >
-                                {deletingFactoryId === f.id
-                                  ? "Deleting…"
-                                  : "Delete"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="sticky bottom-0 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-t pt-3 pb-4 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={onFactoryDiscard}
-                disabled={factorySaving || !factoryHasChanges}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Discard changes
-              </button>
-              <button
-                type="submit"
-                disabled={factorySaving || !factoryHasChanges}
-                className={`px-4 py-2 rounded-lg text-white ${
-                  factoryHasChanges
-                    ? "bg-blue-600 hover:bg-blue-700"
-                    : "bg-blue-300 cursor-not-allowed"
-                }`}
-              >
-                {factorySaving ? "Saving…" : "Save Factories"}
-              </button>
-            </div>
-          </form>
+          <FactoriesSection
+            onFactorySave={onFactorySave}
+            addBlankFactoryRow={addBlankFactoryRow}
+            factoryQ={factoryQ}
+            setFactoryQ={setFactoryQ}
+            factoryErr={factoryErr}
+            factoryLoading={factoryLoading}
+            filteredFactories={filteredFactories}
+            factoryBaselineMap={factoryBaselineMap}
+            onFactoryCellChange={onFactoryCellChange}
+            handleDeleteFactory={handleDeleteFactory}
+            deletingFactoryId={deletingFactoryId}
+            factorySaving={factorySaving}
+            onFactoryDiscard={onFactoryDiscard}
+            factoryHasChanges={factoryHasChanges}
+          />
         )}
         {tab === "parts" && (
-          <form onSubmit={onPartSave} className="space-y-4">
-            {/* Toolbar */}
-            <div className="flex flex-col md:flex-row md:items-center gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={addBlankPartRow}
-                  className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  + Add row
-                </button>
-                <div className="relative">
-                  <input
-                    value={partQ}
-                    onChange={(e) => setPartQ(e.target.value)}
-                    placeholder="Search part name"
-                    className="rounded-lg border border-gray-300 px-3 py-2 pl-9 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <span className="absolute left-3 top-2.5 text-gray-400">
-                    🔎
-                  </span>
-                </div>
-              </div>
-              <div className="flex-1" />
-              {partErr && <div className="text-red-600 text-sm">{partErr}</div>}
-            </div>
-
-            {/* Grid */}
-            <div className="overflow-auto rounded-xl border border-gray-200">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2">Part</th>
-                    <th className="text-left font-medium px-3 py-2">DPN</th>
-                    <th className="text-left font-medium px-3 py-2">
-                      Category
-                    </th>
-                    <th className="text-right font-medium px-3 py-2 w-28">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {partLoading ? (
-                    <tr>
-                      <td
-                        colSpan={2}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        Loading…
-                      </td>
-                    </tr>
-                  ) : filteredParts.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={2}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        No matching parts
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredParts.map((p) => {
-                      const isNew = typeof p.id !== "number";
-                      const base = isNew ? null : partBaselineMap.get(p.id);
-                      const changed = isNew || (base && base.name !== p.name);
-
-                      return (
-                        <tr
-                          key={p.id}
-                          className={changed ? "bg-amber-50/40" : ""}
-                        >
-                          <td className="px-3 py-2 align-middle">
-                            <input
-                              value={p.name ?? ""}
-                              onChange={(e) =>
-                                onPartCellNameChange(p.id, e.target.value)
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                              placeholder="e.g. FAN MODULE"
-                            />
-                          </td>
-                          <td className="px-3 py-2 align-middle">
-                            <input
-                              value={p.dpn ?? ""}
-                              onChange={(e) =>
-                                onPartCellDPNChange(p.id, e.target.value)
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                              placeholder="e.g. A1B2C3"
-                            />
-                          </td>
-                          <td className="px-3 py-2 align-middle">
-                            <select
-                              value={p.part_category_id ?? ""}
-                              onChange={(e) =>
-                                setParts((cur) =>
-                                  cur.map((x) =>
-                                    x.id === p.id
-                                      ? {
-                                          ...x,
-                                          part_category_id: e.target.value
-                                            ? Number(e.target.value)
-                                            : null,
-                                        }
-                                      : x
-                                  )
-                                )
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                            >
-                              <option value="">— None —</option>
-                              {partCategories.map((c) => (
-                                <option key={c.id} value={c.id}>
-                                  {c.name}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-
-                          <td className="px-3 py-2 align-middle">
-                            <div className="flex justify-end">
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePart(p)}
-                                disabled={deletingPartId === p.id || partSaving}
-                                className="px-3 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                title="Delete Part"
-                              >
-                                {deletingPartId === p.id
-                                  ? "Deleting…"
-                                  : "Delete"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Actions */}
-            <div className="sticky bottom-0 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-t pt-3 pb-4 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={onPartDiscard}
-                disabled={partSaving || !partHasChanges}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Discard changes
-              </button>
-              <button
-                type="submit"
-                disabled={partSaving || !partHasChanges}
-                className={`px-4 py-2 rounded-lg text-white ${
-                  partHasChanges
-                    ? "bg-blue-600 hover:bg-blue-700"
-                    : "bg-blue-300 cursor-not-allowed"
-                }`}
-              >
-                {partSaving ? "Saving…" : "Save Parts"}
-              </button>
-            </div>
-          </form>
+          <PartsSection
+            onPartSave={onPartSave}
+            addBlankPartRow={addBlankPartRow}
+            partQ={partQ}
+            setPartQ={setPartQ}
+            partErr={partErr}
+            partLoading={partLoading}
+            filteredParts={filteredParts}
+            partBaselineMap={partBaselineMap}
+            onPartCellNameChange={onPartCellNameChange}
+            onPartCellDPNChange={onPartCellDPNChange}
+            setParts={setParts}
+            partCategories={partCategories}
+            handleDeletePart={handleDeletePart}
+            deletingPartId={deletingPartId}
+            partSaving={partSaving}
+            onPartDiscard={onPartDiscard}
+            partHasChanges={partHasChanges}
+          />
         )}
         {tab === "part-categories" && (
-          <form onSubmit={onPartCatSave} className="space-y-4">
-            {/* Toolbar */}
-            <div className="flex flex-col md:flex-row md:items-center gap-3">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={addBlankPartCatRow}
-                  className="px-3 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700"
-                >
-                  + Add row
-                </button>
-                <div className="relative">
-                  <input
-                    value={partCatQ}
-                    onChange={(e) => setPartCatQ(e.target.value)}
-                    placeholder="Search category name"
-                    className="rounded-lg border border-gray-300 px-3 py-2 pl-9 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <span className="absolute left-3 top-2.5 text-gray-400">
-                    🔎
-                  </span>
-                </div>
-              </div>
-              <div className="flex-1" />
-              {partCatErr && (
-                <div className="text-red-600 text-sm">{partCatErr}</div>
-              )}
-            </div>
-
-            {/* Grid */}
-            <div className="overflow-auto rounded-xl border border-gray-200">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="text-left font-medium px-3 py-2">
-                      Category Name
-                    </th>
-                    <th className="text-right font-medium px-3 py-2 w-28">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {partCatLoading ? (
-                    <tr>
-                      <td
-                        colSpan={2}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        Loading…
-                      </td>
-                    </tr>
-                  ) : filteredPartCats.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={2}
-                        className="px-3 py-6 text-center text-gray-500"
-                      >
-                        No matching categories
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredPartCats.map((c) => {
-                      const isNew = typeof c.id !== "number";
-                      const base = isNew ? null : partCatBaselineMap.get(c.id);
-                      const changed = isNew || (base && base.name !== c.name);
-
-                      return (
-                        <tr
-                          key={c.id}
-                          className={changed ? "bg-amber-50/40" : ""}
-                        >
-                          <td className="px-3 py-2 align-middle">
-                            <input
-                              value={c.name ?? ""}
-                              onChange={(e) =>
-                                onPartCatCellChange(c.id, e.target.value)
-                              }
-                              className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                changed ? "border-amber-300" : "border-gray-300"
-                              }`}
-                              placeholder="e.g. FANS"
-                            />
-                          </td>
-                          <td className="px-3 py-2 align-middle">
-                            <div className="flex justify-end">
-                              <button
-                                type="button"
-                                onClick={() => handleDeletePartCategory(c)}
-                                disabled={
-                                  deletingPartCatId === c.id || partCatSaving
-                                }
-                                className="px-3 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-                                title="Delete Category"
-                              >
-                                {deletingPartCatId === c.id
-                                  ? "Deleting…"
-                                  : "Delete"}
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Actions */}
-            <div className="sticky bottom-0 bg-white/80 backdrop-blur supports-[backdrop-filter]:bg-white/60 border-t pt-3 pb-4 flex justify-end gap-3">
-              <button
-                type="button"
-                onClick={onPartCatDiscard}
-                disabled={partCatSaving || !partCatHasChanges}
-                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
-              >
-                Discard changes
-              </button>
-              <button
-                type="submit"
-                disabled={partCatSaving || !partCatHasChanges}
-                className={`px-4 py-2 rounded-lg text-white ${
-                  partCatHasChanges
-                    ? "bg-blue-600 hover:bg-blue-700"
-                    : "bg-blue-300 cursor-not-allowed"
-                }`}
-              >
-                {partCatSaving ? "Saving…" : "Save Categories"}
-              </button>
-            </div>
-          </form>
+          <PartCategoriesSection
+            onPartCatSave={onPartCatSave}
+            addBlankPartCatRow={addBlankPartCatRow}
+            partCatQ={partCatQ}
+            setPartCatQ={setPartCatQ}
+            partCatErr={partCatErr}
+            partCatLoading={partCatLoading}
+            filteredPartCats={filteredPartCats}
+            partCatBaselineMap={partCatBaselineMap}
+            onPartCatCellChange={onPartCatCellChange}
+            handleDeletePartCategory={handleDeletePartCategory}
+            deletingPartCatId={deletingPartCatId}
+            partCatSaving={partCatSaving}
+            onPartCatDiscard={onPartCatDiscard}
+            partCatHasChanges={partCatHasChanges}
+          />
         )}
       </main>
     </>

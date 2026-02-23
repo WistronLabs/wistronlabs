@@ -880,6 +880,9 @@ echo ""
 echo "INFO - Using diag folder on DUT: $DIAG_FOLDER"
 echo ""
 
+echo "INFO - Recording FRU Data"
+ipmi fru print
+echo ""
 
 log_off
 # Runs the L10 validation test by SSHing into the remote system and attaching to a tmux session.

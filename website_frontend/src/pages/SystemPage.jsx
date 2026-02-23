@@ -1,6 +1,6 @@
-import { useEffect, useState, useContext, useMemo, use } from "react";
+import { useEffect, useState, useContext, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import Select, { components } from "react-select";
+import Select, { components as SelectComponents } from "react-select";
 import { Link } from "react-router-dom";
 
 import { DateTime } from "luxon";
@@ -31,618 +31,18 @@ import usePrintConfirmL11 from "../hooks/usePrintConfirmL11.jsx";
 import useToast from "../hooks/useToast.jsx";
 import useIsMobile from "../hooks/useIsMobile.jsx";
 import useDetailsModal from "../hooks/useDetailsModal.jsx";
-
-// --- parts select helpers ---
-
-// 1) group and sort parts into react-select "grouped options"
-// --- parts select helpers ---
-
-// 1) group and sort parts into react-select "grouped options"
-const buildGroupedPartOptions = (parts = []) => {
-  const byCat = new Map();
-
-  parts.forEach((p) => {
-    const cat = p.category_name || "Uncategorized";
-    const dpn = p.dpn || "";
-    const name = p.name || "";
-
-    // This is what will show in the closed select:
-    // [Part Name] [Part Category] - [DPN]
-    const displayLabel = `${name} ${cat}${dpn ? ` [${dpn}]` : ""}`;
-
-    if (!byCat.has(cat)) byCat.set(cat, []);
-    byCat.get(cat).push({
-      value: p.id,
-      label: displayLabel, // <-- used by react-select singleValue
-      name, // <-- keep raw part name for notes
-      dpn,
-      category_name: cat,
-      part_category_id: p.part_category_id,
-    });
-  });
-
-  return Array.from(byCat.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([label, options]) => ({
-      label,
-      options: options.sort((a, b) => a.label.localeCompare(b.label)),
-    }));
-};
-
-// 2) search by part label OR category name OR DPN
-const filterPartOption = (option, rawInput) => {
-  if (!rawInput) return true;
-  const term = rawInput.toLowerCase();
-
-  const label = (option?.label || "").toLowerCase();
-  const cat = (
-    option?.data?.category_name ??
-    option?.category_name ??
-    ""
-  ).toLowerCase();
-  const dpn = (option?.data?.dpn ?? option?.dpn ?? "").toLowerCase();
-
-  return (
-    label.includes(term) || cat.includes(term) || dpn.includes(term) // <-- NEW: searchable by DPN
-  );
-};
-
-// 3) custom  line (shows DPN + tiny category chip)
-const PartOption = (props) => {
-  const cat = props.data.category_name;
-  const dpn = props.data.dpn;
-
-  return (
-    <components.Option {...props}>
-      <div className="flex flex-col gap-1">
-        <div className="text-sm font-medium text-gray-800 truncate">
-          {props.data.name || props.label}
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          {dpn && (
-            <span className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-800 font-mono">
-              {dpn}
-            </span>
-          )}
-          <span className="text-[10px] px-2 py-0.5 rounded bg-gray-100 text-gray-700">
-            {cat}
-          </span>
-        </div>
-      </div>
-    </components.Option>
-  );
-};
-
-// 4) non-selectable group header
-const PartGroupLabel = (group) => (
-  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide py-1">
-    {group.label}
-  </div>
-);
-
-const PULL_FROM_UNIT_VALUE = "__PULL_FROM_UNIT__";
-
-const GoodPPIDOption = (props) => {
-  const { data } = props;
-
-  if (data.value === PULL_FROM_UNIT_VALUE) {
-    return (
-      <components.Option {...props}>
-        <span className="text-blue-600 font-semibold">{data.label}</span>
-      </components.Option>
-    );
-  }
-
-  return <components.Option {...props} />;
-};
-
-const GoodPPIDSingleValue = (props) => {
-  const { data } = props;
-
-  if (data.value === PULL_FROM_UNIT_VALUE) {
-    return (
-      <components.SingleValue {...props}>
-        <span className="text-blue-600 font-semibold">{data.label}</span>
-      </components.SingleValue>
-    );
-  }
-
-  return <components.SingleValue {...props} />;
-};
-
-function TagBubblesRow({
-  tags,
-  token,
-  focusedTagId,
-  setFocusedTagId,
-  showTopUntruncated,
-  setShowTopUntruncated,
-  onOpenAll,
-  onOpenAdd,
-  onDeleteTag,
-}) {
-  const canEdit = !!token;
-
-  const list = Array.isArray(tags) ? tags : [];
-  const total = list.length;
-
-  const [deleteHoverId, setDeleteHoverId] = useState(null);
-  const [expandHoverId, setExpandHoverId] = useState(null);
-
-  const truncate10 = (s) => {
-    const v = String(s || "");
-    return v.length > 10 ? v.slice(0, 10) + "..." : v;
-  };
-
-  const isTruncated = (s) => String(s || "").length > 10;
-
-  const dangerClass = "bg-red-100 text-red-800 hover:bg-red-200";
-  const normalClass = "bg-gray-100 text-gray-800 hover:bg-gray-200";
-
-  const tagKey = (t) =>
-    String(t?.code || "")
-      .trim()
-      .toLowerCase();
-
-  const StableExpandText = ({ showExpand, children }) => (
-    <span className="relative inline-block">
-      {/* width anchor */}
-      <span className={showExpand ? "invisible" : "visible"}>{children}</span>
-
-      {/* overlay */}
-      <span
-        className={`absolute inset-0 flex items-center justify-center transition-opacity ${
-          showExpand ? "opacity-100" : "opacity-0"
-        }`}
-      >
-        EXPAND
-      </span>
-    </span>
-  );
-
-  const StableDeleteText = ({ showDelete, children }) => (
-    <span className="relative inline-block">
-      <span className={showDelete ? "invisible" : "visible"}>{children}</span>
-      <span
-        className={`absolute inset-0 flex items-center justify-center transition-opacity ${
-          showDelete ? "opacity-100" : "opacity-0"
-        }`}
-      >
-        DELETE
-      </span>
-    </span>
-  );
-
-  // Mode A: focused
-  if (focusedTagId) {
-    const t = list.find((x) => tagKey(x) === String(focusedTagId));
-    if (!t) {
-      setFocusedTagId(null);
-      return null;
-    }
-
-    const id = tagKey(t);
-    const hoveringDelete = String(deleteHoverId) === id;
-
-    return (
-      <div className="mt-2 flex flex-wrap gap-2">
-        {/* Focused tag bubble */}
-        <button
-          type="button"
-          onMouseEnter={() => canEdit && setDeleteHoverId(id)}
-          onMouseLeave={() => canEdit && setDeleteHoverId(null)}
-          onClick={() => {
-            if (!canEdit) return;
-            setDeleteHoverId(null);
-            onDeleteTag?.(t);
-          }}
-          className={`inline-block px-2 py-1 text-xs sm:text-sm font-bold rounded-full uppercase ${
-            canEdit && hoveringDelete ? dangerClass : normalClass
-          }`}
-          title={t.code}
-        >
-          {canEdit ? (
-            <StableDeleteText showDelete={hoveringDelete}>
-              {t.code}
-            </StableDeleteText>
-          ) : (
-            t.code
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setFocusedTagId(null);
-            setShowTopUntruncated(false); // back to truncated default
-            setDeleteHoverId(null);
-          }}
-          className="inline-block px-2 py-1 bg-gray-200 text-gray-800 text-xs sm:text-sm font-bold rounded-full uppercase hover:bg-gray-300"
-          title="Show tags"
-        >
-          ...
-        </button>
-        {token && (
-          <button
-            type="button"
-            onClick={onOpenAdd}
-            className="inline-block px-2 py-1 bg-green-100 text-green-800 text-xs sm:text-sm font-bold rounded-full uppercase hover:bg-green-200"
-          >
-            + Add Tag
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  const top = list.slice(0, 3);
-  const showAllBubble = total > 3;
-
-  return (
-    <div className="mt-2 flex flex-wrap gap-2">
-      {top.map((t) => {
-        const id = tagKey(t);
-        const raw = t.code;
-        const label = showTopUntruncated ? raw : truncate10(raw);
-        const truncated = isTruncated(raw);
-
-        // TRUNCATED (and not in "showTopUntruncated"): hover shows EXPAND (blue), click focuses
-        if (truncated && !showTopUntruncated) {
-          const hoveringExpand = String(expandHoverId) === id;
-
-          return (
-            <button
-              key={id}
-              type="button"
-              onMouseEnter={() => setExpandHoverId(id)}
-              onMouseLeave={() => setExpandHoverId(null)}
-              onClick={() => {
-                setFocusedTagId(id);
-                setShowTopUntruncated(false);
-                setDeleteHoverId(null);
-                setExpandHoverId(null);
-              }}
-              className={`inline-block px-2 py-1 text-xs sm:text-sm font-bold rounded-full uppercase transition-colors ${
-                hoveringExpand
-                  ? "bg-blue-100 text-blue-800 hover:bg-blue-200"
-                  : "bg-gray-100 text-gray-800"
-              }`}
-              title={raw}
-            >
-              <StableExpandText showExpand={hoveringExpand}>
-                {label}
-              </StableExpandText>
-            </button>
-          );
-        }
-
-        // NOT TRUNCATED (or showTopUntruncated): only deletable when logged in
-        const hoveringDelete = canEdit && String(deleteHoverId) === id;
-
-        return (
-          <button
-            key={id}
-            type="button"
-            onMouseEnter={() => canEdit && setDeleteHoverId(id)}
-            onMouseLeave={() => canEdit && setDeleteHoverId(null)}
-            onClick={() => {
-              if (!canEdit) return; // logged out: do nothing
-              setDeleteHoverId(null);
-              setExpandHoverId(null);
-              onDeleteTag?.(t);
-            }}
-            className={`inline-block px-2 py-1 text-xs sm:text-sm font-bold rounded-full uppercase ${
-              hoveringDelete ? dangerClass : "bg-gray-100 text-gray-800"
-            }`}
-            title={raw}
-          >
-            {canEdit ? (
-              <StableDeleteText showDelete={hoveringDelete}>
-                {label}
-              </StableDeleteText>
-            ) : (
-              label
-            )}
-          </button>
-        );
-      })}
-
-      {showAllBubble && (
-        <button
-          type="button"
-          onClick={onOpenAll}
-          className="inline-block px-2 py-1 bg-gray-200 text-gray-800 text-xs sm:text-sm font-bold rounded-full uppercase hover:bg-gray-300"
-          title="Show all tags"
-        >
-          ...
-        </button>
-      )}
-      {token && (
-        <button
-          type="button"
-          onClick={onOpenAdd}
-          className="inline-block px-2 py-1 bg-green-100 text-green-800 text-xs sm:text-sm font-bold rounded-full uppercase hover:bg-green-200"
-        >
-          + Add Tag
-        </button>
-      )}
-    </div>
-  );
-}
-
-function AllTagsModal({ tags, onClose }) {
-  // ⬇️ Close on Esc
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose?.();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  const list = Array.isArray(tags) ? tags : [];
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-xl shadow-xl border border-gray-200 w-full sm:max-w-lg p-4 sm:p-8 mx-2 relative space-y-4 sm:space-y-6">
-        <h2 className="text-xl sm:text-2xl font-semibold text-gray-800">
-          Tags
-        </h2>
-
-        {list.length === 0 ? (
-          <div className="text-sm text-gray-600">No tags.</div>
-        ) : (
-          <div className="flex flex-wrap gap-2">
-            {list.map((t) => (
-              <span
-                key={String(t.code || "")
-                  .trim()
-                  .toLowerCase()}
-                className="inline-block px-2 py-1 bg-gray-100 text-gray-800 text-xs sm:text-sm font-bold rounded-full uppercase"
-              >
-                {t.code}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div className="flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 shadow-sm"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const ADD_TAG_VALUE = "__ADD_TAG__";
-
-function AddTagModal({
-  onClose,
-  serviceTag,
-  existingSystemTags,
-  getTags,
-  addSystemTag,
-  onAdded,
-  showToast,
-  selectStyles,
-}) {
-  const [q, setQ] = useState("");
-  const [options, setOptions] = useState([]); // react-select options
-  const [loading, setLoading] = useState(false);
-  const [creating, setCreating] = useState(false);
-
-  // Already-added set (by code)
-  const sysTagCodes = useMemo(() => {
-    const s = new Set();
-    (existingSystemTags || []).forEach((t) =>
-      s.add(
-        String(t.code || "")
-          .trim()
-          .toLowerCase(),
-      ),
-    );
-    return s;
-  }, [existingSystemTags]);
-
-  // Esc to close
-  useEffect(() => {
-    const onKeyDown = (e) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose?.();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  // Debounced search -> build options
-  useEffect(() => {
-    let alive = true;
-
-    const handle = setTimeout(() => {
-      (async () => {
-        try {
-          setLoading(true);
-          const term = q.trim();
-          const rows = await getTags({ q: term || undefined });
-          if (!alive) return;
-
-          const arr = Array.isArray(rows) ? rows : [];
-
-          // inside AddTagModal useEffect:
-          const mapped = arr
-            .map((t) => {
-              const code = String(t.code || "").trim();
-              return { t, code, key: code.toLowerCase() };
-            })
-            // remove ones already on the system
-            .filter(({ key }) => !sysTagCodes.has(key))
-            // build react-select options
-            .map(({ t, code }) => ({
-              value: String(t.tag_id),
-              label: code.toUpperCase(),
-              code,
-              data: t,
-            }));
-
-          setOptions(mapped);
-
-          setOptions(mapped);
-        } catch (e) {
-          console.error("Tag search failed", e);
-          if (!alive) return;
-          setOptions([]);
-        } finally {
-          if (alive) setLoading(false);
-        }
-      })();
-    }, 200);
-
-    return () => {
-      alive = false;
-      clearTimeout(handle);
-    };
-  }, [q, getTags, sysTagCodes]);
-
-  const term = q.trim();
-  const canAddNew = term.length > 0;
-
-  // If there are no matches, show Add Tag option
-  const selectOptions =
-    options.length > 0
-      ? options
-      : canAddNew
-        ? [
-            {
-              value: ADD_TAG_VALUE,
-              label: `Add Tag "${term}"`,
-              data: { code: term },
-            },
-          ]
-        : [];
-
-  const handleSelect = async (opt) => {
-    if (!opt) return;
-
-    // close modal immediately no matter what
-    onClose?.();
-
-    // helper so we can keep code path simple
-    const fail = (e, fallback) => {
-      const msg = e?.body?.error || e?.message || fallback;
-      showToast?.(msg, "error", 3000, "bottom-right");
-    };
-
-    // Selecting "Add Tag"
-    if (opt.value === ADD_TAG_VALUE) {
-      const name = String(opt?.data?.code || "").trim();
-      if (!name) return;
-
-      try {
-        await addSystemTag(serviceTag, name);
-        showToast?.(
-          `Created & added "${name}"`,
-          "success",
-          2500,
-          "bottom-right",
-        );
-        await onAdded?.();
-      } catch (e) {
-        fail(e, "Failed to create tag");
-      }
-      return;
-    }
-
-    // Selecting existing tag
-    const code = String(opt?.code || "").trim();
-    if (!code) return;
-
-    try {
-      await addSystemTag(serviceTag, code);
-      showToast?.(`Added tag "${code}"`, "success", 2500, "bottom-right");
-      await onAdded?.();
-    } catch (e) {
-      fail(e, "Failed to add tag");
-    }
-  };
-
-  // Optional: make "Add Tag" visually distinct
-  const TagOption = (props) => {
-    const isAdd = props.data.value === ADD_TAG_VALUE;
-    return (
-      <components.Option {...props}>
-        <div className="flex items-center justify-between">
-          <span
-            className={`font-semibold ${isAdd ? "text-blue-600" : "text-gray-800"}`}
-          >
-            {props.label}
-          </span>
-          {props.isDisabled && (
-            <span className="text-xs text-gray-500">Already added</span>
-          )}
-        </div>
-      </components.Option>
-    );
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-      <div className="bg-white rounded-xl shadow-xl border border-gray-200 w-full sm:max-w-lg p-4 sm:p-8 mx-2 relative space-y-4 sm:space-y-6">
-        <h2 className="text-xl sm:text-2xl font-semibold text-gray-800">
-          Add Tag
-        </h2>
-
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Search or create
-          </label>
-
-          <Select
-            instanceId="add-tag"
-            classNamePrefix="react-select"
-            styles={selectStyles}
-            isClearable
-            isSearchable
-            isLoading={loading || creating}
-            placeholder="Type to search tags..."
-            inputValue={q}
-            onInputChange={(val, meta) => {
-              // only update on user typing (not on menu close etc.)
-              if (meta.action === "input-change") setQ(val);
-            }}
-            onChange={handleSelect}
-            options={selectOptions}
-            components={{ Option: TagOption }}
-            noOptionsMessage={() =>
-              term ? 'No matches — choose "Add Tag"' : "Type to search..."
-            }
-            // Don’t auto-select anything
-            value={null}
-          />
-        </div>
-
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 shadow-sm"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+import AddTagModal from "../components/system-page/AddTagModal.jsx";
+import AllTagsModal from "../components/system-page/AllTagsModal.jsx";
+import GoodPPIDOption from "../components/system-page/GoodPPIDOption.jsx";
+import GoodPPIDSingleValue from "../components/system-page/GoodPPIDSingleValue.jsx";
+import PartGroupLabel from "../components/system-page/PartGroupLabel.jsx";
+import PartOption from "../components/system-page/PartOption.jsx";
+import TagBubblesRow from "../components/system-page/TagBubblesRow.jsx";
+import { PULL_FROM_UNIT_VALUE } from "../components/system-page/systemPage.constants.js";
+import {
+  buildGroupedPartOptions,
+  filterPartOption,
+} from "../utils/partSelectHelpers.js";
 
 function SystemPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
@@ -748,7 +148,6 @@ function SystemPage() {
     getRootCauseSubCategories,
     updateSystemRootCause,
     getTags,
-    createTag,
     getSystemTags,
     addSystemTag,
     removeSystemTag,
@@ -825,12 +224,26 @@ function SystemPage() {
   const L11_NAME = "Sent to L11";
 
   // --- Pending Parts state ---
-  const [pendingBlocks, setPendingBlocks] = useState([]); // [{id, part_id, ppid}]
+  const [pendingBlocks, setPendingBlocks] = useState([]); // [{id, part_id}]
   const [partOptions, setPartOptions] = useState([]); // [{value,label}]
+  const [partsWithFunctionalInventory, setPartsWithFunctionalInventory] =
+    useState(new Set()); // Set<part_id>
   // when partOptions are grouped, this flattens all options for value lookup
   const flatPartOptions = useMemo(
     () => partOptions.flatMap((g) => g.options || []),
     [partOptions],
+  );
+  const pendingPartOptions = useMemo(
+    () =>
+      partOptions
+        .map((group) => ({
+          ...group,
+          options: (group.options || []).filter(
+            (opt) => !partsWithFunctionalInventory.has(opt.value),
+          ),
+        }))
+        .filter((group) => group.options.length > 0),
+    [partOptions, partsWithFunctionalInventory],
   );
   // All parts currently tracked in the unit (good + bad)
   const [unitParts, setUnitParts] = useState([]);
@@ -842,6 +255,7 @@ function SystemPage() {
   const [goodOptionsCache, setGoodOptionsCache] = useState(new Map()); // part_id -> [{value,label}]
   // Replacement selections for BAD in-unit parts (ppid -> replacement good ppid)
   const [replacementByOldPPID, setReplacementByOldPPID] = useState({});
+  const [originalPPIDByBadPPID, setOriginalPPIDByBadPPID] = useState({});
   const [donorSystems, setDonorSystems] = useState([]);
 
   // Load GOOD inventory PPIDs for a specific part_id (cached)
@@ -923,6 +337,12 @@ function SystemPage() {
     return m;
   }, [flatPartOptions]);
 
+  const partDpnById = useMemo(() => {
+    const m = new Map();
+    flatPartOptions.forEach((o) => m.set(o.value, o.dpn || ""));
+    return m;
+  }, [flatPartOptions]);
+
   // Keep “Mark as Working” selections when flipping between destination buttons.
   // Only clear the temp “pending bad parts” blocks when we’re NOT in the Pending Parts flow.
   useEffect(() => {
@@ -965,9 +385,21 @@ function SystemPage() {
     let alive = true;
     (async () => {
       try {
-        const parts = await getParts(); // [{id,name}]
+        const [parts, functionalInventoryRows] = await Promise.all([
+          getParts(), // [{id,name}]
+          getPartItems({
+            place: "inventory",
+            is_functional: true,
+          }),
+        ]);
         if (!alive) return;
         setPartOptions(buildGroupedPartOptions(parts));
+        const inStockPartIds = new Set(
+          (functionalInventoryRows || [])
+            .map((r) => r.part_id)
+            .filter((id) => id != null),
+        );
+        setPartsWithFunctionalInventory(inStockPartIds);
       } catch (e) {
         console.error("Failed to load parts:", e);
       }
@@ -1131,7 +563,6 @@ function SystemPage() {
       {
         id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         part_id: null,
-        ppid: "",
       },
     ]);
   };
@@ -1146,7 +577,7 @@ function SystemPage() {
     }
   };
 
-  // Update a field on a block (reset PPID when Part changes)
+  // Update a field on a pending block
   const updateBlock = (id, field, value) => {
     setPendingBlocks((list) =>
       list.map((b) =>
@@ -1154,7 +585,6 @@ function SystemPage() {
           ? {
               ...b,
               [field]: value,
-              ...(field === "part_id" ? { ppid: "" } : {}),
             }
           : b,
       ),
@@ -1164,11 +594,6 @@ function SystemPage() {
   // Remove a block
   const removeBlock = (id) =>
     setPendingBlocks((list) => list.filter((b) => b.id !== id));
-
-  // Ready to submit?
-  const canSubmitPending =
-    pendingBlocks.length > 0 &&
-    pendingBlocks.every((b) => !!b.part_id && !!(b.ppid || "").trim());
 
   // Preload parts + GOOD PPIDs when already in Debug (no need to choose To Location)
   useEffect(() => {
@@ -1311,7 +736,6 @@ function SystemPage() {
         getSystems({ all: true }),
         getSystemTags(serviceTag),
       ]);
-      console.log("System tags data:", systemTagsData);
       const allSystems =
         allSystemsRaw?.results && Array.isArray(allSystemsRaw.results)
           ? allSystemsRaw.results
@@ -1440,6 +864,19 @@ function SystemPage() {
 
   // --- PPID normalization (case-insensitive uniqueness) ---
   const normPPID = (s) => (s || "").toUpperCase().trim();
+  const safeToken = (s) =>
+    String(s || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  const makePendingTempPPID = (partId) => {
+    const st = safeToken(serviceTag);
+    const dpn = safeToken(partDpnById.get(partId) || "PART");
+    const timecode = `TMP${Date.now().toString(36).toUpperCase()}${Math.random()
+      .toString(36)
+      .slice(2, 6)
+      .toUpperCase()}`;
+    return `${st}${dpn}${timecode}`;
+  };
 
   const getEffectiveGoodPPID = (block) => {
     if (!block) return "";
@@ -1459,14 +896,11 @@ function SystemPage() {
   }, [goodBlocks, replacementByOldPPID]);
 
   const selectedBadPPIDs = useMemo(() => {
-    const fromPending = pendingBlocks
-      .map((b) => normPPID(b.ppid))
-      .filter(Boolean);
     const fromOriginals = Object.values(goodActionByPPID)
       .map((cfg) => normPPID(cfg?.original_bad_ppid))
       .filter(Boolean);
-    return new Set([...fromPending, ...fromOriginals]);
-  }, [pendingBlocks, goodActionByPPID]);
+    return new Set(fromOriginals);
+  }, [goodActionByPPID]);
 
   // --- Filter helpers (show current value even if "reserved") ---
   const getFilteredGoodOptions = (part_id, currentValue) => {
@@ -1607,8 +1041,6 @@ function SystemPage() {
   };
 
   const handleDelete = async () => {
-    console.log("deleting");
-
     const confirmed = await confirm({
       title: "Confirm Deletion",
       message: `Are you sure you want to delete this unit? This action cannot be undone.`,
@@ -1635,7 +1067,6 @@ function SystemPage() {
       navigate("/"); // redirect to home page
     } catch (err) {
       console.error(err);
-      console.log("Error deleting unit:", err);
       showToast("Error deleting unit", "error", 3000, "bottom-right");
     }
   };
@@ -1854,7 +1285,7 @@ function SystemPage() {
 
     // add BAD parts that will be newly flagged in this submit (Pending blocks)
     for (const b of pendingBlocks) {
-      if (b.part_id && (b.ppid || "").trim()) bad.add(normPPID(b.ppid));
+      if (b.part_id) bad.add(`TMP-${b.id}`);
     }
 
     // add BAD parts that will be brought back into the unit via Good-part actions
@@ -1890,9 +1321,7 @@ function SystemPage() {
     }
 
     const movingToPending = toId === 4;
-    const newBadCount = pendingBlocks.filter(
-      (b) => b.part_id && (b.ppid || "").trim(),
-    ).length;
+    const newBadCount = pendingBlocks.filter((b) => b.part_id).length;
 
     // any currently-tracked BAD parts in the unit?
     const hasBadTrackedNow = (unitParts || []).some(
@@ -1925,7 +1354,7 @@ function SystemPage() {
     // Rule #4: if a BAD part is being added AND there exists GOOD inventory of that part, block submit
     if (pendingBlocks.length > 0) {
       for (const b of pendingBlocks) {
-        if (!b.part_id || !(b.ppid || "").trim()) continue;
+        if (!b.part_id) continue;
         const invGood = await getPartItems({
           place: "inventory",
           is_functional: true,
@@ -1957,18 +1386,21 @@ function SystemPage() {
         !toRemovePPIDs.has(item.ppid) && !replacementByOldPPID[item.ppid], // will be replaced (moved out) this submit
     ).length;
     // Build part-change note lines before we mutate anything
-    const toCreate = pendingBlocks.filter(
-      (b) => b.part_id && (b.ppid || "").trim(),
-    );
+    const toCreate = pendingBlocks.filter((b) => b.part_id);
     const removing = Array.from(toRemovePPIDs || []);
 
     if (toId === 4) {
       const up = (s) => (s || "").toUpperCase().trim();
-      const nameOfPart = (i) =>
-        (i?.part_name && i.part_name.trim()) ||
-        (i?.part_id != null
-          ? partNameById.get(i.part_id) || `#${i.part_id}`
-          : "Part");
+      const formatPartWithDpn = (i) => {
+        const name =
+          (i?.part_name && i.part_name.trim()) ||
+          (i?.part_id != null
+            ? partNameById.get(i.part_id) || `#${i.part_id}`
+            : "Part");
+        const dpn =
+          i?.part_dpn || (i?.part_id != null ? partDpnById.get(i.part_id) : "");
+        return dpn ? `${name} [${dpn}]` : name;
+      };
 
       // PPID -> current item in unit (so we can read part_id/name)
       const byPPID = new Map((unitParts || []).map((i) => [up(i.ppid), i]));
@@ -1990,10 +1422,15 @@ function SystemPage() {
 
       // 4) add newly flagged BADs (pending blocks)
       for (const b of pendingBlocks) {
-        if (b.part_id && (b.ppid || "").trim()) {
-          const ppid = up(b.ppid);
+        if (b.part_id) {
+          const pseudoPpid = `TMP-${b.id}`;
           // synthesize a minimal item so nameOfPart works
-          badNow.set(ppid, { part_id: b.part_id, part_name: null, ppid });
+          badNow.set(pseudoPpid, {
+            part_id: b.part_id,
+            part_name: null,
+            part_dpn: partDpnById.get(b.part_id) || "",
+            ppid: pseudoPpid,
+          });
         }
       }
 
@@ -2011,7 +1448,7 @@ function SystemPage() {
 
       // Build label lines for EVERY remaining BAD PPID (no name-based dedupe)
       const labelLines = Array.from(badNow.entries())
-        .map(([ppid, info]) => `${nameOfPart(info)}`)
+        .map(([, info]) => formatPartWithDpn(info))
         .sort((a, b) => a.localeCompare(b));
 
       const blob = await pdf(
@@ -2025,8 +1462,8 @@ function SystemPage() {
     // ---- Existing note lines (Pending Parts) ----
     const addedNotes = toCreate.map((b) => {
       const name = partNameById.get(b.part_id) || `#${b.part_id}`;
-      const ppid = String(b.ppid).toUpperCase().trim();
-      return ` - ${name} (${ppid}) in system identified as non working with none in stock.`;
+      const dpn = partDpnById.get(b.part_id) || "N/A";
+      return ` - ${name} [${dpn}] in system identified as non working with none in stock.`;
     });
 
     const removedNotes = removing.map((ppid) => {
@@ -2036,7 +1473,9 @@ function SystemPage() {
         (item?.part_id
           ? partNameById.get(item.part_id) || `#${item.part_id}`
           : "Part");
-      return ` - ${name} (${ppid}) in system identified as working.`;
+      const dpn =
+        item?.part_dpn || (item?.part_id ? partDpnById.get(item.part_id) : "");
+      return ` - ${name}${dpn ? ` [${dpn}]` : ""} in system identified as working.`;
     });
 
     // ---- NEW preview lists (must be declared BEFORE they’re used) ----
@@ -2127,6 +1566,11 @@ function SystemPage() {
 
     // 3) Pending part fulfilled by a replacement PPID
     const fulfilledNotes = replEntriesPreview.map(([oldBadPPID, goodPPID]) => {
+      const originalForTemp = normPPID(
+        originalPPIDByBadPPID[oldBadPPID] ||
+          originalPPIDByBadPPID[normPPID(oldBadPPID)],
+      );
+      const displayBadPPID = originalForTemp || oldBadPPID;
       const item = (unitParts || []).find(
         (r) => normPPID(r.ppid) === normPPID(oldBadPPID),
       );
@@ -2135,7 +1579,7 @@ function SystemPage() {
         (item?.part_id
           ? partNameById.get(item.part_id) || `#${item.part_id}`
           : "Part");
-      return ` - Pending Part ${name} (${String(oldBadPPID)
+      return ` - Pending Part ${name} (${String(displayBadPPID)
         .toUpperCase()
         .trim()}) has been fulfilled by (${String(goodPPID)
         .toUpperCase()
@@ -2162,6 +1606,20 @@ function SystemPage() {
         "Add a Replacement PPID for at least one defective part (or resolve/remove all) before moving to In L10.",
       );
       return;
+    }
+
+    for (const [oldBadPPID, replPPID] of Object.entries(replacementByOldPPID)) {
+      if (!replPPID) continue;
+      const original = normPPID(
+        originalPPIDByBadPPID[oldBadPPID] ||
+          originalPPIDByBadPPID[normPPID(oldBadPPID)],
+      );
+      if (!original) {
+        setFormError(
+          "Enter an Original PPID for each bad part that has a Replacement PPID.",
+        );
+        return;
+      }
     }
 
     // REQUIRE: part, good PPID (inventory or donor), current defective ppid for each good block
@@ -2243,15 +1701,6 @@ function SystemPage() {
     // Extra safety: no duplicate BAD picks across pending/original
     {
       const bads = new Set();
-      for (const b of pendingBlocks) {
-        const v = normPPID(b.ppid);
-        if (!v) continue;
-        if (bads.has(v)) {
-          setFormError("Duplicate BAD PPID in Pending Parts.");
-          return;
-        }
-        bads.add(v);
-      }
       for (const cfg of Object.values(goodActionByPPID)) {
         const n = normPPID(cfg?.original_bad_ppid);
         if (!n) continue;
@@ -2592,12 +2041,10 @@ function SystemPage() {
 
       // 1) Create any new bad parts the user added (as in-unit, non-functional)
       if (pendingBlocks.length > 0) {
-        const toCreate = pendingBlocks.filter(
-          (b) => b.part_id && (b.ppid || "").trim(),
-        );
+        const toCreate = pendingBlocks.filter((b) => b.part_id);
         await Promise.all(
           toCreate.map((b) =>
-            createPartItem(String(b.ppid).toUpperCase().trim(), {
+            createPartItem(makePendingTempPPID(b.part_id), {
               part_id: b.part_id,
               place: "unit",
               unit_id: system.id,
@@ -2613,8 +2060,22 @@ function SystemPage() {
       if (replEntries.length > 0) {
         await Promise.all(
           replEntries.map(async ([oldBadPPID, goodPPID]) => {
+            const oldBadNorm = String(oldBadPPID).toUpperCase().trim();
+            const originalForTemp = normPPID(
+              originalPPIDByBadPPID[oldBadPPID] ||
+                originalPPIDByBadPPID[oldBadNorm],
+            );
+            const badPPIDToMove = originalForTemp || oldBadNorm;
+
+            if (originalForTemp && originalForTemp !== oldBadNorm) {
+              await updatePartItem(oldBadNorm, {
+                ppid: originalForTemp,
+                is_functional: false,
+              });
+            }
+
             // Move the BAD from unit -> inventory (keep nonfunctional)
-            await updatePartItem(String(oldBadPPID).toUpperCase().trim(), {
+            await updatePartItem(badPPIDToMove, {
               place: "inventory",
               unit_id: null,
               is_functional: false,
@@ -2797,6 +2258,7 @@ function SystemPage() {
       setSelectedRootCauseSubId(null);
       setGoodActionByPPID({});
       setReplacementByOldPPID({});
+      setOriginalPPIDByBadPPID({});
       setInvOriginalsByPPID({});
       setAutoOriginalLockedByPPID({});
       // Clear cached GOOD/BAD option lists so dropdowns re-fetch from backend
@@ -2874,11 +2336,16 @@ function SystemPage() {
 
     // helper: turn an item into a display name (no PPID)
     const nameOfPart = (i) =>
-      (i?.part_name && i.part_name.trim()) ||
-      (i?.part_id != null
-        ? (flatPartOptions.find((o) => o.value === i.part_id)?.label ??
-          `#${i.part_id}`)
-        : "Part");
+      (() => {
+        const name =
+          (i?.part_name && i.part_name.trim()) ||
+          (i?.part_id != null
+            ? partNameById.get(i.part_id) || `#${i.part_id}`
+            : "Part");
+        const dpn =
+          i?.part_dpn || (i?.part_id != null ? partDpnById.get(i.part_id) : "");
+        return dpn ? `${name} [${dpn}]` : name;
+      })();
 
     // If there are bad parts, ask which label to print
     if (hasBadParts) {
@@ -3011,14 +2478,12 @@ function SystemPage() {
           serviceTag={serviceTag}
           existingSystemTags={systemTags}
           getTags={getTags}
-          createTag={createTag}
           addSystemTag={addSystemTag}
           showToast={showToast}
           selectStyles={select40Styles}
           onAdded={async () => {
             // refresh just tags (fast)
             try {
-              const rows = await getSystemTags(serviceTag);
               const res = await getSystemTags(serviceTag);
 
               // res.tags is the array you showed
@@ -3076,7 +2541,6 @@ function SystemPage() {
                       </span>
                     )}
                   </span>
-                  {console.log("rendering with systemTags", systemTags)}
                   <TagBubblesRow
                     tags={systemTags}
                     token={token}
@@ -3547,64 +3011,10 @@ function SystemPage() {
                                           opt ? opt.value : null,
                                         )
                                       }
-                                      options={partOptions} // grouped: [{ label, options: [...] }, ...]
+                                      options={pendingPartOptions} // grouped: only parts with functional inventory qty = 0
                                       filterOption={filterPartOption} // search by part OR category
                                       components={{ Option: PartOption }} // show category chip on each option
                                       formatGroupLabel={PartGroupLabel} // non-selectable group headers
-                                    />
-                                  </div>
-
-                                  {/* PPID Input */}
-                                  <div className="flex-1">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                                      Defective Part PPID
-                                    </label>
-                                    <input
-                                      type="text"
-                                      inputMode="text"
-                                      autoCapitalize="characters"
-                                      autoCorrect="off"
-                                      spellCheck="false"
-                                      placeholder="Scan or type PPID"
-                                      value={block.ppid}
-                                      onChange={(e) =>
-                                        updateBlock(
-                                          block.id,
-                                          "ppid",
-                                          e.target.value,
-                                        )
-                                      }
-                                      onBlur={(e) => {
-                                        const v = e.target.value
-                                          .toUpperCase()
-                                          .trim();
-                                        updateBlock(block.id, "ppid", v);
-
-                                        if (v) {
-                                          // If this BAD PPID was selected as an "Original PPID" anywhere, clear it
-                                          setGoodActionByPPID((prev) => {
-                                            const next = { ...prev };
-                                            for (const g of Object.keys(next)) {
-                                              if (
-                                                normPPID(
-                                                  next[g]?.original_bad_ppid,
-                                                ) === normPPID(v)
-                                              ) {
-                                                next[g] = {
-                                                  ...next[g],
-                                                  original_bad_ppid: "",
-                                                };
-                                              }
-                                            }
-                                            return next;
-                                          });
-                                        }
-                                      }}
-                                      className={`w-full h-10 rounded-md border px-3 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                        !block.ppid || !block.part_id
-                                          ? "border-amber-300"
-                                          : "border-gray-300"
-                                      }`}
                                     />
                                   </div>
 
@@ -3665,25 +3075,71 @@ function SystemPage() {
                                 </div>
                                 <input
                                   className="w-full h-10 rounded-md border border-gray-300 px-3 bg-gray-50 cursor-not-allowed"
-                                  value={item.part_name || `#${item.part_id}`}
+                                  value={
+                                    item.part_name
+                                      ? item.part_dpn
+                                        ? `${item.part_name} [${item.part_dpn}]`
+                                        : item.part_name
+                                      : `#${item.part_id}`
+                                  }
                                   disabled
                                   readOnly
                                 />
                               </div>
-                              <div className="flex-1">
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  PPID
-                                </label>
-                                <input
-                                  className="w-full h-10 rounded-md border border-gray-300 px-3 bg-gray-50 cursor-not-allowed"
-                                  value={item.ppid || ""}
-                                  disabled
-                                  readOnly
-                                />
-                              </div>
+                              {!isBad && (
+                                <div className="flex-1">
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    PPID
+                                  </label>
+                                  <input
+                                    className="w-full h-10 rounded-md border border-gray-300 px-3 bg-gray-50 cursor-not-allowed"
+                                    value={item.ppid || ""}
+                                    disabled
+                                    readOnly
+                                  />
+                                </div>
+                              )}
                               {/* Actions for BAD parts */}
                               {isBad && toLocationId != 4 && (
                                 <div className="flex flex-col md:flex-row md:items-center gap-3">
+                                  {canAddGoodParts && (
+                                    <div className="shrink-0 basis-[280px] w-[280px]">
+                                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Original PPID
+                                      </label>
+                                      <input
+                                        type="text"
+                                        inputMode="text"
+                                        autoCapitalize="characters"
+                                        autoCorrect="off"
+                                        spellCheck="false"
+                                        placeholder="Enter original PPID"
+                                        disabled={queued || formDisabled}
+                                        value={
+                                          originalPPIDByBadPPID[item.ppid] || ""
+                                        }
+                                        onChange={(e) =>
+                                          setOriginalPPIDByBadPPID((prev) => ({
+                                            ...prev,
+                                            [item.ppid]: e.target.value,
+                                          }))
+                                        }
+                                        onBlur={(e) =>
+                                          setOriginalPPIDByBadPPID((prev) => ({
+                                            ...prev,
+                                            [item.ppid]: e.target.value
+                                              .toUpperCase()
+                                              .trim(),
+                                          }))
+                                        }
+                                        className={`w-full h-10 rounded-md border px-3 ${
+                                          queued || formDisabled
+                                            ? "border-gray-300 bg-gray-100 text-gray-500 cursor-not-allowed"
+                                            : "border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        }`}
+                                      />
+                                    </div>
+                                  )}
                                   {/* Replacement PPID (only when allowed) */}
                                   {canAddGoodParts && (
                                     <div className="shrink-0 basis-[280px] w-[280px] ">
@@ -3720,6 +3176,12 @@ function SystemPage() {
                                             ...s,
                                             [item.ppid]: next,
                                           }));
+                                          if (!next) {
+                                            setOriginalPPIDByBadPPID((s) => ({
+                                              ...s,
+                                              [item.ppid]: "",
+                                            }));
+                                          }
                                           if (next) {
                                             // Clear the same PPID if it was chosen in any Good Part block
                                             setGoodBlocks((list) =>
@@ -3776,6 +3238,15 @@ function SystemPage() {
                                               setReplacementByOldPPID((s) => {
                                                 const next = { ...s };
                                                 // If we just queued Mark as Working, nuke the replacement
+                                                if (
+                                                  !toRemovePPIDs.has(item.ppid)
+                                                ) {
+                                                  next[item.ppid] = "";
+                                                }
+                                                return next;
+                                              });
+                                              setOriginalPPIDByBadPPID((s) => {
+                                                const next = { ...s };
                                                 if (
                                                   !toRemovePPIDs.has(item.ppid)
                                                 ) {
@@ -4212,7 +3683,7 @@ function SystemPage() {
                                                       const meta =
                                                         props.data.meta || {};
                                                       return (
-                                                        <components.Option
+                                                        <SelectComponents.Option
                                                           {...props}
                                                         >
                                                           <>
@@ -4233,7 +3704,7 @@ function SystemPage() {
                                                           </>
                                                           {"  "}
                                                           {props.data.value}
-                                                        </components.Option>
+                                                        </SelectComponents.Option>
                                                       );
                                                     },
                                                   }}
