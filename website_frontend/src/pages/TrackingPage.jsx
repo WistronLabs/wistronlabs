@@ -70,8 +70,6 @@ function TrackingPage() {
     getHistory,
     createSystem,
     moveSystemToReceived,
-    updateHostMac,
-    updateBmcMac,
     getServerTime,
     getSnapshot,
     getSystemHistory,
