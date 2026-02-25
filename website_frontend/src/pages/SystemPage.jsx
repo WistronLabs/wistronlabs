@@ -2205,12 +2205,13 @@ function SystemPage() {
         let factoryCode = resp?.factory_code ?? system?.factory_code ?? null;
         let shape = resp?.shape || null;
 
-        if (!palletNumber || !dpn || !factoryCode) {
+        if (!palletNumber || !dpn || !factoryCode || !shape) {
           try {
             const palletInfo = await getSystemPallet(system.service_tag);
             palletNumber = palletNumber || palletInfo?.pallet_number || null;
             dpn = dpn ?? palletInfo?.dpn ?? null;
             factoryCode = factoryCode ?? palletInfo?.factory_code ?? null;
+            shape = shape || palletInfo?.shape || null;
           } catch {
             // ignore — we’ll handle the “no palletNumber” case below
           }
@@ -2398,7 +2399,7 @@ function SystemPage() {
             {
               service_tag: system.service_tag,
               pallet_number: palletInfo.pallet_number,
-              dpn: palletInfo.dpn,
+              dpn: palletInfo.dpn || system.dpn,
               shape: palletInfo.shape,
               config: system.config,
               dell_customer: system.dell_customer,

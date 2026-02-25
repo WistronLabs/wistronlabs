@@ -38,6 +38,7 @@ const { buildWhereClause } = require("../utils/buildWhereClause");
 const { systemOnLockedPallet } = require("../utils/systemOnLockedPallet");
 const { generatePalletNumber } = require("../utils/generatePalletNumber");
 const { ensureAdmin } = require("../utils/ensureAdmin");
+const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
 
 const NodeCache = require("node-cache");
 const snapshotCache = new NodeCache({ stdTTL: 8 * 60 * 60 }); // 8 hours
@@ -102,12 +103,9 @@ function parseAndValidatePPID(ppidRaw) {
 
 /**
  * Assign a system to a pallet (or create a new pallet)
- * Pallets are segregated by factory_id AND dpn.
+ * Any open, unlocked pallet with free capacity can be used.
  */
-async function assignSystemToPallet(system_id, factory_id, dpn_id, client) {
-  if (!factory_id) throw new Error(`Cannot assign: factory_id is null`);
-  if (!dpn_id) throw new Error(`Cannot assign: dpn_id is missing`);
-
+async function assignSystemToPallet(system_id, client) {
   const { rows } = await client.query(
     `
     SELECT p.id, p.pallet_number
@@ -115,25 +113,27 @@ async function assignSystemToPallet(system_id, factory_id, dpn_id, client) {
     LEFT JOIN pallet_system ps
       ON p.id = ps.pallet_id AND ps.removed_at IS NULL
     WHERE p.status = 'open' AND p.locked = FALSE
-      AND p.factory_id = $1
-      AND p.dpn_id = $2
     GROUP BY p.id, p.pallet_number
     HAVING COUNT(ps.id) < 9
+    ORDER BY p.created_at ASC, p.id ASC
     LIMIT 1
     `,
-    [factory_id, dpn_id],
   );
 
   let palletId, palletNumber;
   if (rows.length) {
     ({ id: palletId, pallet_number: palletNumber } = rows[0]);
   } else {
-    const newNumber = await generatePalletNumber(factory_id, dpn_id, client);
+    const newNumber = await generatePalletNumber(client);
+    const shape = await allocateUniqueOpenPalletShape(client);
+    if (!shape) {
+      throw new Error("Too many pallets open at the same time.");
+    }
     const ins = await client.query(
-      `INSERT INTO pallet (factory_id, pallet_number, dpn_id)
-       VALUES ($1, $2, $3)
+      `INSERT INTO pallet (pallet_number, shape)
+       VALUES ($1, $2)
        RETURNING id, pallet_number`,
-      [factory_id, newNumber, dpn_id],
+      [newNumber, shape],
     );
     palletId = ins.rows[0].id;
     palletNumber = ins.rows[0].pallet_number;
@@ -2226,8 +2226,6 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
     if (RMA_LOCATION_IDS.includes(to_location_id)) {
       const { pallet_number } = await assignSystemToPallet(
         system_id,
-        factory_id,
-        dpn_id,
         client,
       );
       finalNote = `${note} - added to ${pallet_number}`;
@@ -2262,7 +2260,13 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
-    res.status(500).json({ error: "Failed to update location" });
+
+    const message = String(err?.message || "").trim();
+    if (message === "Too many pallets open at the same time.") {
+      return res.status(409).json({ error: message });
+    }
+
+    res.status(500).json({ error: message || "Failed to update location" });
   } finally {
     client.release();
   }
@@ -2501,7 +2505,7 @@ router.patch(
       // 1. Get system details including location_id and ppid
       const { rows } = await client.query(
         `
-      SELECT id, factory_id, dpn_id, location_id, ppid
+      SELECT id, location_id, ppid
       FROM system
       WHERE service_tag = $1
       `,
@@ -2513,7 +2517,7 @@ router.patch(
         return res.status(404).json({ error: "System not found" });
       }
 
-      const { id: system_id, factory_id, dpn_id, location_id, ppid } = rows[0];
+      const { id: system_id, location_id, ppid } = rows[0];
 
       // 2. Validate RMA location
       if (!RMA_LOCATION_IDS.includes(location_id)) {
@@ -2529,15 +2533,6 @@ router.patch(
         await client.query("ROLLBACK");
         return res.status(400).json({
           error: "System must have a valid PPID before being added to a pallet",
-        });
-      }
-
-      // 4. Validate factory_id and dpn
-      if (!factory_id || !dpn_id) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error:
-            "System must have factory_id and dpn set before being added to a pallet",
         });
       }
 
@@ -2566,8 +2561,6 @@ router.patch(
       // 5. Assign to pallet (your helper already ignores locked pallets)
       const { pallet_id, pallet_number } = await assignSystemToPallet(
         system_id,
-        factory_id,
-        dpn_id,
         client,
       );
 
@@ -2628,6 +2621,7 @@ router.get("/:service_tag/pallet", async (req, res) => {
     SELECT
       p.id AS pallet_id,
       p.pallet_number,
+      p.shape,
       d.name AS dpn,      
       p.status,
       p.created_at,
@@ -2636,7 +2630,7 @@ router.get("/:service_tag/pallet", async (req, res) => {
       ps.added_at
     FROM pallet_system ps
     JOIN pallet p ON ps.pallet_id = p.id
-    JOIN factory f ON p.factory_id = f.id
+    LEFT JOIN factory f ON p.factory_id = f.id
     LEFT JOIN dpn d ON p.dpn_id = d.id
     WHERE ps.system_id = $1
       AND ps.removed_at IS NULL
@@ -2676,6 +2670,7 @@ router.get("/:service_tag/pallet-history", async (req, res) => {
       ps.id AS assignment_id,
       p.id AS pallet_id,
       p.pallet_number,
+      p.shape,
       d.name AS dpn,
       f.name AS factory,
       f.code AS factory_code,
@@ -2684,7 +2679,7 @@ router.get("/:service_tag/pallet-history", async (req, res) => {
       ps.removed_at
     FROM pallet_system ps
     JOIN pallet p ON ps.pallet_id = p.id
-    JOIN factory f ON p.factory_id = f.id
+    LEFT JOIN factory f ON p.factory_id = f.id
     LEFT JOIN dpn d ON p.dpn_id = d.id
     WHERE ps.system_id = $1
     ORDER BY ps.added_at ASC;

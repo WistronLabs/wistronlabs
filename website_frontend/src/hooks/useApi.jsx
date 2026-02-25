@@ -357,11 +357,11 @@ function useApi() {
       }),
     });
 
-  const releasePallet = (pallet_number, doa_number) =>
+  const releasePallet = (pallet_number) =>
     fetchJSON(`/pallets/${pallet_number}/release`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doa_number }),
+      body: JSON.stringify({}),
     });
 
   const deletePallet = (pallet_number) =>
@@ -436,11 +436,11 @@ function useApi() {
       body: JSON.stringify({ locked }),
     });
 
-  const createPallet = ({ dpn, factory_code }) =>
+  const createPallet = () =>
     fetchJSON(`/pallets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dpn, factory_code }),
+      body: JSON.stringify({}),
     });
 
   const getDpns = () => fetchJSON(`/systems/dpn`);

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useContext } from "react";
+import React, { useEffect, useState, useContext } from "react";
 import useToast from "../hooks/useToast";
 import useConfirm from "../hooks/useConfirm";
 import { formatDateHumanReadable } from "../utils/date_format";
@@ -22,10 +22,14 @@ import {
 } from "@dnd-kit/core";
 import { AuthContext } from "../context/AuthContext.jsx";
 
-function SystemBox({ serviceTag }) {
+function SystemBox({ serviceTag, dpn, dellCustomer }) {
   return (
-    <div className="w-full h-full flex items-center justify-center rounded-lg text-sm font-semibold transition bg-neutral-100 text-neutral-800 border border-neutral-300 shadow-sm hover:ring-2 hover:ring-neutral-300 hover:bg-neutral-200 cursor-move select-none">
-      {serviceTag}
+    <div className="w-full h-full rounded-lg text-sm transition bg-neutral-100 text-neutral-800 border border-neutral-300 shadow-sm hover:ring-2 hover:ring-neutral-300 hover:bg-neutral-200 cursor-move select-none px-2 py-1 overflow-hidden">
+      <div className="font-semibold truncate">{serviceTag}</div>
+      <div className="text-[11px] text-neutral-600 truncate">
+        {dpn || "No DPN"}
+        {dellCustomer ? ` - ${dellCustomer}` : ""}
+      </div>
     </div>
   );
 }
@@ -54,7 +58,11 @@ function DraggableSystem({ palletId, index, system }) {
       className="w-full h-full flex items-center justify-center"
     >
       <Link to={`/${system.service_tag}`} className="w-full h-full">
-        <SystemBox serviceTag={system.service_tag} />
+        <SystemBox
+          serviceTag={system.service_tag}
+          dpn={system.dpn}
+          dellCustomer={system.dell_customer}
+        />
       </Link>
     </div>
   );
@@ -135,9 +143,6 @@ const PalletGrid = ({
   pallet,
   releaseFlags,
   setReleaseFlags,
-  onLockUpdated, // kept for backwards-compat
-  setPalletLock, // kept for backwards-compat
-  showToast,
   lockFlags,
   setLockFlags,
 }) => {
@@ -170,19 +175,9 @@ const PalletGrid = ({
       }
       return {
         ...prev,
-        [pallet.id]: { released: true, doa_number: "" },
+        [pallet.id]: { released: true },
       };
     });
-  };
-
-  const handleDOAChange = (e) => {
-    setReleaseFlags((prev) => ({
-      ...prev,
-      [pallet.id]: {
-        ...prev[pallet.id],
-        doa_number: e.target.value.trimStart(),
-      },
-    }));
   };
 
   // ---- STAGED LOCK TOGGLE ----
@@ -233,9 +228,6 @@ const PalletGrid = ({
         <h2 className="text-md font-medium text-gray-700 pr-32">
           {pallet.pallet_number}
         </h2>
-        <p className="text-gray-800 text-sm">
-          Config {pallet.config} - {pallet.dell_customer}
-        </p>
         <p className="text-xs pb-2 text-gray-500">
           Created on {formatDateHumanReadable(pallet.created_at)}
         </p>
@@ -285,16 +277,6 @@ const PalletGrid = ({
         >
           {isReleased ? "Undo Release" : "Mark for Release"}
         </button>
-
-        <input
-          type="text"
-          placeholder="Enter DOA Number"
-          value={releaseFlags[pallet.id]?.doa_number || ""}
-          onChange={handleDOAChange}
-          className={`mt-2 w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring focus:ring-blue-200 text-sm ${
-            isReleased ? "" : "invisible"
-          }`}
-        />
       </div>
     </div>
   );
@@ -306,17 +288,9 @@ export default function ShippingPage() {
   const [pallets, setPallets] = useState([]);
   const [initialPallets, setInitialPallets] = useState([]);
   const [activeDragData, setActiveDragData] = useState(null);
-  const [downloadingReport, setDownloadingReport] = useState(false);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingPallet, setCreatingPallet] = useState(false);
-  const [newPalletForm, setNewPalletForm] = useState({
-    dpn: "",
-    factoryCode: "",
-  });
-
-  const [dpnOptions, setDpnOptions] = useState([]);
-  const [factoryOptions, setFactoryOptions] = useState([]);
 
   // staged lock changes
   const [lockFlags, setLockFlags] = useState({});
@@ -327,8 +301,6 @@ export default function ShippingPage() {
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportGenerating, setReportGenerating] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all"); // 'all' | 'locked' | 'unlocked'
-  const [selectedDpns, setSelectedDpns] = useState(new Set());
-  const [selectedFactories, setSelectedFactories] = useState(new Set());
 
   const FRONTEND_URL = import.meta.env.VITE_URL;
 
@@ -340,8 +312,6 @@ export default function ShippingPage() {
   );
 
   const {
-    getDpns,
-    getFactories,
     createPallet,
     getSystem,
     getPallets,
@@ -353,54 +323,26 @@ export default function ShippingPage() {
 
   const handleCreatePallet = async (e) => {
     e?.preventDefault?.();
-    const dpn = newPalletForm.dpn.trim();
-    const factory_code = newPalletForm.factoryCode.trim();
-    if (!dpn || !factory_code) {
-      showToast("DPN and Factory Code are required.", "error");
-      return;
-    }
 
     try {
       setCreatingPallet(true);
-      const res = await createPallet({ dpn, factory_code });
+      const res = await createPallet();
       const pn =
         res?.pallet_number || res?.pallet?.pallet_number || "(pallet created)";
       showToast(`Created pallet ${pn}`, "info");
       setShowCreateModal(false);
-      setNewPalletForm({ dpn: "", factoryCode: "" });
       await reloadOpenPallets();
     } catch (err) {
-      const msg = err?.error || err?.message || "Failed to create pallet";
+      const msg =
+        err?.body?.error ||
+        err?.error ||
+        err?.message ||
+        "Failed to create pallet";
       showToast(msg, "error");
     } finally {
       setCreatingPallet(false);
     }
   };
-
-  const uniqueDpns = useMemo(() => {
-    const vals = (pallets || []).map(
-      (p) => p?.dpn ?? p?.pallet_number?.split("-")[2]?.trim() ?? ""
-    );
-    return Array.from(new Set(vals.filter(Boolean))).sort();
-  }, [pallets]);
-
-  const uniqueFactories = useMemo(() => {
-    const vals = (pallets || []).map(
-      (p) => p?.factory_code ?? p?.pallet_number?.split("-")[1]?.trim() ?? ""
-    );
-    return Array.from(new Set(vals.filter(Boolean))).sort();
-  }, [pallets]);
-
-  // Helpers used by the modal
-  const toggleSetValue = (setter) => (value) =>
-    setter((prev) => {
-      const next = new Set(prev);
-      next.has(value) ? next.delete(value) : next.add(value);
-      return next;
-    });
-
-  const selectAll = (setter, values) => setter(new Set(values));
-  const selectNone = (setter) => setter(new Set());
 
   // ---- Released tab data fetcher ----
   const fetchReleasedPallets = async ({
@@ -448,16 +390,12 @@ export default function ShippingPage() {
               })
           );
 
-          const parts = pallet.pallet_number.split("-");
-          const factory_id = parts[1] || "";
-          const dpn = parts[2] || "";
-
           const rawPallet = {
             pallet_number: pallet.pallet_number,
             doa_number: pallet.doa_number,
             date_released: pallet.released_at?.split("T")[0] || "",
-            dpn,
-            factory_id,
+            dpn: pallet.dpn || "MIXED",
+            factory_id: pallet.factory_code || "N/A",
             systems: systemsWithDetails,
           };
 
@@ -489,34 +427,6 @@ export default function ShippingPage() {
 
     return { data: palletsWithLinks, total_count: res.total_count };
   };
-
-  useEffect(() => {
-    if (showReportModal) {
-      setSelectedDpns(new Set(uniqueDpns));
-      setSelectedFactories(new Set(uniqueFactories));
-      setStatusFilter("all");
-    }
-  }, [showReportModal, uniqueDpns, uniqueFactories]);
-
-  useEffect(() => {
-    if (!showCreateModal) return;
-    (async () => {
-      try {
-        const dpns = await getDpns();
-        setDpnOptions(Array.isArray(dpns) ? dpns : []);
-      } catch (e) {
-        console.error(e);
-        showToast("Failed to load DPNs", "error");
-      }
-      try {
-        const facs = await getFactories();
-        setFactoryOptions(Array.isArray(facs) ? facs : []);
-      } catch (e) {
-        console.error(e);
-        showToast("Failed to load factories", "error");
-      }
-    })();
-  }, [showCreateModal]);
 
   // ---- Initial load (open pallets) ----
   useEffect(() => {
@@ -563,59 +473,16 @@ export default function ShippingPage() {
     setLockFlags({});
   };
 
-  const handleLockUpdated = (updatedPallet) => {
-    setPallets((prev) =>
-      prev.map((p) =>
-        p.id === updatedPallet.id ? { ...p, ...updatedPallet } : p
-      )
-    );
-    setInitialPallets((prev) =>
-      prev.map((p) =>
-        p.id === updatedPallet.id ? { ...p, ...updatedPallet } : p
-      )
-    );
-  };
-
   const handleDownloadReport = async () => {
     try {
       setReportGenerating(true);
 
-      // helper inside handleDownloadReport (above the filter)
-      const matchesPick = (val, selectedSet, allCount) => {
-        if (allCount === 0) return true; // no options available -> ignore dim
-        if (selectedSet.size === 0) return false; // explicit NONE -> match nothing
-        if (selectedSet.size === allCount) return true; // ALL selected -> no restriction
-        return selectedSet.has(val); // subset -> membership
-      };
-
-      const nothingSelected =
-        selectedDpns.size === 0 && selectedFactories.size === 0;
-
-      if (nothingSelected) {
-        showToast("Select at least one DPN or Factory.", "error");
-        return;
-      }
-
       const filtered = (pallets || []).filter((p) => {
-        const lockOk =
-          statusFilter === "all"
-            ? true
-            : statusFilter === "locked"
-            ? !!p.locked
-            : !p.locked;
-
-        const dpnVal = p?.dpn ?? p?.pallet_number?.split("-")[2]?.trim() ?? "";
-        const facVal =
-          p?.factory_code ?? p?.pallet_number?.split("-")[1]?.trim() ?? "";
-
-        const dpnOk = matchesPick(dpnVal, selectedDpns, uniqueDpns.length);
-        const facOk = matchesPick(
-          facVal,
-          selectedFactories,
-          uniqueFactories.length
-        );
-
-        return lockOk && dpnOk && facOk;
+        return statusFilter === "all"
+          ? true
+          : statusFilter === "locked"
+          ? !!p.locked
+          : !p.locked;
       });
 
       if (filtered.length === 0) {
@@ -705,39 +572,14 @@ export default function ShippingPage() {
         )
         .join("\n");
 
-      // ...keep your existing code above...
-
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
 
-      // After filtered.length check, before building filename:
-      const codeSlug = (s) => String(s ?? "").replace(/[^A-Za-z0-9_-]/g, "");
-      const joinCodes = (arr) => arr.map(codeSlug).join("_");
-
-      const dpnPart =
-        selectedDpns.size === 0
-          ? "dpns_none"
-          : selectedDpns.size === uniqueDpns.length
-          ? "dpns_all"
-          : `dpns_${joinCodes([...selectedDpns].sort())}`;
-
-      const factoryPart =
-        selectedFactories.size === 0
-          ? "factories_none"
-          : selectedFactories.size === uniqueFactories.length
-          ? "factories_all"
-          : `factories_${joinCodes([...selectedFactories].sort())}`;
-
       const statusPart = statusFilter === "all" ? "all_active" : statusFilter;
-
-      // Example outputs:
-      // pallet-report-dpns_DKFX_XXXXX-factories_MX-all-<ts>.csv
-      // pallet-report-all_factories-all_dpns-locked-<ts>.csv
       a.href = url;
-      a.download = `pallet-report-${dpnPart}-${factoryPart}-${statusPart}-${ts}.csv`;
-      // --- END NEW ---
+      a.download = `pallet-report-${statusPart}-${ts}.csv`;
 
       document.body.appendChild(a);
       a.click();
@@ -785,24 +627,6 @@ export default function ShippingPage() {
       const fromPallet = copy.find((p) => p.id === fromId);
       const toPallet = copy.find((p) => p.id === toId);
       if (!fromPallet || !toPallet) return prev;
-
-      const getDPN = (p) => (p.pallet_number.split("-")[2] || "").trim();
-      const getFactory = (p) => (p.pallet_number.split("-")[1] || "").trim();
-
-      const fromDPN = getDPN(fromPallet);
-      const toDPN = getDPN(toPallet);
-      const fromFactory = getFactory(fromPallet);
-      const toFactory = getFactory(toPallet);
-
-      if (fromDPN !== toDPN || fromFactory !== toFactory) {
-        const reasons = [];
-        if (fromDPN !== toDPN)
-          reasons.push(`DPN mismatch (${fromDPN} → ${toDPN})`);
-        if (fromFactory !== toFactory)
-          reasons.push(`Factory mismatch (${fromFactory} → ${toFactory})`);
-        showToast(`Cannot move system: ${reasons.join(" and ")}`, "error");
-        return prev;
-      }
 
       if (toPallet.active_systems?.[toIdx]?.service_tag) {
         showToast("Target slot already occupied", "error");
@@ -859,19 +683,6 @@ export default function ShippingPage() {
   })();
 
   const handleSubmit = async () => {
-    const palletsMissingDOA = Object.entries(releaseFlags).filter(
-      ([_, val]) =>
-        val.released && (!val.doa_number || val.doa_number.trim() === "")
-    );
-
-    if (palletsMissingDOA.length > 0) {
-      showToast(
-        `DOA number is required for ${palletsMissingDOA.length} released pallet(s).`,
-        "error"
-      );
-      return;
-    }
-
     const confirmed = await confirm({
       message: "Are you sure you want to submit changes?",
       title: "Confirm Submit",
@@ -916,30 +727,13 @@ export default function ShippingPage() {
       .map((p) => ({ id: p.id, pallet_number: p.pallet_number }));
 
     const releaseList = Object.entries(releaseFlags)
-      .filter(([_, val]) => val.released && val.doa_number?.trim())
-      .map(([palletId, val]) => {
+      .filter(([_, val]) => val.released)
+      .map(([palletId]) => {
         const pallet = pallets.find((p) => p.id === Number(palletId));
         return {
           pallet_number: pallet?.pallet_number,
-          doa_number: val.doa_number.trim(),
         };
       });
-
-    const systemRMALabelData = moves.map((move) => {
-      const toPallet = pallets.find(
-        (p) => p.pallet_number === move.to_pallet_number
-      );
-      const parts = (toPallet?.pallet_number || "").split("-");
-      const dpn = parts[2] || "UNKNOWN";
-      const factory_code = parts[1] || "UNKNOWN";
-      return {
-        service_tag: move.service_tag,
-        pallet_number: toPallet?.pallet_number || "UNKNOWN",
-        dpn,
-        factory_code,
-        url: `${FRONTEND_URL}${move.service_tag}`,
-      };
-    });
 
     // STEP 1: Move systems
     for (const move of moves) {
@@ -958,6 +752,34 @@ export default function ShippingPage() {
       }
     }
 
+    // Build fresh label payload for moved systems (ensures config/dpn are present)
+    const systemRMALabelData = await Promise.all(
+      moves.map(async (move) => {
+        const toPallet = pallets.find(
+          (p) => p.pallet_number === move.to_pallet_number
+        );
+
+        let systemDetails = null;
+        try {
+          systemDetails = await getSystem(move.service_tag);
+        } catch {
+          // best-effort; fallback values below
+        }
+
+        return {
+          service_tag: move.service_tag,
+          pallet_number: toPallet?.pallet_number || "UNKNOWN",
+          shape: toPallet?.shape || null,
+          dpn: systemDetails?.dpn || "UNKNOWN",
+          config: systemDetails?.config || "",
+          dell_customer: systemDetails?.dell_customer || "",
+          ppid: systemDetails?.ppid || "",
+          factory_code: toPallet?.factory_code || "N/A",
+          url: `${FRONTEND_URL}${move.service_tag}`,
+        };
+      })
+    );
+
     // STEP 2: Delete empty pallets
     for (const pallet of emptyPallets) {
       try {
@@ -972,9 +794,14 @@ export default function ShippingPage() {
     }
 
     // STEP 3: Release pallets
+    const releaseResults = [];
     for (const release of releaseList) {
       try {
-        await releasePallet(release.pallet_number, release.doa_number);
+        const released = await releasePallet(release.pallet_number);
+        releaseResults.push({
+          pallet_number: release.pallet_number,
+          doa_number: released?.doa_number || "",
+        });
       } catch (err) {
         showToast(
           `Release failed for pallet ${release.pallet_number}: ${err.message}`,
@@ -993,7 +820,7 @@ export default function ShippingPage() {
         window.open(URL.createObjectURL(labelBlob));
       }
 
-      for (const release of releaseList) {
+      for (const release of releaseResults) {
         const palletData = pallets.find(
           (p) => p.pallet_number === release.pallet_number
         );
@@ -1019,16 +846,12 @@ export default function ShippingPage() {
             })
         );
 
-        const parts = palletData.pallet_number.split("-");
-        const factory_id = parts[1] || "";
-        const dpn = parts[2] || "";
-
         const rawPallet = {
           pallet_number: palletData.pallet_number,
           doa_number: release.doa_number,
           date_released: new Date().toISOString().split("T")[0],
-          dpn,
-          factory_id,
+          dpn: palletData.dpn || "MIXED",
+          factory_id: palletData.factory_code || "N/A",
           systems: systemsWithDetails,
         };
 
@@ -1106,6 +929,34 @@ export default function ShippingPage() {
 
   const { token } = useContext(AuthContext);
 
+  useEffect(() => {
+    if (!showCreateModal) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !creatingPallet) {
+        e.preventDefault();
+        setShowCreateModal(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showCreateModal, creatingPallet]);
+
+  useEffect(() => {
+    if (!showReportModal) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !reportGenerating) {
+        e.preventDefault();
+        setShowReportModal(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showReportModal, reportGenerating]);
+
   return (
     <>
       <Toast />
@@ -1124,119 +975,30 @@ export default function ShippingPage() {
             <h3 className="text-lg font-semibold mb-3">Download Report</h3>
 
             <div className="space-y-5">
-              {/* Status */}
               <section>
                 <h4 className="text-sm font-semibold text-gray-700 mb-2">
                   Pallet Lock Status
                 </h4>
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-2">
                   {[
                     { value: "all", label: "All" },
                     { value: "locked", label: "Locked only" },
                     { value: "unlocked", label: "Unlocked only" },
                   ].map((opt) => (
-                    <label
+                    <button
+                      type="button"
                       key={opt.value}
-                      className="inline-flex items-center gap-2"
+                      onClick={() => setStatusFilter(opt.value)}
+                      className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium border transition ${
+                        statusFilter === opt.value
+                          ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                          : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
+                      }`}
                     >
-                      <input
-                        type="radio"
-                        name="status-filter"
-                        value={opt.value}
-                        checked={statusFilter === opt.value}
-                        onChange={(e) => setStatusFilter(e.target.value)}
-                        className="h-4 w-4"
-                      />
-                      <span className="text-sm text-gray-700">{opt.label}</span>
-                    </label>
+                      {opt.label}
+                    </button>
                   ))}
                 </div>
-              </section>
-
-              {/* DPN */}
-              <section>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-semibold text-gray-700">DPN</h4>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => selectAll(setSelectedDpns, uniqueDpns)}
-                    >
-                      Select all
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => selectNone(setSelectedDpns)}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                {uniqueDpns.length === 0 ? (
-                  <p className="text-sm text-gray-500">No DPNs found.</p>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {uniqueDpns.map((d) => (
-                      <label key={d} className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={selectedDpns.has(d)}
-                          onChange={() => toggleSetValue(setSelectedDpns)(d)}
-                        />
-                        <span className="text-sm">{d}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              {/* Factory */}
-              <section>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-semibold text-gray-700">
-                    Factory
-                  </h4>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() =>
-                        selectAll(setSelectedFactories, uniqueFactories)
-                      }
-                    >
-                      Select all
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => selectNone(setSelectedFactories)}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                {uniqueFactories.length === 0 ? (
-                  <p className="text-sm text-gray-500">No factories found.</p>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {uniqueFactories.map((f) => (
-                      <label key={f} className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={selectedFactories.has(f)}
-                          onChange={() =>
-                            toggleSetValue(setSelectedFactories)(f)
-                          }
-                        />
-                        <span className="text-sm">{f}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
               </section>
             </div>
 
@@ -1276,55 +1038,9 @@ export default function ShippingPage() {
           >
             <h3 className="text-lg font-semibold mb-3">Create New Pallet</h3>
             <form onSubmit={handleCreatePallet} className="space-y-3">
-              {/* DPN typable dropdown */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  DPN
-                </label>
-                <input
-                  list="dpn-list"
-                  value={newPalletForm.dpn}
-                  onChange={(e) =>
-                    setNewPalletForm((p) => ({ ...p, dpn: e.target.value }))
-                  }
-                  placeholder="Start typing to search…"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring focus:ring-blue-200 text-sm"
-                />
-                <datalist id="dpn-list">
-                  {dpnOptions.map((d) => (
-                    <option key={d.id ?? d.name} value={d.name} />
-                  ))}
-                </datalist>
-              </div>
-
-              {/* Factory Code typable dropdown */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Factory Code
-                </label>
-                <input
-                  list="factory-code-list"
-                  value={newPalletForm.factoryCode}
-                  onChange={(e) =>
-                    setNewPalletForm((p) => ({
-                      ...p,
-                      factoryCode: e.target.value,
-                    }))
-                  }
-                  placeholder="Start typing to search… (e.g., MX)"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring focus:ring-blue-200 text-sm"
-                />
-                <datalist id="factory-code-list">
-                  {factoryOptions.map((f) => (
-                    <option
-                      key={f.id ?? f.code}
-                      value={f.code} // <- use the CODE as the input value
-                      label={f.name || undefined} // nice hint in some browsers
-                    />
-                  ))}
-                </datalist>
-              </div>
-
+              <p className="text-sm text-gray-600">
+                This creates a new empty pallet. You can add any unit to it.
+              </p>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -1388,7 +1104,7 @@ export default function ShippingPage() {
                 className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
                   !token ? "opacity-30 pointer-events-none" : ""
                 }`}
-                title="Create a new empty pallet by DPN + Factory"
+                title="Create a new empty pallet"
               >
                 Add Pallet
               </button>
@@ -1423,9 +1139,6 @@ export default function ShippingPage() {
                       pallet={pallet}
                       releaseFlags={releaseFlags}
                       setReleaseFlags={setReleaseFlags}
-                      onLockUpdated={handleLockUpdated}
-                      setPalletLock={setPalletLock}
-                      showToast={showToast}
                       lockFlags={lockFlags}
                       setLockFlags={setLockFlags}
                     />
@@ -1434,7 +1147,11 @@ export default function ShippingPage() {
 
               <DragOverlay>
                 {activeDragData?.system ? (
-                  <SystemBox serviceTag={activeDragData.system.service_tag} />
+                  <SystemBox
+                    serviceTag={activeDragData.system.service_tag}
+                    dpn={activeDragData.system.dpn}
+                    dellCustomer={activeDragData.system.dell_customer}
+                  />
                 ) : null}
               </DragOverlay>
             </DndContext>

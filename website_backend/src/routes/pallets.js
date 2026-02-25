@@ -3,61 +3,11 @@ const db = require("../db");
 const { authenticateToken } = require("./auth");
 const { buildWhereClause } = require("../utils/buildWhereClause");
 const { generatePalletNumber } = require("../utils/generatePalletNumber");
+const { getServerTimeZone } = require("../utils/serverTimeZone");
+const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
 
 const router = express.Router();
 
-// Ranked, pre-attentive-first keys the frontend can map to icons.
-// Keep keys stable (don’t change spelling) so FE can style them.
-const SHAPE_PRIORITY = [
-  "star",
-  "triangle_up",
-  "triangle_right",
-  "triangle_left",
-  "triangle_down",
-  "circle",
-  "square",
-  "diamond",
-  "pentagon",
-  "hexagon",
-];
-
-// Pick the first free shape; if none free, start reusing with numeric suffixes.
-async function allocateShapeForOpenPallet(client) {
-  // Get all shapes currently in use by open pallets
-  const { rows } = await client.query(
-    `SELECT shape FROM pallet WHERE status = 'open' AND shape IS NOT NULL`
-  );
-  const inUse = new Set(rows.map((r) => r.shape));
-
-  // 1) Try the base pool first
-  for (const s of SHAPE_PRIORITY) {
-    if (!inUse.has(s)) return s;
-  }
-
-  // 2) If all base shapes are used, assign "shape-2", "shape-3", ...
-  //    preferring lower numbers first across the pool.
-  // Build next available suffix map for each base shape
-  const nextSuffix = new Map(SHAPE_PRIORITY.map((s) => [s, 2]));
-  for (const used of inUse) {
-    const m = used.match(/^(.+)-(\d+)$/);
-    if (!m) continue;
-    const base = m[1];
-    const n = parseInt(m[2], 10);
-    if (SHAPE_PRIORITY.includes(base) && Number.isFinite(n)) {
-      nextSuffix.set(base, Math.max(nextSuffix.get(base) || 2, n + 1));
-    }
-  }
-  // Choose the “earliest” base shape by priority with the smallest suffix needed
-  let best = null;
-  for (const base of SHAPE_PRIORITY) {
-    const candidate = `${base}-${nextSuffix.get(base) || 2}`;
-    if (!inUse.has(candidate)) {
-      best = candidate;
-      break;
-    }
-  }
-  return best || "star-2"; // ultra-safe fallback
-}
 
 router.get("/", async (req, res) => {
   const {
@@ -140,6 +90,8 @@ router.get("/", async (req, res) => {
               json_build_object(
                 'system_id', ps.system_id,
                 'service_tag', s.service_tag,
+                'dpn', sd.name,
+                'dell_customer', sd.dell_customer,
                 'added_at', ps.added_at,
                 'removed_at', ps.removed_at
               )
@@ -154,6 +106,8 @@ router.get("/", async (req, res) => {
               json_build_object(
                 'system_id', ps.system_id,
                 'service_tag', s.service_tag,
+                'dpn', sd.name,
+                'dell_customer', sd.dell_customer,
                 'added_at', ps.added_at,
                 'removed_at', ps.removed_at
               )
@@ -174,6 +128,8 @@ router.get("/", async (req, res) => {
                   json_build_object(
                     'system_id', ps.system_id,
                     'service_tag', s.service_tag,
+                    'dpn', sd.name,
+                    'dell_customer', sd.dell_customer,
                     'added_at', ps.added_at,
                     'removed_at', ps.removed_at
                   )
@@ -184,6 +140,8 @@ router.get("/", async (req, res) => {
                   json_build_object(
                     'system_id', ps.system_id,
                     'service_tag', s.service_tag,
+                    'dpn', sd.name,
+                    'dell_customer', sd.dell_customer,
                     'added_at', ps.added_at,
                     'removed_at', ps.removed_at
                   )
@@ -210,6 +168,7 @@ router.get("/", async (req, res) => {
         FROM pallet p
         LEFT JOIN pallet_system ps ON p.id = ps.pallet_id
         LEFT JOIN system s        ON s.id = ps.system_id
+        LEFT JOIN dpn sd          ON sd.id = s.dpn_id
         LEFT JOIN dpn d           ON d.id = p.dpn_id
         LEFT JOIN factory f       ON f.id = p.factory_id
         ${whereSQL}
@@ -255,50 +214,13 @@ router.get("/", async (req, res) => {
 });
 
 // POST /api/v1/pallets
-// Body: { dpn: "DKCFX", factory_code: "MX" }
+// Body: {}
 router.post("/", authenticateToken, async (req, res) => {
-  const { dpn, factory_code } = req.body || {};
-
-  if (!dpn || !factory_code) {
-    return res.status(400).json({
-      error: "dpn and factory_code are required",
-    });
-  }
-
   const client = await db.connect();
   try {
     await client.query("BEGIN");
 
-    // Resolve DPN -> id
-    const { rows: dpnRows } = await client.query(
-      `SELECT id FROM dpn WHERE name = $1`,
-      [dpn]
-    );
-    if (!dpnRows.length) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: `DPN not found: ${dpn}` });
-    }
-    const dpn_id_final = dpnRows[0].id;
-
-    // Resolve Factory -> id
-    const { rows: fRows } = await client.query(
-      `SELECT id FROM factory WHERE code = $1`,
-      [factory_code]
-    );
-    if (!fRows.length) {
-      await client.query("ROLLBACK");
-      return res
-        .status(404)
-        .json({ error: `Factory code not found: ${factory_code}` });
-    }
-    const factory_id_final = fRows[0].id;
-
-    // Generate pallet number (helper uses ids)
-    const pallet_number = await generatePalletNumber(
-      factory_id_final,
-      dpn_id_final,
-      client
-    );
+    const pallet_number = await generatePalletNumber(client);
 
     // Enforce uniqueness
     const { rowCount: exists } = await client.query(
@@ -313,29 +235,36 @@ router.post("/", authenticateToken, async (req, res) => {
     }
 
     // Right before INSERT INTO pallet ...
-    const shape = await allocateShapeForOpenPallet(client);
+    const shape = await allocateUniqueOpenPalletShape(client);
+    if (!shape) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        error: "Too many pallets open at the same time.",
+      });
+    }
 
     // Insert pallet (status=open) with shape
     const { rows: ins } = await client.query(
       `
   INSERT INTO pallet (
-    pallet_number, factory_id, dpn_id, status,
+    pallet_number, status,
     created_at, locked, locked_at, locked_by, shape
   )
-  VALUES ($1, $2, $3, 'open', NOW(), FALSE, NULL, NULL, $4)
+  VALUES ($1, 'open', NOW(), FALSE, NULL, NULL, $2)
   RETURNING id, pallet_number, factory_id, dpn_id, status,
             doa_number, released_at, created_at, locked, locked_at, locked_by, shape
   `,
-      [pallet_number, factory_id_final, dpn_id_final, shape]
+      [pallet_number, shape]
     );
 
     await client.query("COMMIT");
 
     // Join DPN name for convenience
     const { rows: out } = await db.query(
-      `SELECT p.*, d.name AS dpn
+      `SELECT p.*, d.name AS dpn, f.code AS factory_code
          FROM pallet p
          LEFT JOIN dpn d ON d.id = p.dpn_id
+         LEFT JOIN factory f ON f.id = p.factory_id
         WHERE p.id = $1`,
       [ins[0].id]
     );
@@ -376,6 +305,8 @@ router.get("/:pallet_number", async (req, res) => {
             json_build_object(
               'system_id', ps.system_id,
               'service_tag', s.service_tag,
+              'dpn', sd.name,
+              'dell_customer', sd.dell_customer,
               'added_at', ps.added_at,
               'removed_at', ps.removed_at
             )
@@ -390,6 +321,8 @@ router.get("/:pallet_number", async (req, res) => {
             json_build_object(
               'system_id', ps.system_id,
               'service_tag', s.service_tag,
+              'dpn', sd.name,
+              'dell_customer', sd.dell_customer,
               'added_at', ps.added_at,
               'removed_at', ps.removed_at
             )
@@ -410,6 +343,8 @@ router.get("/:pallet_number", async (req, res) => {
                 json_build_object(
                   'system_id', ps.system_id,
                   'service_tag', s.service_tag,
+                  'dpn', sd.name,
+                  'dell_customer', sd.dell_customer,
                   'added_at', ps.added_at,
                   'removed_at', ps.removed_at
                 )
@@ -420,6 +355,8 @@ router.get("/:pallet_number", async (req, res) => {
                 json_build_object(
                   'system_id', ps.system_id,
                   'service_tag', s.service_tag,
+                  'dpn', sd.name,
+                  'dell_customer', sd.dell_customer,
                   'added_at', ps.added_at,
                   'removed_at', ps.removed_at
                 )
@@ -446,6 +383,7 @@ router.get("/:pallet_number", async (req, res) => {
       FROM pallet p
       LEFT JOIN pallet_system ps ON p.id = ps.pallet_id
       LEFT JOIN system s        ON s.id = ps.system_id
+      LEFT JOIN dpn sd          ON sd.id = s.dpn_id
       LEFT JOIN dpn d           ON d.id = p.dpn_id
       LEFT JOIN factory f       ON f.id = p.factory_id
       WHERE p.pallet_number = $1
@@ -565,7 +503,7 @@ router.patch("/move", authenticateToken, async (req, res) => {
     // 2. Look up pallet IDs by pallet_number
     const { rows: pallets } = await client.query(
       `
-      SELECT id, pallet_number, status, factory_id, dpn_id, locked
+      SELECT id, pallet_number, status, locked
       FROM pallet
       WHERE pallet_number = ANY($1)
       `,
@@ -603,17 +541,6 @@ router.patch("/move", authenticateToken, async (req, res) => {
         .json({ error: "Cannot move systems when either pallet is locked" });
     }
 
-    // 4. Same factory_id and dpn
-    if (
-      fromPallet.factory_id !== toPallet.factory_id ||
-      fromPallet.dpn_id !== toPallet.dpn_id
-    ) {
-      await client.query("ROLLBACK");
-      return res
-        .status(400)
-        .json({ error: "Pallets must have the same factory_id and DPN" });
-    }
-
     // 5. Confirm system is in source pallet
     const { rowCount: inPallet } = await client.query(
       `
@@ -628,6 +555,22 @@ router.patch("/move", authenticateToken, async (req, res) => {
       return res
         .status(400)
         .json({ error: "System is not in the source pallet" });
+    }
+
+    // 5.5 destination must have space
+    const { rows: toCountRows } = await client.query(
+      `
+      SELECT COUNT(*)::int AS active_count
+      FROM pallet_system
+      WHERE pallet_id = $1 AND removed_at IS NULL
+      `,
+      [toPallet.id]
+    );
+    if ((toCountRows[0]?.active_count || 0) >= 9) {
+      await client.query("ROLLBACK");
+      return res
+        .status(400)
+        .json({ error: "Destination pallet is full (max 9 systems)" });
     }
 
     // 6. Confirm system's location is RMA
@@ -683,11 +626,6 @@ router.patch("/move", authenticateToken, async (req, res) => {
 
 router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
   const { pallet_number } = req.params;
-  const { doa_number } = req.body;
-
-  if (!doa_number || doa_number.trim().length < 5) {
-    return res.status(400).json({ error: "Valid doa_number is required" });
-  }
 
   const client = await db.connect();
   try {
@@ -761,6 +699,14 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
       rows: [tsRow],
     } = await client.query(`SELECT NOW() AS t`);
     const t = tsRow.t;
+    const serverZone = getServerTimeZone();
+    const {
+      rows: [doaRow],
+    } = await client.query(
+      `SELECT to_char($1::timestamptz AT TIME ZONE $2, 'YYYYMMDD') AS ymd`,
+      [t, serverZone]
+    );
+    const doaNumber = `DOA-${doaRow.ymd}`;
 
     // 6) close pallet_system memberships
     await client.query(
@@ -786,7 +732,7 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
           shape = NULL
       WHERE id = $1
       `,
-      [pallet_id, doa_number.trim(), t]
+      [pallet_id, doaNumber, t]
     );
 
     // 8) add a "same → same" location history entry for every system
@@ -808,7 +754,11 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
     }
 
     await client.query("COMMIT");
-    return res.json({ message: "Pallet released successfully" });
+    return res.json({
+      message: "Pallet released successfully",
+      pallet_number,
+      doa_number: doaNumber,
+    });
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);

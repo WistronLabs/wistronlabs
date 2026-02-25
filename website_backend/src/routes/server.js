@@ -1,16 +1,12 @@
 const express = require("express");
+const { getServerTimeZone } = require("../utils/serverTimeZone");
 const router = express.Router();
 
 // API route for server time and CST/CDT
 router.get("/time", (req, res) => {
   const now = new Date();
 
-  const timeZone =
-    process.env.LOCATION === "TSS"
-      ? "America/Chicago"
-      : process.env.LOCATION === "FRK"
-      ? "America/New_York"
-      : "UTC";
+  const timeZone = getServerTimeZone();
 
   // Format explicitly to America/Chicago
   const cstFormatter = new Intl.DateTimeFormat("en-US", {

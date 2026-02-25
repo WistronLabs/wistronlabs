@@ -110,17 +110,18 @@ const PalletPaper = ({ pallet }) => {
         </View>
         <View style={styles.line}>
           <Text>DOA #: {pallet.doa_number}</Text>
-          <Text>Released: {pallet.date_released}</Text>
         </View>
         <View style={styles.line}>
           <Image src={pallet.pallet_doa_barcode} style={styles.doa_barcode} />
         </View>
         <View style={styles.line}>
-          <Text>DPN: {pallet.dpn}</Text>
-          <Text>Destination: {pallet.factory_id}</Text>
+          <Text>Released: {pallet.date_released}</Text>
         </View>
         <View style={styles.line}>
-          <Image src={pallet.pallet_dpn_barcode} style={styles.dpn_barcode} />
+          <Image
+            src={pallet.pallet_released_barcode || pallet.pallet_dpn_barcode}
+            style={styles.doa_barcode}
+          />
         </View>
         <View style={styles.tableHeader}>
           <Text style={styles.headerCellST}>Service Tag</Text>
