@@ -15,13 +15,17 @@ import { generateQRPNG } from "../utils/generateQR";
 const LABEL_WIDTH = 144;
 const LABEL_HEIGHT = 72;
 
-// helper: "…ABCDEFGH" -> "AB CD EF GH"
-const formatLast8AsPairs = (s = "") => {
-  if (s.length < 8) return { head: s, paired: "" };
-  const head = s.slice(0, -8);
-  const tail = s.slice(-8);
-  const pairs = tail.match(/.{1,2}/g) || [tail];
-  return { head, paired: pairs.join(" ") };
+const getDpnForLabel = (system = {}) => {
+  const explicit = String(system.dpn || system.dpn_name || "").trim();
+  if (explicit) return explicit;
+
+  const ppid = String(system.ppid || "").trim().toUpperCase();
+  if (/^[A-Z0-9]{8,}$/.test(ppid)) {
+    // Legacy PPID layout keeps DPN in chars [3..7]
+    return ppid.slice(3, 8);
+  }
+
+  return "";
 };
 
 const styles = StyleSheet.create({
@@ -48,7 +52,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontFamily: "Helvetica",
     fontWeight: "bold",
-    letterSpacing: 0.5,
+    letterSpacing: 0,
     lineHeight: 1.3,
     color: "#111827",
   },
@@ -78,10 +82,9 @@ const styles = StyleSheet.create({
   },
   shapeBadge: {
     position: "absolute",
-    right: 4,
-    top: 4,
+    right: 10,
+    top: 8,
   },
-  pallet_pairs: { letterSpacing: 0, wordSpacing: 1.5 },
 });
 
 /** ---------- Shape rendering helpers (PDF-safe via <Svg/>) ---------- **/
@@ -138,8 +141,8 @@ function starPath(cx, cy, rOuter, rInner, rotationDeg = -90) {
 }
 
 function ShapeBadge({ shape, palletNumber, size = 18 }) {
-  // normalize (e.g., "star-2" -> "star")
-  const base = (shape || "").toLowerCase().split("-")[0];
+  const normalized = String(shape || "").toLowerCase().trim();
+  const base = normalized.split("-")[0];
 
   // SVG viewport
   const W = size,
@@ -205,11 +208,19 @@ function ShapeBadge({ shape, palletNumber, size = 18 }) {
       break;
     }
     default: {
-      // Fallback: generate a deterministic N-gon (7..12 sides) + rotation from palletNumber or shape string
+      // Keep fallback simple/recognizable (no high-side polygons).
       const seed = hash((palletNumber || "") + "|" + (shape || ""));
-      const sides = 7 + (seed % 6); // 7..12
-      const rotation = (seed >>> 8) % 360;
-      const d = polygonPath(cx, cy, W / 2 - 1, sides, rotation);
+      const fallback = ["diamond", "square", "triangle_up", "star"][
+        seed % 4
+      ];
+      const d =
+        fallback === "diamond"
+          ? polygonPath(cx, cy, W / 2 - 1, 4, 0)
+          : fallback === "square"
+            ? polygonPath(cx, cy, W / 2 - 1, 4, 45)
+            : fallback === "triangle_up"
+              ? polygonPath(cx, cy + 1, W / 2 - 1, 3, -90)
+              : starPath(cx, cy, W / 2 - 1, (W / 2) * 0.45);
       content = <Path d={d} fill={fill} />;
       break;
     }
@@ -229,8 +240,12 @@ const SystemRMALabel = ({ systems }) => {
     <Document>
       {systems.map((system, index) => {
         const qrDataUrl = generateQRPNG(system.url);
-        const pn = system.pallet_number || "";
-        const { head, paired } = formatLast8AsPairs(pn);
+        const pn = String(system.pallet_number || "");
+        const dpn = getDpnForLabel(system);
+        const cfg = String(system.config || "").trim();
+        const dpnConfigText = dpn
+          ? `${dpn} - Config ${cfg || "Unk."}`
+          : `Unknown DPN - Config ${cfg || "Unk."}`;
 
         return (
           <Page
@@ -243,16 +258,11 @@ const SystemRMALabel = ({ systems }) => {
               <ShapeBadge shape={system.shape} palletNumber={pn} size={18} />
 
               <Image style={styles.qr} src={qrDataUrl} />
-              <Text style={styles.rma_text}>RMA - {system.service_tag}</Text>
+              <Text style={styles.rma_text}>RMA-{system.service_tag}</Text>
 
-              <Text style={styles.pallet_text}>
-                {head}
-                <Text style={styles.pallet_pairs}>{paired}</Text>
-              </Text>
+              <Text style={styles.pallet_text}>{pn}</Text>
 
-              <Text style={styles.dpn_text}>
-                {system.dpn} - Config {system.config}
-              </Text>
+              <Text style={styles.dpn_text}>{dpnConfigText}</Text>
 
               <Text style={styles.factory_text}>{system.dell_customer}</Text>
             </View>
