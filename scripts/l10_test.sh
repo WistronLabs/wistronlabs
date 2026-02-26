@@ -7,6 +7,36 @@ err() {
     echo -e "${RED}Error:${NC} $*" >&2
 }
 
+print_help() {
+  cat <<'EOF'
+Usage:
+  ./l10_test.sh [options]
+
+Options:
+  -t <SERVICE_TAG>                    Set service tag (skip service tag prompt)
+  -m                                  Skip backend MAC pull; prompt for MACs manually
+  -o                                  Open interactive module picker
+  -h                                  Show this help and exit
+
+Notes:
+  - -m and -t cannot be used together.
+
+Examples:
+  ./l10_test.sh
+  ./l10_test.sh -st GV7Z0J4
+  ./l10_test.sh -m
+  ./l10_test.sh -o -st GV7Z0J4
+EOF
+}
+
+# Allow help output before any env validation.
+for arg in "$@"; do
+  if [[ "$arg" == "-h" || "$arg" == "-H" ]]; then
+    print_help
+    exit 0
+  fi
+done
+
 # Check if SERVER_LOCATION environment variable is set
 if [[ -z "${SERVER_LOCATION:-}" ]]; then
   err "Environment variable SERVER_LOCATION is not set." >&2
@@ -30,15 +60,43 @@ fi
 
 SKIP_BACKEND_MAC_PULL=0
 RUN_OPTION_PICKER=0
+SERVICE_TAG=""
+USED_T_FLAG=0
+
+# Pre-parse only -st <SERVICE_TAG>; keep existing getopts flow for -m/-o.
+remaining_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t|-T)
+      if [[ $# -lt 2 ]]; then
+        err "Flag $1 requires a service tag value."
+        exit 1
+      fi
+      SERVICE_TAG="$2"
+      USED_T_FLAG=1
+      shift 2
+      ;;
+    *)
+      remaining_args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${remaining_args[@]}"
 
 while getopts ":mo" opt; do
   case "$opt" in
-    m) SKIP_BACKEND_MAC_PULL=1 ;;
-    o) RUN_OPTION_PICKER=1 ;;
+    m | M) SKIP_BACKEND_MAC_PULL=1 ;;
+    o | O) RUN_OPTION_PICKER=1 ;;
     *) ;;
   esac
 done
 shift $((OPTIND - 1))
+
+if [[ "$USED_T_FLAG" -eq 1 && "$SKIP_BACKEND_MAC_PULL" -eq 1 ]]; then
+  err "-m and -t cannot be used at the same time."
+  exit 1
+fi
 
 api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
 
@@ -129,7 +187,9 @@ CURRENT_REMOTE_SERVICE_TAG=$(curl -s \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')
 
 
-read -p "Enter Service Tag (e.g., A1B264): " SERVICE_TAG
+if [[ -z "$SERVICE_TAG" ]]; then
+  read -p "Enter Service Tag (e.g., A1B264): " SERVICE_TAG
+fi
 
 
 
@@ -926,4 +986,3 @@ log_off
 rm "$LOG_DIR/diag_output.log"
 rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
-
