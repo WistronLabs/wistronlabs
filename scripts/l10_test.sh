@@ -422,18 +422,13 @@ case "$CONFIG" in
         ;;
     6)
         SKIPPED_MODULES=(
-            "Bf3PcieInterfaceTraffic"
-            "CxeyegradeStart"
-            "CxeyegradeStop"
-            "IbStressBf3PhyLoopback"
             "IbStressBf3Loopout"
-            "Cx8CpuCrossNIC_ETH"
-            "Cx8CpuCrossNIC_IB"
-            "Cx8GpuDirectCrossNIC_ETH"
-            "Cx8GpuDirectCrossNIC_IB"
-            "Cx8GpuDirectLoopback"
+            "IbStressCx7PhyLoopback"
             "IbStressLoopout400G_8X"
             "IbStressLoopout400G_4X"
+            "IbStressCables"
+            "Cx8GpuDirectLoopback"
+            "Cx8GpuDirectCrossGpu"
         )
         ;;
      7)
