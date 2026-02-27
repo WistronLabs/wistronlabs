@@ -87,7 +87,7 @@ function AddInventoryModal({ onClose, parts, onAdd, busy }) {
   const partOptions = useMemo(() => buildGroupedPartOptions(parts), [parts]);
   const flat = useMemo(
     () => partOptions.flatMap((g) => g.options || []),
-    [partOptions]
+    [partOptions],
   );
   const partValue = flat.find((o) => o.value === partId) || null;
 
@@ -293,8 +293,8 @@ export default function PartsInventory() {
       setInvRows(inv || []);
       setUnitRows(
         unit?.filter(
-          (r) => r.is_functional === false || r.is_functional === true
-        ) || []
+          (r) => r.is_functional === false || r.is_functional === true,
+        ) || [],
       );
     } catch (e) {
       console.error(e);
@@ -326,7 +326,7 @@ export default function PartsInventory() {
 
   const categories = useMemo(() => {
     const set = new Set(
-      (parts || []).map((p) => p.category_name || "Uncategorized")
+      (parts || []).map((p) => p.category_name || "Uncategorized"),
     );
     return Array.from(set).sort();
   }, [parts]);
@@ -352,8 +352,8 @@ export default function PartsInventory() {
         r.is_functional === true
           ? true
           : r.is_functional === false
-          ? false
-          : null; // handle unknowns gracefully
+            ? false
+            : null; // handle unknowns gracefully
       // Derived: In House vs Shipped (only meaningful for Unit rows)
       // Derived: Unit Scope (table/csv) - more detailed than filter toggle
       const unitScopeLabel =
@@ -361,10 +361,10 @@ export default function PartsInventory() {
           ? r.unit_activity_state === "active"
             ? "Active"
             : r.unit_activity_state === "inactive_on_active_pallet"
-            ? "RMA (Active)"
-            : r.unit_activity_state === "inactive"
-            ? "RMA (Inactive)"
-            : "—"
+              ? "RMA (Active)"
+              : r.unit_activity_state === "inactive"
+                ? "RMA (Inactive)"
+                : "—"
           : "";
       const shouldBlankPpid = place === "unit" && funcBool === false;
 
@@ -389,18 +389,18 @@ export default function PartsInventory() {
 
         // ✅ New unit activity / pallet context (unit rows only)
         unit_activity_state:
-          place === "unit" ? r.unit_activity_state ?? null : null,
+          place === "unit" ? (r.unit_activity_state ?? null) : null,
         unit_pallet_number:
-          place === "unit" ? r.unit_pallet_number ?? null : null,
+          place === "unit" ? (r.unit_pallet_number ?? null) : null,
         unit_pallet_status:
-          place === "unit" ? r.unit_pallet_status ?? null : null,
+          place === "unit" ? (r.unit_pallet_status ?? null) : null,
         unit_on_active_pallet:
-          place === "unit" ? r.unit_on_active_pallet ?? null : null,
+          place === "unit" ? (r.unit_on_active_pallet ?? null) : null,
         unit_scope_title: "Unit Scope",
         unit_scope: unitScopeLabel,
 
         // Optional: keep location text if you want to display/debug it
-        system_location: place === "unit" ? r.system_location ?? "" : "",
+        system_location: place === "unit" ? (r.system_location ?? "") : "",
 
         created_at: r.created_at,
       };
@@ -517,7 +517,7 @@ export default function PartsInventory() {
             const s = String(val);
             return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
           })
-          .join(",")
+          .join(","),
       ),
     ];
 
@@ -557,8 +557,8 @@ export default function PartsInventory() {
             place: "inventory",
             unit_id: null,
             is_functional: true,
-          })
-        )
+          }),
+        ),
       );
       showToast(`Added ${toCreate.length} part(s) to inventory`, "success");
       setShowAdd(false);
@@ -567,7 +567,7 @@ export default function PartsInventory() {
       console.error(e);
       showToast(
         e?.body?.error || e.message || "Failed to add inventory",
-        "error"
+        "error",
       );
     } finally {
       setBusyAdd(false);
@@ -634,7 +634,7 @@ export default function PartsInventory() {
             {/* Place */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Place
+                Part Location
               </label>
               <div className="flex flex-wrap gap-2">
                 {[
@@ -660,7 +660,7 @@ export default function PartsInventory() {
             {/* Functional */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Functional
+                Funcionality
               </label>
               <div className="flex flex-wrap gap-2">
                 {[
@@ -687,7 +687,7 @@ export default function PartsInventory() {
             {placeFilter !== "inventory" && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Parts in Units
+                  Unit Location with Parts
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {[
@@ -770,18 +770,18 @@ export default function PartsInventory() {
             v === "Yes"
               ? { type: "pill", color: "bg-green-100 text-green-800" }
               : v === "No"
-              ? { type: "pill", color: "bg-red-100 text-red-800" }
-              : "text-gray-400 text-xs italic",
+                ? { type: "pill", color: "bg-red-100 text-red-800" }
+                : "text-gray-400 text-xs italic",
           unit_service_tag: (v) =>
             v ? "font-mono text-xs" : "text-gray-400 text-xs italic",
           unit_scope: (v) =>
             v === "Active"
               ? { type: "pill", color: "bg-blue-100 text-blue-800" }
               : v === "RMA (Active)"
-              ? { type: "pill", color: "bg-yellow-100 text-yellow-800" }
-              : v === "RMA (Inactive)"
-              ? { type: "pill", color: "bg-gray-200 text-gray-800" }
-              : "text-gray-400 text-xs italic",
+                ? { type: "pill", color: "bg-yellow-100 text-yellow-800" }
+                : v === "RMA (Inactive)"
+                  ? { type: "pill", color: "bg-gray-200 text-gray-800" }
+                  : "text-gray-400 text-xs italic",
 
           ppid: "font-mono text-xs",
         }}
