@@ -75,6 +75,8 @@ function TrackingPage() {
     getSystemHistory,
     getSystem,
     getTags,
+    updateHostMac,
+    updateBmcMac,
   } = useApi();
 
   const fetchData = async () => {

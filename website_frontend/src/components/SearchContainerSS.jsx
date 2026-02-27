@@ -412,7 +412,7 @@ export default function SearchContainerSS({
               </div>
 
               {/* Rows */}
-              {displayedData.map((item) => {
+              {displayedData.map((item, rowIndex) => {
                 const commonClasses =
                   "flex items-center gap-x-4 bg-white border border-gray-300 rounded px-4 py-2 my-1";
 
@@ -513,8 +513,16 @@ export default function SearchContainerSS({
                   return <div className={commonClasses}>{children}</div>;
                 };
 
+                const rowKey =
+                  item.id ??
+                  item.service_tag ??
+                  item.pallet_number ??
+                  item.link ??
+                  item.href ??
+                  `row-${rowIndex}`;
+
                 return (
-                  <Wrapper key={item.service_tag}>
+                  <Wrapper key={rowKey}>
                     {RowContent}
                     {ActionButton}
                   </Wrapper>

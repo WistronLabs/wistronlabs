@@ -68,14 +68,26 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   headerCellPPID: {
-    flex: 2, // 2/3
+    flex: 2,
+    fontWeight: "bold",
+  },
+  headerCellDOA: {
+    flex: 1,
     fontWeight: "bold",
   },
   cellST: {
-    flex: 1, // 1/3
+    flex: 1,
   },
   cellPPID: {
-    flex: 2, // 2/3
+    flex: 2,
+  },
+  cellDOA: {
+    flex: 1,
+  },
+  doa_cell_barcode: {
+    marginTop: 2,
+    width: 120,
+    height: 35,
   },
   titleBlock: {
     alignItems: "center", // centers children horizontally
@@ -109,12 +121,6 @@ const PalletPaper = ({ pallet }) => {
           )}
         </View>
         <View style={styles.line}>
-          <Text>DOA #: {pallet.doa_number}</Text>
-        </View>
-        <View style={styles.line}>
-          <Image src={pallet.pallet_doa_barcode} style={styles.doa_barcode} />
-        </View>
-        <View style={styles.line}>
           <Text>Released: {pallet.date_released}</Text>
         </View>
         <View style={styles.line}>
@@ -126,6 +132,7 @@ const PalletPaper = ({ pallet }) => {
         <View style={styles.tableHeader}>
           <Text style={styles.headerCellST}>Service Tag</Text>
           <Text style={styles.headerCellPPID}>PPID</Text>
+          <Text style={styles.headerCellDOA}>DOA #</Text>
         </View>
         {pallet.systems.map((sys, idx) => (
           <View key={idx} style={styles.row}>
@@ -136,6 +143,13 @@ const PalletPaper = ({ pallet }) => {
             <View style={styles.cellPPID}>
               <Text>{sys.ppid}</Text>
               <Image src={sys.ppid_barcode} style={styles.ppid_barcode} />
+            </View>
+            <View style={styles.cellDOA}>
+              <Text>{sys.doa_number || ""}</Text>
+              <Image
+                src={sys.doa_number_barcode}
+                style={styles.doa_cell_barcode}
+              />
             </View>
           </View>
         ))}

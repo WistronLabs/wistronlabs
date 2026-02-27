@@ -55,6 +55,7 @@ async function getDeletedUserId() {
 
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
+const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
 
 function requireMac12Hex(value, fieldName = "mac") {
   const s = String(value ?? "")
@@ -710,6 +711,7 @@ router.get("/", async (req, res) => {
         s.serial,
         s.rev,
         s.ppid,
+        s.doa_number,
         s.host_mac,
         s.bmc_mac,
         s.rack_service_tag AS rack_id, 
@@ -1479,17 +1481,6 @@ router.delete(
       }
       const system_id = systemResult.rows[0].id;
 
-      // Resolve IDs for: "Sent to L11", "RMA VID", "RMA CID", "RMA PID"
-      const resolvedLocRes = await client.query(
-        `
-            SELECT id
-            FROM location
-            WHERE name = ANY($1)
-          `,
-        [["Sent to L11", "RMA VID", "RMA CID", "RMA PID"]],
-      );
-      const RESOLVED_LOCATION_IDS = resolvedLocRes.rows.map((r) => r.id);
-
       // 2. Get history entries newest → oldest
       const historyResult = await client.query(
         `
@@ -1597,6 +1588,18 @@ router.delete(
         rollbackLocation,
         system_id,
       ]);
+
+      // If latest deleted history moved from resolved -> unresolved, clear per-unit DOA.
+      if (
+        deletedToLocationId &&
+        RESOLVED_LOCATION_IDS.includes(deletedToLocationId) &&
+        rollbackLocation &&
+        !RESOLVED_LOCATION_IDS.includes(rollbackLocation)
+      ) {
+        await client.query("UPDATE system SET doa_number = NULL WHERE id = $1", [
+          system_id,
+        ]);
+      }
 
       // 7. If we are LEAVING an RMA location, remove from any open pallet
       if (
@@ -2213,11 +2216,20 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       }
     }
 
-    // Update location on system
-    await client.query(`UPDATE system SET location_id = $1 WHERE id = $2`, [
-      to_location_id,
-      system_id,
-    ]);
+    // Update location and clear DOA when moving from resolved -> unresolved.
+    await client.query(
+      `
+      UPDATE system
+      SET location_id = $1,
+          doa_number = CASE
+            WHEN $2::int = ANY($4::int[]) AND NOT ($1::int = ANY($4::int[]))
+              THEN NULL
+            ELSE doa_number
+          END
+      WHERE id = $3
+      `,
+      [to_location_id, from_location_id, system_id, RESOLVED_LOCATION_IDS],
+    );
 
     // Default to original note
     let finalNote = note;
@@ -2488,6 +2500,45 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update PPID data" });
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/doa
+router.patch("/:service_tag/doa", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const raw = req.body?.doa_number;
+  const doa_number =
+    typeof raw === "string" ? raw.trim() : raw == null ? "" : String(raw).trim();
+
+  if (doa_number.length > 20) {
+    return res
+      .status(400)
+      .json({ error: "doa_number must be 20 characters or fewer" });
+  }
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE system
+      SET doa_number = $1
+      WHERE service_tag = $2
+      RETURNING service_tag, doa_number
+      `,
+      [doa_number || null, service_tag],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    return res.json({
+      message: "System DOA updated",
+      service_tag: result.rows[0].service_tag,
+      doa_number: result.rows[0].doa_number,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Failed to update DOA number" });
   }
 });
 

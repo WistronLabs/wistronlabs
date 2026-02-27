@@ -336,6 +336,13 @@ function useApi() {
       body: JSON.stringify({ ppid }),
     });
 
+  const updateSystemDOA = (tag, doa_number) =>
+    fetchJSON(`/systems/${tag}/doa`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doa_number }),
+    });
+
   const getSystemPallet = (service_tag) =>
     fetchJSON(`/systems/${service_tag}/pallet`);
 
@@ -711,6 +718,7 @@ function useApi() {
     getServerTime,
     getSnapshot,
     updateSystemPPID,
+    updateSystemDOA,
     getSystemPallet,
     getSystemPalletHistory,
     moveSystemBetweenPallets,
