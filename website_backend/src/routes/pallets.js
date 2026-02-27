@@ -3,7 +3,6 @@ const db = require("../db");
 const { authenticateToken } = require("./auth");
 const { buildWhereClause } = require("../utils/buildWhereClause");
 const { generatePalletNumber } = require("../utils/generatePalletNumber");
-const { getServerTimeZone } = require("../utils/serverTimeZone");
 const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
 
 const router = express.Router();
@@ -90,6 +89,7 @@ router.get("/", async (req, res) => {
               json_build_object(
                 'system_id', ps.system_id,
                 'service_tag', s.service_tag,
+                'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                 'dpn', sd.name,
                 'dell_customer', sd.dell_customer,
                 'added_at', ps.added_at,
@@ -106,6 +106,7 @@ router.get("/", async (req, res) => {
               json_build_object(
                 'system_id', ps.system_id,
                 'service_tag', s.service_tag,
+                'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                 'dpn', sd.name,
                 'dell_customer', sd.dell_customer,
                 'added_at', ps.added_at,
@@ -128,6 +129,7 @@ router.get("/", async (req, res) => {
                   json_build_object(
                     'system_id', ps.system_id,
                     'service_tag', s.service_tag,
+                    'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                     'dpn', sd.name,
                     'dell_customer', sd.dell_customer,
                     'added_at', ps.added_at,
@@ -137,14 +139,15 @@ router.get("/", async (req, res) => {
                 ) FILTER (WHERE ps.removed_at IS NULL)
               ELSE
                 json_agg(
-                  json_build_object(
-                    'system_id', ps.system_id,
-                    'service_tag', s.service_tag,
-                    'dpn', sd.name,
-                    'dell_customer', sd.dell_customer,
-                    'added_at', ps.added_at,
-                    'removed_at', ps.removed_at
-                  )
+                json_build_object(
+                  'system_id', ps.system_id,
+                  'service_tag', s.service_tag,
+                  'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
+                  'dpn', sd.name,
+                  'dell_customer', sd.dell_customer,
+                  'added_at', ps.added_at,
+                  'removed_at', ps.removed_at
+                )
                   ORDER BY ps.added_at
                 ) FILTER (
                   WHERE ps.added_at <= p.released_at
@@ -305,6 +308,7 @@ router.get("/:pallet_number", async (req, res) => {
             json_build_object(
               'system_id', ps.system_id,
               'service_tag', s.service_tag,
+              'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
               'dpn', sd.name,
               'dell_customer', sd.dell_customer,
               'added_at', ps.added_at,
@@ -321,6 +325,7 @@ router.get("/:pallet_number", async (req, res) => {
             json_build_object(
               'system_id', ps.system_id,
               'service_tag', s.service_tag,
+              'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
               'dpn', sd.name,
               'dell_customer', sd.dell_customer,
               'added_at', ps.added_at,
@@ -343,6 +348,7 @@ router.get("/:pallet_number", async (req, res) => {
                 json_build_object(
                   'system_id', ps.system_id,
                   'service_tag', s.service_tag,
+                  'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                   'dpn', sd.name,
                   'dell_customer', sd.dell_customer,
                   'added_at', ps.added_at,
@@ -355,6 +361,7 @@ router.get("/:pallet_number", async (req, res) => {
                 json_build_object(
                   'system_id', ps.system_id,
                   'service_tag', s.service_tag,
+                  'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                   'dpn', sd.name,
                   'dell_customer', sd.dell_customer,
                   'added_at', ps.added_at,
@@ -672,7 +679,8 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
       SELECT s.id   AS system_id,
              s.location_id AS location_id,
              s.service_tag AS service_tag,
-             s.ppid AS ppid
+             s.ppid AS ppid,
+             s.doa_number AS doa_number
       FROM pallet_system ps
       JOIN system s ON s.id = ps.system_id
       WHERE ps.pallet_id = $1
@@ -694,20 +702,23 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
       });
     }
 
+    const missingDOA = palletSystems.filter(
+      (r) => !r.doa_number || !r.doa_number.toString().trim()
+    );
+    if (missingDOA.length) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: `Cannot release pallet: missing DOA number for ${missingDOA
+          .map((r) => r.service_tag)
+          .join(", ")}`,
+      });
+    }
+
     // 5) one stable timestamp for the release (for pallet + pallet_system)
     const {
       rows: [tsRow],
     } = await client.query(`SELECT NOW() AS t`);
     const t = tsRow.t;
-    const serverZone = getServerTimeZone();
-    const {
-      rows: [doaRow],
-    } = await client.query(
-      `SELECT to_char($1::timestamptz AT TIME ZONE $2, 'YYYYMMDD') AS ymd`,
-      [t, serverZone]
-    );
-    const doaNumber = `DOA-${doaRow.ymd}`;
-
     // 6) close pallet_system memberships
     await client.query(
       `
@@ -724,15 +735,15 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
       `
       UPDATE pallet
       SET status = 'released',
-          doa_number = $2,
-          released_at = $3,
+          doa_number = NULL,
+          released_at = $2,
           locked = FALSE,
           locked_at = NULL,
           locked_by = NULL,
           shape = NULL
       WHERE id = $1
       `,
-      [pallet_id, doaNumber, t]
+      [pallet_id, t]
     );
 
     // 8) add a "same → same" location history entry for every system
@@ -757,7 +768,7 @@ router.patch("/:pallet_number/release", authenticateToken, async (req, res) => {
     return res.json({
       message: "Pallet released successfully",
       pallet_number,
-      doa_number: doaNumber,
+      doa_number: null,
     });
   } catch (err) {
     await client.query("ROLLBACK");
