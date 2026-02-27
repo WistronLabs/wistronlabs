@@ -11,7 +11,7 @@ function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-// Always define secrets in env, never hard-code fallback
+// These should be set in your environment variables (.env file or hosting config)
 if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET is not set in environment variables");
 }
@@ -45,7 +45,7 @@ router.post("/register", async (req, res) => {
   try {
     const existing = await db.query(
       `SELECT id FROM users WHERE username = $1`,
-      [username]
+      [username],
     );
     if (existing.rows.length > 0) {
       return res.status(409).json({ error: "Username already exists" });
@@ -55,7 +55,7 @@ router.post("/register", async (req, res) => {
 
     await db.query(
       `INSERT INTO users (username, password_hash) VALUES ($1, $2)`,
-      [username, hash]
+      [username, hash],
     );
 
     res.status(201).json({ message: "User created successfully" });
@@ -84,7 +84,7 @@ router.post("/login", async (req, res) => {
   try {
     const result = await db.query(
       `SELECT id, username, password_hash FROM users WHERE username = $1`,
-      [username]
+      [username],
     );
 
     if (result.rows.length === 0) {
@@ -202,7 +202,7 @@ router.post("/change-password", authenticateToken, async (req, res) => {
   try {
     const result = await db.query(
       `SELECT password_hash FROM users WHERE id = $1`,
-      [req.user.userId]
+      [req.user.userId],
     );
 
     if (result.rows.length === 0) {
@@ -233,7 +233,7 @@ router.post("/change-password", authenticateToken, async (req, res) => {
 router.get("/me", authenticateToken, async (req, res) => {
   const { rows } = await db.query(
     `SELECT username, admin FROM users WHERE id = $1`,
-    [req.user.userId]
+    [req.user.userId],
   );
   if (!rows.length) return res.status(404).json({ error: "User not found" });
   res.json({
@@ -281,14 +281,14 @@ router.get("/users", authenticateToken, requireAdmin, async (req, res) => {
       ORDER BY created_at DESC
       LIMIT $${limitParam} OFFSET $${offsetParam}
       `,
-      params
+      params,
     );
 
     // count query uses only the WHERE params (no limit/offset)
     const countParams = params.slice(0, where.length);
     const { rows: countRows } = await db.query(
       `SELECT COUNT(*)::int AS count FROM users ${whereSQL}`,
-      countParams
+      countParams,
     );
 
     res.json({
@@ -379,7 +379,7 @@ router.patch(
       // Ensure target exists + get current admin state
       const { rows: targetRows } = await db.query(
         "SELECT id, username, admin FROM users WHERE username = $1",
-        [targetUsername]
+        [targetUsername],
       );
       if (!targetRows.length) {
         return res.status(404).json({ error: "User not found" });
@@ -388,7 +388,7 @@ router.patch(
       // Optional: prevent removing the last remaining admin
       if (targetRows[0].admin === true && admin === false) {
         const { rows: cnt } = await db.query(
-          "SELECT COUNT(*)::int AS cnt FROM users WHERE admin = true"
+          "SELECT COUNT(*)::int AS cnt FROM users WHERE admin = true",
         );
         if (cnt[0].cnt <= 1) {
           return res
@@ -407,7 +407,7 @@ router.patch(
       console.error("PATCH /auth/users/:username/admin failed:", err);
       return res.status(500).json({ error: "Failed to update admin role" });
     }
-  }
+  },
 );
 
 router.post("/refresh", (req, res) => {
