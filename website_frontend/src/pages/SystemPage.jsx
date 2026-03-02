@@ -1203,7 +1203,7 @@ function SystemPage() {
                 )
               : name;
             if (!nameLux.isValid && !nameLocal.match(/^run_[a-zA-Z0-9]{6,7}.*\.log$/) && !nameLocal.match(/^output\.log$/)) {
-              return
+              return;
             }
             //push entry
             entries.push({
