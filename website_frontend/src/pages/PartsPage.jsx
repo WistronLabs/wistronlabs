@@ -267,12 +267,17 @@ export default function PartsInventory() {
   const [parts, setParts] = useState([]);
   const [invRows, setInvRows] = useState([]); // inventory place rows
   const [unitRows, setUnitRows] = useState([]); // unit place rows
-  const [placeFilter, setPlaceFilter] = useState("all"); // all | inventory | unit
+  // Multi-select location filter: selecting both means "all"
+  const [placeScopes, setPlaceScopes] = useState(
+    () => new Set(["inventory", "unit"]),
+  );
   const [selectedCategories, setSelectedCategories] = useState(new Set());
-  const [allCats, setAllCats] = useState(true); // true => Select All is the only active pill
   const [showAdd, setShowAdd] = useState(false);
   const [busyAdd, setBusyAdd] = useState(false);
-  const [functionalFilter, setFunctionalFilter] = useState("all"); // "all" | "functional" | "nonfunctional"
+  // Multi-select functionality filter: selecting both means "all"
+  const [functionalScopes, setFunctionalScopes] = useState(
+    () => new Set(["functional", "nonfunctional"]),
+  );
 
   // Multi-select: can include both at once
   // Keys: "in_house" | "shipped"
@@ -324,6 +329,33 @@ export default function PartsInventory() {
     });
   };
 
+  const togglePlaceScope = (key) => {
+    setPlaceScopes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        // Keep at least one selected
+        if (next.size === 1) return prev;
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const toggleFunctionalScope = (key) => {
+    setFunctionalScopes((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        if (next.size === 1) return prev; // keep at least one
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
   const categories = useMemo(() => {
     const set = new Set(
       (parts || []).map((p) => p.category_name || "Uncategorized"),
@@ -333,9 +365,7 @@ export default function PartsInventory() {
 
   // Initialize to "all selected" when parts load
   useEffect(() => {
-    if (!parts?.length) return;
-    setAllCats(true);
-    setSelectedCategories(new Set());
+    setSelectedCategories(new Set(categories));
   }, [parts, categories]);
 
   // Join display rows
@@ -363,7 +393,11 @@ export default function PartsInventory() {
             : r.unit_activity_state === "inactive_on_active_pallet"
               ? "RMA (Active)"
               : r.unit_activity_state === "inactive"
-                ? "RMA (Inactive)"
+                ? String(r.system_location || "")
+                    .toLowerCase()
+                    .includes("sent to l11")
+                  ? "Sent to L11"
+                  : "RMA (Inactive)"
                 : "—"
           : "";
       const shouldBlankPpid = place === "unit" && funcBool === false;
@@ -411,10 +445,6 @@ export default function PartsInventory() {
   }, [invRows, unitRows, partById]);
 
   const filtered = useMemo(() => {
-    const isAllCats =
-      selectedCategories.size === categories.length ||
-      selectedCategories.size === 0;
-
     return unified.filter((row) => {
       // ✅ Parts in Units filter (multi-select)
       if (row.place === "Unit") {
@@ -432,60 +462,38 @@ export default function PartsInventory() {
         if (!allowInHouse && !allowShipped) return false;
       }
 
-      if (placeFilter !== "all") {
-        if (placeFilter === "inventory" && row.place !== "Inventory")
-          return false;
-        if (placeFilter === "unit" && row.place !== "Unit") return false;
-      }
-      // Functional filter
-      if (functionalFilter !== "all") {
-        if (functionalFilter === "functional" && row.is_functional !== true)
-          return false;
-        if (functionalFilter === "nonfunctional" && row.is_functional !== false)
-          return false;
-      }
+      if (row.place === "Inventory" && !placeScopes.has("inventory"))
+        return false;
+      if (row.place === "Unit" && !placeScopes.has("unit")) return false;
+      // Functional filter (both selected => show all)
+      if (row.is_functional === true && !functionalScopes.has("functional"))
+        return false;
+      if (row.is_functional === false && !functionalScopes.has("nonfunctional"))
+        return false;
       // Category filter
-      if (!allCats) {
-        if (selectedCategories.size === 0) return false; // "Clear" => nothing
-        if (!selectedCategories.has(row.category_name)) return false;
-      }
+      if (!selectedCategories.has(row.category_name)) return false;
       return true;
     });
   }, [
     unified,
-    placeFilter,
-    allCats,
+    placeScopes,
     selectedCategories,
-    functionalFilter,
+    functionalScopes,
     unitScopes,
   ]);
 
   const toggleCategory = (cat) => {
     setSelectedCategories((prev) => {
-      // If we're in Select All mode, start a new selection with just this cat
-      if (allCats) {
-        setAllCats(false);
-        return new Set([cat]);
-      }
       const next = new Set(prev);
-      if (next.has(cat)) next.delete(cat);
-      else next.add(cat);
-      // If user manually toggled up to all categories, flip to Select All mode
-      if (next.size === categories.length) {
-        setAllCats(true);
-        return new Set(); // empty set while in allCats mode
+      if (next.has(cat)) {
+        // Keep at least one category selected
+        if (next.size === 1) return prev;
+        next.delete(cat);
+      } else {
+        next.add(cat);
       }
       return next;
     });
-  };
-
-  const selectAllCategories = () => {
-    setAllCats(true);
-    setSelectedCategories(new Set()); // we represent "all" with empty set + allCats=true
-  };
-  const clearAllCategories = () => {
-    setAllCats(false);
-    setSelectedCategories(new Set()); // no cats selected => show nothing
   };
 
   // CSV Export of current filtered rows
@@ -576,7 +584,6 @@ export default function PartsInventory() {
 
   const displayOrder = [
     "part_name",
-    "category_name",
     "dpn",
     "ppid",
     "place",
@@ -585,16 +592,18 @@ export default function PartsInventory() {
     "unit_scope",
   ];
 
-  const visibleFields = [
-    "part_name",
-    "category_name",
-    "dpn",
-    "ppid",
-    "place",
-    "unit_scope",
-    "functional",
-    "unit_service_tag",
-  ];
+  const visibleFields =
+    !placeScopes.has("unit")
+      ? ["part_name", "dpn", "ppid", "place", "functional"]
+      : [
+          "part_name",
+          "dpn",
+          "ppid",
+          "place",
+          "unit_scope",
+          "functional",
+          "unit_service_tag",
+        ];
 
   return (
     <main className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6">
@@ -616,10 +625,10 @@ export default function PartsInventory() {
 
           <button
             type="button"
-            className="bg-gray-700 hover:bg-gray-800 text-white font-medium px-4 py-2 rounded-lg shadow-s"
+            className="bg-green-600 hover:bg-green-700 text-white font-medium px-4 py-2 rounded-lg shadow-sm"
             onClick={handleExportCsv}
           >
-            Export CSV (Filtered)
+            Download Report
           </button>
         </div>
       </div>
@@ -631,23 +640,22 @@ export default function PartsInventory() {
         {/* Left-side controls: Place + Functional */}
         <div className="min-w-0">
           <div className="flex flex-wrap gap-6">
-            {/* Place */}
+            {/* Functionality */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Part Location
+                Functionality
               </label>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { v: "all", label: "All" },
-                  { v: "inventory", label: "In Inventory" },
-                  { v: "unit", label: "In Unit" },
+                  { v: "functional", label: "Functional" },
+                  { v: "nonfunctional", label: "Non-Functional" },
                 ].map((opt) => (
                   <button
                     key={opt.v}
                     type="button"
-                    onClick={() => setPlaceFilter(opt.v)}
+                    onClick={() => toggleFunctionalScope(opt.v)}
                     className={`px-3 py-1.5 rounded-lg text-sm shadow-sm border ${
-                      placeFilter === opt.v
+                      functionalScopes.has(opt.v)
                         ? "bg-blue-600 text-white border-blue-600"
                         : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
                     }`}
@@ -657,23 +665,22 @@ export default function PartsInventory() {
                 ))}
               </div>
             </div>
-            {/* Functional */}
+            {/* Place */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Funcionality
+                Location
               </label>
               <div className="flex flex-wrap gap-2">
                 {[
-                  { v: "all", label: "All" },
-                  { v: "functional", label: "Functional" },
-                  { v: "nonfunctional", label: "Non-Functional" },
+                  { v: "inventory", label: "In Inventory" },
+                  { v: "unit", label: "In Unit" },
                 ].map((opt) => (
                   <button
                     key={opt.v}
                     type="button"
-                    onClick={() => setFunctionalFilter(opt.v)}
+                    onClick={() => togglePlaceScope(opt.v)}
                     className={`px-3 py-1.5 rounded-lg text-sm shadow-sm border ${
-                      functionalFilter === opt.v
+                      placeScopes.has(opt.v)
                         ? "bg-blue-600 text-white border-blue-600"
                         : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
                     }`}
@@ -684,15 +691,15 @@ export default function PartsInventory() {
               </div>
             </div>
             {/* Parts in Units */}
-            {placeFilter !== "inventory" && (
+            {placeScopes.has("unit") && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Unit Location with Parts
+                  Unit Status
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {[
-                    { k: "in_house", label: "In House" },
-                    { k: "shipped", label: "Shipped" },
+                    { k: "in_house", label: "In Facility" },
+                    { k: "shipped", label: "Sent Out" },
                   ].map((opt) => {
                     const active = unitScopes.has(opt.k);
                     return (
@@ -721,19 +728,8 @@ export default function PartsInventory() {
             Categories
           </label>
           <div className="flex flex-wrap gap-2 w-full md:justify-end">
-            <button
-              type="button"
-              onClick={selectAllCategories}
-              className={`px-3 py-1.5 rounded-lg text-sm shadow-sm border ${
-                allCats
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
-              }`}
-            >
-              All
-            </button>
             {categories.map((cat) => {
-              const active = !allCats && selectedCategories.has(cat);
+              const active = selectedCategories.has(cat);
               return (
                 <button
                   key={cat}
@@ -764,33 +760,64 @@ export default function PartsInventory() {
         fieldStyles={{
           place: (v) =>
             v === "Inventory"
-              ? { type: "pill", color: "bg-green-100 text-green-800" }
-              : { type: "pill", color: "bg-yellow-100 text-yellow-800" },
+              ? {
+                  type: "pill",
+                  color: "bg-green-50 text-green-700 border border-green-200",
+                }
+              : {
+                  type: "pill",
+                  color: "bg-yellow-50 text-yellow-700 border border-yellow-200",
+                },
           functional: (v) =>
             v === "Yes"
-              ? { type: "pill", color: "bg-green-100 text-green-800" }
-              : v === "No"
-                ? { type: "pill", color: "bg-red-100 text-red-800" }
+              ? {
+                  type: "pill",
+                  color: "bg-green-50 text-green-700 border border-green-200",
+                }
+                : v === "No"
+                ? {
+                    type: "pill",
+                    color: "bg-red-50 text-red-700 border border-red-200",
+                  }
                 : "text-gray-400 text-xs italic",
           unit_service_tag: (v) =>
-            v ? "font-mono text-xs" : "text-gray-400 text-xs italic",
+            v ? "font-mono text-xs tracking-tight" : "text-gray-400 text-xs italic",
           unit_scope: (v) =>
             v === "Active"
-              ? { type: "pill", color: "bg-blue-100 text-blue-800" }
+              ? {
+                  type: "pill",
+                  color: "bg-blue-50 text-blue-700 border border-blue-200",
+                }
               : v === "RMA (Active)"
-                ? { type: "pill", color: "bg-yellow-100 text-yellow-800" }
+                ? {
+                    type: "pill",
+                    color: "bg-yellow-50 text-yellow-700 border border-yellow-200",
+                  }
                 : v === "RMA (Inactive)"
-                  ? { type: "pill", color: "bg-gray-200 text-gray-800" }
+                  ? {
+                      type: "pill",
+                      color: "bg-gray-100 text-gray-700 border border-gray-200",
+                    }
+                  : v === "Sent to L11"
+                    ? {
+                        type: "pill",
+                        color: "bg-slate-100 text-slate-700 border border-slate-200",
+                      }
                   : "text-gray-400 text-xs italic",
 
-          ppid: "font-mono text-xs",
+          ppid: "font-mono text-xs tracking-tight",
         }}
         visibleFields={visibleFields}
         linkType="none"
         allowSort={true}
         allowSearch={true}
         defaultPage="first"
-        truncate={false}
+        truncate={true}
+        alignByField={{
+          place: "center",
+          functional: "center",
+          unit_scope: "center",
+        }}
       />
       {showAdd && (
         <AddInventoryModal
