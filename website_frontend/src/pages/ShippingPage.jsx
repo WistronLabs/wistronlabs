@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useContext } from "react";
+import React, { useEffect, useState, useContext } from "react";
 import useToast from "../hooks/useToast";
 import useConfirm from "../hooks/useConfirm";
 import { formatDateHumanReadable } from "../utils/date_format";
@@ -6,9 +6,9 @@ import { pdf } from "@react-pdf/renderer";
 import SystemRMALabel from "../components/SystemRMALabel.jsx";
 import { enrichPalletWithBarcodes } from "../utils/enrichPalletWithBarcodes";
 import PalletPaper from "../components/PalletPaper";
-import { Link } from "react-router-dom";
 import useApi from "../hooks/useApi";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
+import { Link } from "react-router-dom";
 import {
   DndContext,
   closestCenter,
@@ -22,15 +22,43 @@ import {
 } from "@dnd-kit/core";
 import { AuthContext } from "../context/AuthContext.jsx";
 
-function SystemBox({ serviceTag }) {
+function SystemBox({
+  serviceTag,
+  dpn,
+  dellCustomer,
+  onClick,
+  highlightMissing,
+  isSelected,
+}) {
   return (
-    <div className="w-full h-full flex items-center justify-center rounded-lg text-sm font-semibold transition bg-neutral-100 text-neutral-800 border border-neutral-300 shadow-sm hover:ring-2 hover:ring-neutral-300 hover:bg-neutral-200 cursor-move select-none">
-      {serviceTag}
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full h-full rounded-lg text-sm transition bg-neutral-100 text-neutral-800 border shadow-sm hover:ring-2 hover:bg-neutral-200 cursor-move select-none px-2 py-1 overflow-hidden text-left ${
+        isSelected
+          ? "border-blue-500 ring-2 ring-blue-300"
+          : highlightMissing
+            ? "border-amber-300 ring-1 ring-amber-200 bg-amber-50"
+            : "border-neutral-300 hover:ring-neutral-300"
+      }`}
+    >
+      <div className="font-semibold truncate">{serviceTag}</div>
+      <div className="text-[11px] text-neutral-600 truncate">
+        {dpn || "No DPN"}
+        {dellCustomer ? ` - ${dellCustomer}` : ""}
+      </div>
+    </button>
   );
 }
 
-function DraggableSystem({ palletId, index, system }) {
+function DraggableSystem({
+  palletId,
+  index,
+  system,
+  onSelectDOA,
+  highlightMissing,
+  isSelected,
+}) {
   const { attributes, listeners, setNodeRef, transform, isDragging } =
     useDraggable({
       id: `drag-${palletId}-${index}`,
@@ -53,9 +81,14 @@ function DraggableSystem({ palletId, index, system }) {
       style={style}
       className="w-full h-full flex items-center justify-center"
     >
-      <Link to={`/${system.service_tag}`} className="w-full h-full">
-        <SystemBox serviceTag={system.service_tag} />
-      </Link>
+      <SystemBox
+        serviceTag={system.service_tag}
+        dpn={system.dpn}
+        dellCustomer={system.dell_customer}
+        onClick={() => onSelectDOA(system)}
+        highlightMissing={highlightMissing}
+        isSelected={isSelected}
+      />
     </div>
   );
 }
@@ -80,7 +113,7 @@ function DroppableSlot({ palletId, idx, children }) {
   );
 }
 
-function LockStateButton({ currentLocked, pending, onToggle }) {
+function LockStateButton({ currentLocked, pending, onToggle, disabled }) {
   const hasPending = pending !== undefined;
   const effectiveLocked = hasPending ? pending : currentLocked;
 
@@ -102,13 +135,13 @@ function LockStateButton({ currentLocked, pending, onToggle }) {
       ? "LOCKED_PENDING"
       : "UNLOCKED_PENDING"
     : currentLocked
-    ? "LOCKED_CURRENT"
-    : "UNLOCKED_CURRENT";
+      ? "LOCKED_CURRENT"
+      : "UNLOCKED_CURRENT";
 
   // Longest label drives button width
   const longestLabel = Object.values(labels).reduce(
     (a, b) => (b.length > a.length ? b : a),
-    ""
+    "",
   );
 
   const title = hasPending
@@ -119,8 +152,11 @@ function LockStateButton({ currentLocked, pending, onToggle }) {
     <button
       type="button"
       onClick={onToggle}
+      disabled={disabled}
       title={title}
-      className={`grid place-items-center whitespace-nowrap px-2 py-1 text-xs font-semibold rounded-md border ${styles[stateKey]} hover:opacity-90`}
+      className={`grid place-items-center whitespace-nowrap px-2 py-1 text-xs font-semibold rounded-md border ${styles[stateKey]} ${
+        disabled ? "cursor-not-allowed" : "hover:opacity-90"
+      }`}
       // grid + invisible longest label ensures fixed width
     >
       {/* Invisible width-reserver */}
@@ -135,20 +171,33 @@ const PalletGrid = ({
   pallet,
   releaseFlags,
   setReleaseFlags,
-  onLockUpdated, // kept for backwards-compat
-  setPalletLock, // kept for backwards-compat
-  showToast,
   lockFlags,
   setLockFlags,
+  deleteFlags,
+  setDeleteFlags,
+  selectedDOAEditor,
+  pendingDOAValue,
+  setPendingDOAValue,
+  onSelectDOA,
+  onSaveDOA,
+  savingDOA,
+  releaseError,
+  missingServiceTags,
+  hasToken,
 }) => {
   // Use unified field so the grid also works for released pallets if reused
   const raw = pallet.systems ?? pallet.active_systems ?? [];
   const systems = raw.map((s) =>
-    s && (s.service_tag || s.system_id) ? s : undefined
+    s && (s.service_tag || s.system_id) ? s : undefined,
   );
 
   const isEmpty = systems.every((s) => !s || (!s.service_tag && !s.system_id));
   const isReleased = !!releaseFlags[pallet.id]?.released;
+  const isEditingDOA = selectedDOAEditor?.palletId === pallet.id;
+  const isClearDOAAction =
+    isEditingDOA &&
+    !!String(selectedDOAEditor?.originalDOA || "").trim() &&
+    !String(pendingDOAValue || "").trim();
 
   useEffect(() => {
     if (isEmpty && releaseFlags[pallet.id]) {
@@ -170,25 +219,16 @@ const PalletGrid = ({
       }
       return {
         ...prev,
-        [pallet.id]: { released: true, doa_number: "" },
+        [pallet.id]: { released: true },
       };
     });
-  };
-
-  const handleDOAChange = (e) => {
-    setReleaseFlags((prev) => ({
-      ...prev,
-      [pallet.id]: {
-        ...prev[pallet.id],
-        doa_number: e.target.value.trimStart(),
-      },
-    }));
   };
 
   // ---- STAGED LOCK TOGGLE ----
   const currentLocked = !!pallet.locked;
   const pending = lockFlags[pallet.id]; // undefined | boolean
   const hasPending = pending !== undefined;
+  const isDeletePending = !!deleteFlags[pallet.id];
 
   const toggleLockStaged = () => {
     setLockFlags((prev) => {
@@ -210,8 +250,8 @@ const PalletGrid = ({
       ? "LOCKED_PENDING"
       : "UNLOCKED_PENDING"
     : currentLocked
-    ? "LOCKED_CURRENT"
-    : "UNLOCKED_CURRENT";
+      ? "LOCKED_CURRENT"
+      : "UNLOCKED_CURRENT";
 
   const stateStyles = {
     LOCKED_CURRENT: "bg-red-50 text-red-700 border-red-200",
@@ -227,15 +267,31 @@ const PalletGrid = ({
     UNLOCKED_PENDING: "Unlocked (pending)",
   };
 
+  const toggleDeleteStaged = () => {
+    setDeleteFlags((prev) => {
+      const next = { ...prev };
+      if (next[pallet.id]) delete next[pallet.id];
+      else next[pallet.id] = true;
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    if (!isEmpty && deleteFlags[pallet.id]) {
+      setDeleteFlags((prev) => {
+        const next = { ...prev };
+        delete next[pallet.id];
+        return next;
+      });
+    }
+  }, [isEmpty, deleteFlags, pallet.id, setDeleteFlags]);
+
   return (
     <div className="border border-gray-300 rounded-2xl shadow-md hover:shadow-lg transition p-4 bg-white flex flex-col justify-between">
       <div className="mb-4 relative">
         <h2 className="text-md font-medium text-gray-700 pr-32">
           {pallet.pallet_number}
         </h2>
-        <p className="text-gray-800 text-sm">
-          Config {pallet.config} - {pallet.dell_customer}
-        </p>
         <p className="text-xs pb-2 text-gray-500">
           Created on {formatDateHumanReadable(pallet.created_at)}
         </p>
@@ -243,11 +299,32 @@ const PalletGrid = ({
         {/* Lock chip  stage/clear button */}
         <div className="absolute top-0 right-0 flex items-center gap-2">
           <div className="absolute top-0 right-0">
-            <LockStateButton
-              currentLocked={currentLocked}
-              pending={pending}
-              onToggle={toggleLockStaged}
-            />
+            {isEmpty ? (
+              <button
+                type="button"
+                onClick={toggleDeleteStaged}
+                disabled={!hasToken}
+                className={`grid place-items-center whitespace-nowrap px-2 py-1 text-xs font-semibold rounded-md border ${
+                  isDeletePending
+                    ? "bg-red-50 text-red-700 border-red-200"
+                    : "bg-gray-50 text-gray-700 border-gray-300"
+                } ${!hasToken ? "cursor-not-allowed" : "hover:opacity-90"}`}
+              >
+                <span className="invisible col-start-1 row-start-1">
+                  Deleted (Pending)
+                </span>
+                <span className="col-start-1 row-start-1">
+                  {isDeletePending ? "Deleted (Pending)" : "Delete"}
+                </span>
+              </button>
+            ) : (
+              <LockStateButton
+                currentLocked={currentLocked}
+                pending={pending}
+                onToggle={toggleLockStaged}
+                disabled={!hasToken}
+              />
+            )}
           </div>
         </div>
 
@@ -265,6 +342,12 @@ const PalletGrid = ({
                     system={system}
                     index={idx}
                     palletId={pallet.id}
+                    onSelectDOA={(unit) => onSelectDOA(pallet.id, unit)}
+                    highlightMissing={!String(system.doa_number || "").trim()}
+                    isSelected={
+                      isEditingDOA &&
+                      selectedDOAEditor?.serviceTag === system.service_tag
+                    }
                   />
                 )}
               </DroppableSlot>
@@ -272,29 +355,85 @@ const PalletGrid = ({
           })}
         </div>
 
+        {isEditingDOA && (
+          <div className="mb-2">
+            <label className="block text-xs font-medium text-gray-700 mb-1">
+              DOA Number - {selectedDOAEditor.serviceTag}
+            </label>
+            <div className="flex items-center gap-2">
+              <div className="relative w-full">
+                <input
+                  type="text"
+                  maxLength={20}
+                  value={pendingDOAValue}
+                  onChange={(e) =>
+                    setPendingDOAValue(e.target.value.slice(0, 20))
+                  }
+                  disabled={!hasToken}
+                  className={`w-full rounded-md border px-2 py-1 pr-7 text-sm focus:outline-none focus:ring-2 ${
+                    hasToken
+                      ? "border-gray-300 focus:ring-blue-500"
+                      : "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
+                  }`}
+                  placeholder="Enter DOA number"
+                />
+                {pendingDOAValue && (
+                  <button
+                    type="button"
+                    onClick={() => setPendingDOAValue("")}
+                    disabled={!hasToken}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 inline-flex h-5 w-5 items-center justify-center rounded text-gray-500 leading-none hover:bg-gray-100 hover:text-gray-700"
+                    title="Clear DOA input"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <Link
+                to={`/${selectedDOAEditor.serviceTag}`}
+                title={`Go to ${selectedDOAEditor.serviceTag}`}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-700 hover:bg-gray-100"
+              >
+                ↗
+              </Link>
+            </div>
+          </div>
+        )}
+
         <button
-          onClick={toggleRelease}
-          disabled={isEmpty}
+          onClick={isEditingDOA ? onSaveDOA : toggleRelease}
+          disabled={
+            isEditingDOA ? savingDOA || !hasToken : isEmpty || !hasToken
+          }
           className={`w-full mt-2 py-2 rounded-lg text-sm font-semibold text-white transition ${
-            isEmpty
+            !hasToken
               ? "bg-gray-300 cursor-not-allowed"
-              : isReleased
-              ? "bg-yellow-600 hover:bg-yellow-700"
-              : "bg-green-600 hover:bg-green-700"
+              : isEditingDOA
+                ? savingDOA
+                  ? "bg-gray-400 cursor-wait"
+                  : "bg-blue-600 hover:bg-blue-700"
+                : isEmpty
+                  ? "bg-gray-300 cursor-not-allowed"
+                  : isReleased
+                    ? "bg-yellow-600 hover:bg-yellow-700"
+                    : "bg-green-600 hover:bg-green-700"
           }`}
         >
-          {isReleased ? "Undo Release" : "Mark for Release"}
+          {isEditingDOA
+            ? savingDOA
+              ? "Saving..."
+              : isClearDOAAction
+                ? "Clear DOA Number"
+                : "Save DOA Number"
+            : isReleased
+              ? "Undo Release"
+              : "Mark for Release"}
         </button>
-
-        <input
-          type="text"
-          placeholder="Enter DOA Number"
-          value={releaseFlags[pallet.id]?.doa_number || ""}
-          onChange={handleDOAChange}
-          className={`mt-2 w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring focus:ring-blue-200 text-sm ${
-            isReleased ? "" : "invisible"
-          }`}
-        />
+        {releaseError && (
+          <div className="mt-2 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded text-sm">
+            {releaseError}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -306,20 +445,13 @@ export default function ShippingPage() {
   const [pallets, setPallets] = useState([]);
   const [initialPallets, setInitialPallets] = useState([]);
   const [activeDragData, setActiveDragData] = useState(null);
-  const [downloadingReport, setDownloadingReport] = useState(false);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingPallet, setCreatingPallet] = useState(false);
-  const [newPalletForm, setNewPalletForm] = useState({
-    dpn: "",
-    factoryCode: "",
-  });
-
-  const [dpnOptions, setDpnOptions] = useState([]);
-  const [factoryOptions, setFactoryOptions] = useState([]);
 
   // staged lock changes
   const [lockFlags, setLockFlags] = useState({});
+  const [deleteFlags, setDeleteFlags] = useState({});
   const [releaseFlags, setReleaseFlags] = useState({});
   const [tab, setTab] = useState("active");
 
@@ -327,8 +459,14 @@ export default function ShippingPage() {
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportGenerating, setReportGenerating] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all"); // 'all' | 'locked' | 'unlocked'
-  const [selectedDpns, setSelectedDpns] = useState(new Set());
-  const [selectedFactories, setSelectedFactories] = useState(new Set());
+  const [showUploadDOAModal, setShowUploadDOAModal] = useState(false);
+  const [uploadingDOA, setUploadingDOA] = useState(false);
+  const [uploadDOACSV, setUploadDOACSV] = useState("");
+  const [selectedDOAEditor, setSelectedDOAEditor] = useState(null);
+  const [pendingDOAValue, setPendingDOAValue] = useState("");
+  const [savingDOA, setSavingDOA] = useState(false);
+  const [releaseErrors, setReleaseErrors] = useState({});
+  const [missingDOAByPallet, setMissingDOAByPallet] = useState({});
 
   const FRONTEND_URL = import.meta.env.VITE_URL;
 
@@ -336,12 +474,10 @@ export default function ShippingPage() {
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(TouchSensor, {
       activationConstraint: { delay: 150, tolerance: 5 },
-    })
+    }),
   );
 
   const {
-    getDpns,
-    getFactories,
     createPallet,
     getSystem,
     getPallets,
@@ -349,58 +485,115 @@ export default function ShippingPage() {
     releasePallet,
     deletePallet,
     setPalletLock,
+    updateSystemDOA,
   } = useApi();
 
-  const handleCreatePallet = async (e) => {
-    e?.preventDefault?.();
-    const dpn = newPalletForm.dpn.trim();
-    const factory_code = newPalletForm.factoryCode.trim();
-    if (!dpn || !factory_code) {
-      showToast("DPN and Factory Code are required.", "error");
+  const handleSelectDOA = (palletId, unit) => {
+    // Any DOA edit interaction should require re-marking release.
+    setReleaseFlags((prev) => {
+      if (!prev[palletId]) return prev;
+      const next = { ...prev };
+      delete next[palletId];
+      return next;
+    });
+    // Hide inline release errors whenever the DOA editor is toggled.
+    setReleaseErrors((prev) => {
+      const next = { ...prev };
+      delete next[palletId];
+      return next;
+    });
+    setMissingDOAByPallet((prev) => {
+      const next = { ...prev };
+      delete next[palletId];
+      return next;
+    });
+
+    if (
+      selectedDOAEditor?.palletId === palletId &&
+      selectedDOAEditor?.serviceTag === unit.service_tag
+    ) {
+      setSelectedDOAEditor(null);
+      setPendingDOAValue("");
+      return;
+    }
+
+    setSelectedDOAEditor({
+      palletId,
+      serviceTag: unit.service_tag,
+      originalDOA: unit.doa_number || "",
+    });
+    setPendingDOAValue(unit.doa_number || "");
+  };
+
+  const handleSaveDOA = async () => {
+    if (!selectedDOAEditor?.serviceTag) return;
+
+    const nextValue = pendingDOAValue.slice(0, 20).trim();
+    const hadExistingDOA = !!String(selectedDOAEditor.originalDOA || "").trim();
+    if (!nextValue && !hadExistingDOA) {
+      const palletId = selectedDOAEditor.palletId;
+      setReleaseErrors((prev) => ({
+        ...prev,
+        [palletId]: "DOA number is required before saving.",
+      }));
       return;
     }
 
     try {
+      setSavingDOA(true);
+      await updateSystemDOA(selectedDOAEditor.serviceTag, nextValue);
+      setPallets((prev) =>
+        prev.map((p) => {
+          const updateList = (list) =>
+            (list || []).map((s) =>
+              s?.service_tag === selectedDOAEditor.serviceTag
+                ? { ...s, doa_number: nextValue || null }
+                : s,
+            );
+          return {
+            ...p,
+            systems: updateList(p.systems),
+            active_systems: updateList(p.active_systems),
+          };
+        }),
+      );
+      setReleaseErrors((prev) => {
+        const next = { ...prev };
+        delete next[selectedDOAEditor.palletId];
+        return next;
+      });
+      setSelectedDOAEditor(null);
+      setPendingDOAValue("");
+      showToast(nextValue ? "DOA number saved" : "DOA number cleared", "info");
+    } catch (err) {
+      showToast(`Failed to save DOA number: ${err.message}`, "error");
+    } finally {
+      setSavingDOA(false);
+    }
+  };
+
+  const handleCreatePallet = async (e) => {
+    e?.preventDefault?.();
+
+    try {
       setCreatingPallet(true);
-      const res = await createPallet({ dpn, factory_code });
+      const res = await createPallet();
       const pn =
         res?.pallet_number || res?.pallet?.pallet_number || "(pallet created)";
       showToast(`Created pallet ${pn}`, "info");
       setShowCreateModal(false);
-      setNewPalletForm({ dpn: "", factoryCode: "" });
       await reloadOpenPallets();
     } catch (err) {
-      const msg = err?.error || err?.message || "Failed to create pallet";
+      const msg =
+        err?.body?.error ||
+        err?.error ||
+        err?.message ||
+        "Failed to create pallet";
       showToast(msg, "error");
     } finally {
       setCreatingPallet(false);
     }
   };
-
-  const uniqueDpns = useMemo(() => {
-    const vals = (pallets || []).map(
-      (p) => p?.dpn ?? p?.pallet_number?.split("-")[2]?.trim() ?? ""
-    );
-    return Array.from(new Set(vals.filter(Boolean))).sort();
-  }, [pallets]);
-
-  const uniqueFactories = useMemo(() => {
-    const vals = (pallets || []).map(
-      (p) => p?.factory_code ?? p?.pallet_number?.split("-")[1]?.trim() ?? ""
-    );
-    return Array.from(new Set(vals.filter(Boolean))).sort();
-  }, [pallets]);
-
-  // Helpers used by the modal
-  const toggleSetValue = (setter) => (value) =>
-    setter((prev) => {
-      const next = new Set(prev);
-      next.has(value) ? next.delete(value) : next.add(value);
-      return next;
-    });
-
-  const selectAll = (setter, values) => setter(new Set(values));
-  const selectNone = (setter) => setter(new Set());
 
   // ---- Released tab data fetcher ----
   const fetchReleasedPallets = async ({
@@ -438,32 +631,33 @@ export default function ShippingPage() {
                   return {
                     service_tag: systemDetails.service_tag || "UNKNOWN-ST",
                     ppid: systemDetails.ppid?.trim() || "MISSING-PPID",
+                    doa_number: (
+                      systemDetails.doa_number ||
+                      sys.doa_number ||
+                      ""
+                    ).trim(),
                   };
                 } catch {
                   return {
                     service_tag: sys.service_tag || "UNKNOWN-ST",
                     ppid: "MISSING-PPID",
+                    doa_number: (sys.doa_number || "").trim(),
                   };
                 }
-              })
+              }),
           );
-
-          const parts = pallet.pallet_number.split("-");
-          const factory_id = parts[1] || "";
-          const dpn = parts[2] || "";
 
           const rawPallet = {
             pallet_number: pallet.pallet_number,
-            doa_number: pallet.doa_number,
             date_released: pallet.released_at?.split("T")[0] || "",
-            dpn,
-            factory_id,
+            dpn: pallet.dpn || "MIXED",
+            factory_id: pallet.factory_code || "N/A",
             systems: systemsWithDetails,
           };
 
           const enriched = enrichPalletWithBarcodes(rawPallet);
           const palletBlob = await pdf(
-            <PalletPaper pallet={enriched} />
+            <PalletPaper pallet={enriched} />,
           ).toBlob();
           const pdfUrl = URL.createObjectURL(palletBlob);
 
@@ -480,43 +674,15 @@ export default function ShippingPage() {
         } catch (err) {
           console.error(
             `PDF generation failed for ${pallet.pallet_number}`,
-            err
+            err,
           );
           return { ...pallet, href: "#" };
         }
-      })
+      }),
     );
 
     return { data: palletsWithLinks, total_count: res.total_count };
   };
-
-  useEffect(() => {
-    if (showReportModal) {
-      setSelectedDpns(new Set(uniqueDpns));
-      setSelectedFactories(new Set(uniqueFactories));
-      setStatusFilter("all");
-    }
-  }, [showReportModal, uniqueDpns, uniqueFactories]);
-
-  useEffect(() => {
-    if (!showCreateModal) return;
-    (async () => {
-      try {
-        const dpns = await getDpns();
-        setDpnOptions(Array.isArray(dpns) ? dpns : []);
-      } catch (e) {
-        console.error(e);
-        showToast("Failed to load DPNs", "error");
-      }
-      try {
-        const facs = await getFactories();
-        setFactoryOptions(Array.isArray(facs) ? facs : []);
-      } catch (e) {
-        console.error(e);
-        showToast("Failed to load factories", "error");
-      }
-    })();
-  }, [showCreateModal]);
 
   // ---- Initial load (open pallets) ----
   useEffect(() => {
@@ -561,61 +727,23 @@ export default function ShippingPage() {
     setInitialPallets(structuredClone(normalized));
     setReleaseFlags({});
     setLockFlags({});
-  };
-
-  const handleLockUpdated = (updatedPallet) => {
-    setPallets((prev) =>
-      prev.map((p) =>
-        p.id === updatedPallet.id ? { ...p, ...updatedPallet } : p
-      )
-    );
-    setInitialPallets((prev) =>
-      prev.map((p) =>
-        p.id === updatedPallet.id ? { ...p, ...updatedPallet } : p
-      )
-    );
+    setDeleteFlags({});
+    setSelectedDOAEditor(null);
+    setPendingDOAValue("");
+    setReleaseErrors({});
+    setMissingDOAByPallet({});
   };
 
   const handleDownloadReport = async () => {
     try {
       setReportGenerating(true);
 
-      // helper inside handleDownloadReport (above the filter)
-      const matchesPick = (val, selectedSet, allCount) => {
-        if (allCount === 0) return true; // no options available -> ignore dim
-        if (selectedSet.size === 0) return false; // explicit NONE -> match nothing
-        if (selectedSet.size === allCount) return true; // ALL selected -> no restriction
-        return selectedSet.has(val); // subset -> membership
-      };
-
-      const nothingSelected =
-        selectedDpns.size === 0 && selectedFactories.size === 0;
-
-      if (nothingSelected) {
-        showToast("Select at least one DPN or Factory.", "error");
-        return;
-      }
-
       const filtered = (pallets || []).filter((p) => {
-        const lockOk =
-          statusFilter === "all"
-            ? true
-            : statusFilter === "locked"
+        return statusFilter === "all"
+          ? true
+          : statusFilter === "locked"
             ? !!p.locked
             : !p.locked;
-
-        const dpnVal = p?.dpn ?? p?.pallet_number?.split("-")[2]?.trim() ?? "";
-        const facVal =
-          p?.factory_code ?? p?.pallet_number?.split("-")[1]?.trim() ?? "";
-
-        const dpnOk = matchesPick(dpnVal, selectedDpns, uniqueDpns.length);
-        const facOk = matchesPick(
-          facVal,
-          selectedFactories,
-          uniqueFactories.length
-        );
-
-        return lockOk && dpnOk && facOk;
       });
 
       if (filtered.length === 0) {
@@ -634,14 +762,14 @@ export default function ShippingPage() {
         "Dell Customer",
         "issue",
         "location",
-        "factory_code",
+        "doa_number",
       ];
       const rows = [header];
 
       // For each pallet → each active system → fetch live system details
       for (const pallet of filtered) {
         const systems = (pallet.active_systems ?? pallet.systems ?? []).filter(
-          Boolean
+          Boolean,
         );
         if (systems.length === 0) continue;
 
@@ -657,6 +785,7 @@ export default function ShippingPage() {
                 dell_customer: d?.dell_customer || "",
                 issue: d?.issue ?? "",
                 location: d?.location ?? "",
+                doa_number: d?.doa_number ?? s?.doa_number ?? "",
               };
             } catch {
               return {
@@ -667,9 +796,10 @@ export default function ShippingPage() {
                 dell_customer: "",
                 issue: "",
                 location: "",
+                doa_number: s?.doa_number ?? "",
               };
             }
-          })
+          }),
         );
 
         for (const d of details) {
@@ -682,7 +812,7 @@ export default function ShippingPage() {
             d.dell_customer,
             d.issue,
             d.location,
-            pallet.factory_code || "", // prefer from pallet payload
+            d.doa_number,
           ]);
         }
       }
@@ -701,43 +831,18 @@ export default function ShippingPage() {
               const escaped = v.replace(/"/g, '""');
               return needsQuotes ? `"${escaped}"` : escaped;
             })
-            .join(",")
+            .join(","),
         )
         .join("\n");
-
-      // ...keep your existing code above...
 
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
 
-      // After filtered.length check, before building filename:
-      const codeSlug = (s) => String(s ?? "").replace(/[^A-Za-z0-9_-]/g, "");
-      const joinCodes = (arr) => arr.map(codeSlug).join("_");
-
-      const dpnPart =
-        selectedDpns.size === 0
-          ? "dpns_none"
-          : selectedDpns.size === uniqueDpns.length
-          ? "dpns_all"
-          : `dpns_${joinCodes([...selectedDpns].sort())}`;
-
-      const factoryPart =
-        selectedFactories.size === 0
-          ? "factories_none"
-          : selectedFactories.size === uniqueFactories.length
-          ? "factories_all"
-          : `factories_${joinCodes([...selectedFactories].sort())}`;
-
       const statusPart = statusFilter === "all" ? "all_active" : statusFilter;
-
-      // Example outputs:
-      // pallet-report-dpns_DKFX_XXXXX-factories_MX-all-<ts>.csv
-      // pallet-report-all_factories-all_dpns-locked-<ts>.csv
       a.href = url;
-      a.download = `pallet-report-${dpnPart}-${factoryPart}-${statusPart}-${ts}.csv`;
-      // --- END NEW ---
+      a.download = `pallet-report-${statusPart}-${ts}.csv`;
 
       document.body.appendChild(a);
       a.click();
@@ -751,6 +856,131 @@ export default function ShippingPage() {
       showToast(`Failed to build report: ${err.message || err}`, "error");
     } finally {
       setReportGenerating(false);
+    }
+  };
+
+  const handleUploadDOANumbers = async () => {
+    // Exit inline DOA edit mode when starting bulk upload.
+    setSelectedDOAEditor(null);
+    setPendingDOAValue("");
+
+    const lines = uploadDOACSV
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) {
+      showToast("Please provide CSV data.", "error");
+      return;
+    }
+
+    const parsed = new Map(); // last row wins by overwrite
+    let invalidRows = 0;
+
+    for (const rawLine of lines) {
+      const parts = rawLine
+        .split(rawLine.includes("\t") ? "\t" : ",")
+        .map((p) => (p ?? "").trim());
+      if (parts.length < 2) {
+        invalidRows += 1;
+        continue;
+      }
+
+      const serviceTag = String(parts[0] || "").toUpperCase();
+      const doaNumber = String(parts.slice(1).join("") || "").trim();
+
+      // Allow and ignore header row.
+      if (
+        serviceTag === "SERVICE_TAG" &&
+        doaNumber.toLowerCase() === "doa_number"
+      ) {
+        continue;
+      }
+
+      if (!serviceTag) {
+        invalidRows += 1;
+        continue;
+      }
+
+      parsed.set(serviceTag, doaNumber);
+    }
+
+    if (parsed.size === 0) {
+      showToast("No valid CSV rows found.", "error");
+      return;
+    }
+
+    const activeTags = new Set(
+      (pallets || [])
+        .flatMap((p) => p?.active_systems ?? p?.systems ?? [])
+        .filter((s) => s?.service_tag)
+        .map((s) => String(s.service_tag).toUpperCase()),
+    );
+
+    let updatedCount = 0;
+    let notUpdatedCount = invalidRows;
+
+    try {
+      setUploadingDOA(true);
+
+      const updates = [];
+      for (const [serviceTag, doaNumber] of parsed.entries()) {
+        if (!activeTags.has(serviceTag)) {
+          notUpdatedCount += 1;
+          continue;
+        }
+        if (!doaNumber || doaNumber.length > 20) {
+          notUpdatedCount += 1;
+          continue;
+        }
+        updates.push({ serviceTag, doaNumber });
+      }
+
+      const results = await Promise.allSettled(
+        updates.map((u) => updateSystemDOA(u.serviceTag, u.doaNumber)),
+      );
+
+      const applied = [];
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") {
+          updatedCount += 1;
+          applied.push(updates[i]);
+        } else {
+          notUpdatedCount += 1;
+        }
+      });
+
+      if (applied.length > 0) {
+        const byTag = new Map(applied.map((a) => [a.serviceTag, a.doaNumber]));
+        setPallets((prev) =>
+          prev.map((p) => {
+            const patch = (list) =>
+              (list || []).map((s) => {
+                if (!s?.service_tag) return s;
+                const key = String(s.service_tag).toUpperCase();
+                return byTag.has(key)
+                  ? { ...s, doa_number: byTag.get(key) }
+                  : s;
+              });
+            return {
+              ...p,
+              systems: patch(p.systems),
+              active_systems: patch(p.active_systems),
+            };
+          }),
+        );
+      }
+
+      showToast(
+        `${updatedCount} updated, ${notUpdatedCount} did not update`,
+        "info",
+      );
+      setShowUploadDOAModal(false);
+      setUploadDOACSV("");
+    } catch (err) {
+      showToast(`Failed to upload DOA numbers: ${err.message}`, "error");
+    } finally {
+      setUploadingDOA(false);
     }
   };
 
@@ -780,29 +1010,15 @@ export default function ShippingPage() {
       return;
     }
 
+    // Any successful move invalidates the current DOA edit context.
+    setSelectedDOAEditor(null);
+    setPendingDOAValue("");
+
     setPallets((prev) => {
       const copy = structuredClone(prev);
       const fromPallet = copy.find((p) => p.id === fromId);
       const toPallet = copy.find((p) => p.id === toId);
       if (!fromPallet || !toPallet) return prev;
-
-      const getDPN = (p) => (p.pallet_number.split("-")[2] || "").trim();
-      const getFactory = (p) => (p.pallet_number.split("-")[1] || "").trim();
-
-      const fromDPN = getDPN(fromPallet);
-      const toDPN = getDPN(toPallet);
-      const fromFactory = getFactory(fromPallet);
-      const toFactory = getFactory(toPallet);
-
-      if (fromDPN !== toDPN || fromFactory !== toFactory) {
-        const reasons = [];
-        if (fromDPN !== toDPN)
-          reasons.push(`DPN mismatch (${fromDPN} → ${toDPN})`);
-        if (fromFactory !== toFactory)
-          reasons.push(`Factory mismatch (${fromFactory} → ${toFactory})`);
-        showToast(`Cannot move system: ${reasons.join(" and ")}`, "error");
-        return prev;
-      }
 
       if (toPallet.active_systems?.[toIdx]?.service_tag) {
         showToast("Target slot already occupied", "error");
@@ -855,23 +1071,23 @@ export default function ShippingPage() {
     });
     if (hasAnyLockChange) return true;
 
+    const hasAnyDelete = Object.keys(deleteFlags).length > 0;
+    if (hasAnyDelete) return true;
+
     return false;
   })();
 
-  const handleSubmit = async () => {
-    const palletsMissingDOA = Object.entries(releaseFlags).filter(
-      ([_, val]) =>
-        val.released && (!val.doa_number || val.doa_number.trim() === "")
+  const missingDOAUnitsCount = (pallets || []).reduce((count, pallet) => {
+    const units = pallet?.active_systems ?? pallet?.systems ?? [];
+    return (
+      count +
+      units.filter((s) => s?.service_tag && !String(s.doa_number || "").trim())
+        .length
     );
+  }, 0);
+  const hasActivePallets = Array.isArray(pallets) && pallets.length > 0;
 
-    if (palletsMissingDOA.length > 0) {
-      showToast(
-        `DOA number is required for ${palletsMissingDOA.length} released pallet(s).`,
-        "error"
-      );
-      return;
-    }
-
+  const handleSubmit = async () => {
     const confirmed = await confirm({
       message: "Are you sure you want to submit changes?",
       title: "Confirm Submit",
@@ -897,7 +1113,7 @@ export default function ShippingPage() {
           if (!system) return;
 
           const currentPallet = pallets.find((p) =>
-            p.active_systems.some((s) => s?.service_tag === system.service_tag)
+            p.active_systems.some((s) => s?.service_tag === system.service_tag),
           );
           if (!currentPallet || currentPallet.id === initial.id) return;
 
@@ -912,34 +1128,43 @@ export default function ShippingPage() {
     const isSlotEmpty = (s) => !s || !s.service_tag; // treat placeholder as empty
 
     const emptyPallets = pallets
-      .filter((p) => (p.active_systems || []).every(isSlotEmpty))
+      .filter(
+        (p) =>
+          !!deleteFlags[p.id] && (p.active_systems || []).every(isSlotEmpty),
+      )
       .map((p) => ({ id: p.id, pallet_number: p.pallet_number }));
 
     const releaseList = Object.entries(releaseFlags)
-      .filter(([_, val]) => val.released && val.doa_number?.trim())
-      .map(([palletId, val]) => {
+      .filter(([_, val]) => val.released)
+      .map(([palletId]) => {
         const pallet = pallets.find((p) => p.id === Number(palletId));
         return {
+          id: pallet?.id,
           pallet_number: pallet?.pallet_number,
-          doa_number: val.doa_number.trim(),
         };
       });
 
-    const systemRMALabelData = moves.map((move) => {
-      const toPallet = pallets.find(
-        (p) => p.pallet_number === move.to_pallet_number
-      );
-      const parts = (toPallet?.pallet_number || "").split("-");
-      const dpn = parts[2] || "UNKNOWN";
-      const factory_code = parts[1] || "UNKNOWN";
-      return {
-        service_tag: move.service_tag,
-        pallet_number: toPallet?.pallet_number || "UNKNOWN",
-        dpn,
-        factory_code,
-        url: `${FRONTEND_URL}${move.service_tag}`,
-      };
-    });
+    const missingDOA = {};
+    const releaseErrorMessages = {};
+    for (const release of releaseList) {
+      const pallet = pallets.find((p) => p.id === release.id);
+      const missingTags = (pallet?.active_systems || [])
+        .filter((s) => s?.service_tag)
+        .filter((s) => !String(s.doa_number || "").trim())
+        .map((s) => s.service_tag);
+      if (missingTags.length > 0) {
+        missingDOA[release.id] = new Set(missingTags);
+        releaseErrorMessages[release.id] =
+          "All Service Tags must have a DOA number.";
+      }
+    }
+    if (Object.keys(missingDOA).length > 0) {
+      setMissingDOAByPallet(missingDOA);
+      setReleaseErrors(releaseErrorMessages);
+      return;
+    }
+    setMissingDOAByPallet({});
+    setReleaseErrors({});
 
     // STEP 1: Move systems
     for (const move of moves) {
@@ -952,11 +1177,39 @@ export default function ShippingPage() {
       } catch (err) {
         showToast(
           `Move failed for ${move.service_tag}: ${err.message}`,
-          "error"
+          "error",
         );
         return;
       }
     }
+
+    // Build fresh label payload for moved systems (ensures config/dpn are present)
+    const systemRMALabelData = await Promise.all(
+      moves.map(async (move) => {
+        const toPallet = pallets.find(
+          (p) => p.pallet_number === move.to_pallet_number,
+        );
+
+        let systemDetails = null;
+        try {
+          systemDetails = await getSystem(move.service_tag);
+        } catch {
+          // best-effort; fallback values below
+        }
+
+        return {
+          service_tag: move.service_tag,
+          pallet_number: toPallet?.pallet_number || "UNKNOWN",
+          shape: toPallet?.shape || null,
+          dpn: systemDetails?.dpn || "UNKNOWN",
+          config: systemDetails?.config || "",
+          dell_customer: systemDetails?.dell_customer || "",
+          ppid: systemDetails?.ppid || "",
+          factory_code: toPallet?.factory_code || "N/A",
+          url: `${FRONTEND_URL}${move.service_tag}`,
+        };
+      }),
+    );
 
     // STEP 2: Delete empty pallets
     for (const pallet of emptyPallets) {
@@ -965,20 +1218,49 @@ export default function ShippingPage() {
       } catch (err) {
         showToast(
           `Delete failed for ${pallet.pallet_number}: ${err.message}`,
-          "error"
+          "error",
         );
         return;
       }
     }
 
     // STEP 3: Release pallets
+    const releaseResults = [];
     for (const release of releaseList) {
       try {
-        await releasePallet(release.pallet_number, release.doa_number);
+        const released = await releasePallet(release.pallet_number);
+        releaseResults.push({
+          pallet_number: release.pallet_number,
+          doa_number: released?.doa_number || null,
+        });
       } catch (err) {
+        const msg = String(err.message || "");
+        const marker = "missing DOA number for ";
+        const idx = msg.toLowerCase().indexOf(marker.toLowerCase());
+        if (idx >= 0) {
+          const list = msg.slice(idx + marker.length).trim();
+          const missingTags = list
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const pallet = pallets.find(
+            (p) => p.pallet_number === release.pallet_number,
+          );
+          if (pallet?.id && missingTags.length) {
+            setMissingDOAByPallet((prev) => ({
+              ...prev,
+              [pallet.id]: new Set(missingTags),
+            }));
+            setReleaseErrors((prev) => ({
+              ...prev,
+              [pallet.id]: "All Service Tags must have a DOA number.",
+            }));
+          }
+          return;
+        }
         showToast(
           `Release failed for pallet ${release.pallet_number}: ${err.message}`,
-          "error"
+          "error",
         );
         return;
       }
@@ -988,14 +1270,14 @@ export default function ShippingPage() {
     try {
       if (systemRMALabelData.length > 0) {
         const labelBlob = await pdf(
-          <SystemRMALabel systems={systemRMALabelData} />
+          <SystemRMALabel systems={systemRMALabelData} />,
         ).toBlob();
         window.open(URL.createObjectURL(labelBlob));
       }
 
-      for (const release of releaseList) {
+      for (const release of releaseResults) {
         const palletData = pallets.find(
-          (p) => p.pallet_number === release.pallet_number
+          (p) => p.pallet_number === release.pallet_number,
         );
         if (!palletData) continue;
 
@@ -1008,33 +1290,33 @@ export default function ShippingPage() {
                 return {
                   service_tag: systemDetails.service_tag,
                   ppid: systemDetails.ppid || "UNKNOWN",
+                  doa_number: systemDetails.doa_number || sys.doa_number || "",
                 };
               } catch (err) {
                 console.error(
                   `Failed to fetch details for ${sys.service_tag}`,
-                  err
+                  err,
                 );
-                return { service_tag: sys.service_tag, ppid: "" };
+                return {
+                  service_tag: sys.service_tag,
+                  ppid: "",
+                  doa_number: sys.doa_number || "",
+                };
               }
-            })
+            }),
         );
-
-        const parts = palletData.pallet_number.split("-");
-        const factory_id = parts[1] || "";
-        const dpn = parts[2] || "";
 
         const rawPallet = {
           pallet_number: palletData.pallet_number,
-          doa_number: release.doa_number,
           date_released: new Date().toISOString().split("T")[0],
-          dpn,
-          factory_id,
+          dpn: palletData.dpn || "MIXED",
+          factory_id: palletData.factory_code || "N/A",
           systems: systemsWithDetails,
         };
 
         const enriched = enrichPalletWithBarcodes(rawPallet);
         const palletBlob = await pdf(
-          <PalletPaper pallet={enriched} />
+          <PalletPaper pallet={enriched} />,
         ).toBlob();
         window.open(URL.createObjectURL(palletBlob));
       }
@@ -1046,7 +1328,7 @@ export default function ShippingPage() {
     // STEP 4.5: Apply staged lock changes
     const pendingLockUpdates = pallets
       .filter(
-        (p) => lockFlags[p.id] !== undefined && lockFlags[p.id] !== !!p.locked
+        (p) => lockFlags[p.id] !== undefined && lockFlags[p.id] !== !!p.locked,
       )
       .map((p) => ({
         pallet_number: p.pallet_number,
@@ -1061,15 +1343,15 @@ export default function ShippingPage() {
           prev.map((p) =>
             p.id === upd.id
               ? { ...p, ...(res?.pallet || { locked: upd.desired }) }
-              : p
-          )
+              : p,
+          ),
         );
       } catch (err) {
         showToast(
           `Failed to ${upd.desired ? "lock" : "unlock"} ${upd.pallet_number}: ${
             err.message
           }`,
-          "error"
+          "error",
         );
         return;
       }
@@ -1092,6 +1374,11 @@ export default function ShippingPage() {
       setInitialPallets(structuredClone(normalized));
       setReleaseFlags({});
       setLockFlags({});
+      setDeleteFlags({});
+      setSelectedDOAEditor(null);
+      setPendingDOAValue("");
+      setReleaseErrors({});
+      setMissingDOAByPallet({});
       const parts = [];
       if (moves.length > 0) parts.push(`Submitted ${moves.length} move(s)`);
       if (emptyPallets.length > 0)
@@ -1105,6 +1392,48 @@ export default function ShippingPage() {
   };
 
   const { token } = useContext(AuthContext);
+
+  useEffect(() => {
+    if (!showCreateModal) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !creatingPallet) {
+        e.preventDefault();
+        setShowCreateModal(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showCreateModal, creatingPallet]);
+
+  useEffect(() => {
+    if (!showReportModal) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !reportGenerating) {
+        e.preventDefault();
+        setShowReportModal(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showReportModal, reportGenerating]);
+
+  useEffect(() => {
+    if (!showUploadDOAModal) return;
+
+    const onKeyDown = (e) => {
+      if (e.key === "Escape" && !uploadingDOA) {
+        e.preventDefault();
+        setShowUploadDOAModal(false);
+      }
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showUploadDOAModal, uploadingDOA]);
 
   return (
     <>
@@ -1124,119 +1453,30 @@ export default function ShippingPage() {
             <h3 className="text-lg font-semibold mb-3">Download Report</h3>
 
             <div className="space-y-5">
-              {/* Status */}
               <section>
                 <h4 className="text-sm font-semibold text-gray-700 mb-2">
                   Pallet Lock Status
                 </h4>
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-2">
                   {[
                     { value: "all", label: "All" },
                     { value: "locked", label: "Locked only" },
                     { value: "unlocked", label: "Unlocked only" },
                   ].map((opt) => (
-                    <label
+                    <button
+                      type="button"
                       key={opt.value}
-                      className="inline-flex items-center gap-2"
+                      onClick={() => setStatusFilter(opt.value)}
+                      className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium border transition ${
+                        statusFilter === opt.value
+                          ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                          : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
+                      }`}
                     >
-                      <input
-                        type="radio"
-                        name="status-filter"
-                        value={opt.value}
-                        checked={statusFilter === opt.value}
-                        onChange={(e) => setStatusFilter(e.target.value)}
-                        className="h-4 w-4"
-                      />
-                      <span className="text-sm text-gray-700">{opt.label}</span>
-                    </label>
+                      {opt.label}
+                    </button>
                   ))}
                 </div>
-              </section>
-
-              {/* DPN */}
-              <section>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-semibold text-gray-700">DPN</h4>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => selectAll(setSelectedDpns, uniqueDpns)}
-                    >
-                      Select all
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => selectNone(setSelectedDpns)}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                {uniqueDpns.length === 0 ? (
-                  <p className="text-sm text-gray-500">No DPNs found.</p>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {uniqueDpns.map((d) => (
-                      <label key={d} className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={selectedDpns.has(d)}
-                          onChange={() => toggleSetValue(setSelectedDpns)(d)}
-                        />
-                        <span className="text-sm">{d}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
-              </section>
-
-              {/* Factory */}
-              <section>
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-semibold text-gray-700">
-                    Factory
-                  </h4>
-                  <div className="flex gap-2">
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() =>
-                        selectAll(setSelectedFactories, uniqueFactories)
-                      }
-                    >
-                      Select all
-                    </button>
-                    <button
-                      type="button"
-                      className="text-xs px-2 py-1 rounded border"
-                      onClick={() => selectNone(setSelectedFactories)}
-                    >
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                {uniqueFactories.length === 0 ? (
-                  <p className="text-sm text-gray-500">No factories found.</p>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {uniqueFactories.map((f) => (
-                      <label key={f} className="inline-flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          className="h-4 w-4"
-                          checked={selectedFactories.has(f)}
-                          onChange={() =>
-                            toggleSetValue(setSelectedFactories)(f)
-                          }
-                        />
-                        <span className="text-sm">{f}</span>
-                      </label>
-                    ))}
-                  </div>
-                )}
               </section>
             </div>
 
@@ -1276,55 +1516,9 @@ export default function ShippingPage() {
           >
             <h3 className="text-lg font-semibold mb-3">Create New Pallet</h3>
             <form onSubmit={handleCreatePallet} className="space-y-3">
-              {/* DPN typable dropdown */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  DPN
-                </label>
-                <input
-                  list="dpn-list"
-                  value={newPalletForm.dpn}
-                  onChange={(e) =>
-                    setNewPalletForm((p) => ({ ...p, dpn: e.target.value }))
-                  }
-                  placeholder="Start typing to search…"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring focus:ring-blue-200 text-sm"
-                />
-                <datalist id="dpn-list">
-                  {dpnOptions.map((d) => (
-                    <option key={d.id ?? d.name} value={d.name} />
-                  ))}
-                </datalist>
-              </div>
-
-              {/* Factory Code typable dropdown */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Factory Code
-                </label>
-                <input
-                  list="factory-code-list"
-                  value={newPalletForm.factoryCode}
-                  onChange={(e) =>
-                    setNewPalletForm((p) => ({
-                      ...p,
-                      factoryCode: e.target.value,
-                    }))
-                  }
-                  placeholder="Start typing to search… (e.g., MX)"
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring focus:ring-blue-200 text-sm"
-                />
-                <datalist id="factory-code-list">
-                  {factoryOptions.map((f) => (
-                    <option
-                      key={f.id ?? f.code}
-                      value={f.code} // <- use the CODE as the input value
-                      label={f.name || undefined} // nice hint in some browsers
-                    />
-                  ))}
-                </datalist>
-              </div>
-
+              <p className="text-sm text-gray-600">
+                This creates a new empty pallet. You can add any unit to it.
+              </p>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -1347,6 +1541,51 @@ export default function ShippingPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {showUploadDOAModal && (
+        <div
+          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          onClick={() => !uploadingDOA && setShowUploadDOAModal(false)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-xl w-full max-w-xl p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold mb-3">Upload DOA Numbers</h3>
+            <p className="text-sm text-gray-600 mb-3">
+              Paste CSV rows in the format: <code>service_tag,doa_number</code>
+            </p>
+            <textarea
+              rows={8}
+              value={uploadDOACSV}
+              onChange={(e) => setUploadDOACSV(e.target.value)}
+              placeholder={"service_tag,doa_number\nABC1234,DOA-12345"}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            />
+            <div className="flex justify-end gap-2 pt-4">
+              <button
+                type="button"
+                disabled={uploadingDOA}
+                onClick={() => setShowUploadDOAModal(false)}
+                className="px-4 py-2 rounded-md border border-neutral-300 text-neutral-700 hover:bg-neutral-50 text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={uploadingDOA}
+                onClick={handleUploadDOANumbers}
+                className={`px-4 py-2 rounded-md text-white text-sm font-semibold ${
+                  uploadingDOA
+                    ? "bg-gray-400 cursor-wait"
+                    : "bg-blue-600 hover:bg-blue-700"
+                }`}
+              >
+                {uploadingDOA ? "Uploading..." : "Upload"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1382,29 +1621,52 @@ export default function ShippingPage() {
 
         {tab === "active" ? (
           <>
-            <div className="flex justify-end mt-3 gap-2">
-              <button
-                onClick={() => setShowCreateModal(true)}
-                className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
-                  !token ? "opacity-30 pointer-events-none" : ""
+            <div className="flex justify-between items-center mt-3 gap-2">
+              <div
+                className={`inline-flex items-center px-3 py-2 rounded-lg border text-sm font-medium ${
+                  missingDOAUnitsCount === 0
+                    ? "border-green-200 bg-green-50 text-green-800"
+                    : "border-amber-200 bg-amber-50 text-amber-800"
                 }`}
-                title="Create a new empty pallet by DPN + Factory"
               >
-                Add Pallet
-              </button>
-
-              <button
-                onClick={() => setShowReportModal(true)}
-                disabled={reportGenerating}
-                className={` px-2 py-2 rounded-lg shadow-s ${
-                  reportGenerating
-                    ? "bg-green-200 text-green-500 cursor-wait"
-                    : "bg-green-600 hover:bg-green-700  text-white px-4 "
-                }`}
-                title="Download CSV of units from current open pallets"
-              >
-                {reportGenerating ? "Generating..." : "Download Report"}
-              </button>
+                {missingDOAUnitsCount} Unit
+                {missingDOAUnitsCount === 1 ? "" : "s"} Missing DOA Number
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowCreateModal(true)}
+                  className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
+                    !token ? "opacity-30 pointer-events-none" : ""
+                  }`}
+                  title="Create a new empty pallet"
+                >
+                  Add Pallet
+                </button>
+                <button
+                  onClick={() => setShowUploadDOAModal(true)}
+                  disabled={!hasActivePallets}
+                  className={`px-4 py-2 rounded-lg shadow-s ${
+                    !token || !hasActivePallets
+                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                      : "bg-blue-600 hover:bg-blue-700 text-white"
+                  }`}
+                  title="Upload DOA numbers via CSV"
+                >
+                  Upload DOA Numbers
+                </button>
+                <button
+                  onClick={() => setShowReportModal(true)}
+                  disabled={reportGenerating || !hasActivePallets}
+                  className={`px-4 py-2 rounded-lg shadow-s ${
+                    reportGenerating || !hasActivePallets
+                      ? "bg-gray-300 text-gray-500 cursor-not-allowed"
+                      : "bg-green-600 hover:bg-green-700 text-white"
+                  }`}
+                  title="Download CSV of units from current open pallets"
+                >
+                  {reportGenerating ? "Generating..." : "Download Report"}
+                </button>
+              </div>
             </div>
 
             <DndContext
@@ -1414,27 +1676,46 @@ export default function ShippingPage() {
               onDragEnd={handleDragEnd}
             >
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {Array.isArray(pallets) &&
+                {Array.isArray(pallets) && pallets.length > 0 ? (
                   pallets.map((pallet) => (
                     <PalletGrid
                       key={`${pallet.id}-${!!releaseFlags[pallet.id]}-${
                         lockFlags[pallet.id] ?? "nc"
+                      }-${deleteFlags[pallet.id] ? "del" : "keep"}-${
+                        token ? "auth" : "noauth"
                       }`}
                       pallet={pallet}
                       releaseFlags={releaseFlags}
                       setReleaseFlags={setReleaseFlags}
-                      onLockUpdated={handleLockUpdated}
-                      setPalletLock={setPalletLock}
-                      showToast={showToast}
                       lockFlags={lockFlags}
                       setLockFlags={setLockFlags}
+                      deleteFlags={deleteFlags}
+                      setDeleteFlags={setDeleteFlags}
+                      selectedDOAEditor={selectedDOAEditor}
+                      pendingDOAValue={pendingDOAValue}
+                      setPendingDOAValue={setPendingDOAValue}
+                      onSelectDOA={handleSelectDOA}
+                      onSaveDOA={handleSaveDOA}
+                      savingDOA={savingDOA}
+                      releaseError={releaseErrors[pallet.id]}
+                      missingServiceTags={missingDOAByPallet[pallet.id]}
+                      hasToken={!!token}
                     />
-                  ))}
+                  ))
+                ) : (
+                  <div className="col-span-1 sm:col-span-2 lg:col-span-3 border border-gray-300 rounded-2xl bg-gray-100 text-gray-500 min-h-[320px] flex items-center justify-center text-sm font-medium">
+                    No Active Pallets
+                  </div>
+                )}
               </div>
 
               <DragOverlay>
                 {activeDragData?.system ? (
-                  <SystemBox serviceTag={activeDragData.system.service_tag} />
+                  <SystemBox
+                    serviceTag={activeDragData.system.service_tag}
+                    dpn={activeDragData.system.dpn}
+                    dellCustomer={activeDragData.system.dell_customer}
+                  />
                 ) : null}
               </DragOverlay>
             </DndContext>
@@ -1456,6 +1737,11 @@ export default function ShippingPage() {
                   setPallets(structuredClone(initialPallets));
                   setReleaseFlags({});
                   setLockFlags({});
+                  setDeleteFlags({});
+                  setSelectedDOAEditor(null);
+                  setPendingDOAValue("");
+                  setReleaseErrors({});
+                  setMissingDOAByPallet({});
                   showToast("Changes have been reverted.", "info");
                 }}
                 disabled={!palletsChanged}
@@ -1472,18 +1758,8 @@ export default function ShippingPage() {
         ) : (
           <SearchContainerSS
             title="Released Pallets"
-            displayOrder={[
-              "pallet_number",
-              "doa_number",
-              "created_at",
-              "released_at",
-            ]}
-            visibleFields={[
-              "pallet_number",
-              "doa_number",
-              "created_at",
-              "released_at",
-            ]}
+            displayOrder={["pallet_number", "released_at"]}
+            visibleFields={["pallet_number", "released_at"]}
             linkType="external"
             fetchData={fetchReleasedPallets}
             truncate={true}

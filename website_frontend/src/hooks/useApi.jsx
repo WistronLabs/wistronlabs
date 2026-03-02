@@ -56,7 +56,7 @@ function useApi() {
         res.statusText;
 
       const error = new Error(
-        `API ${endpoint} failed: ${res.status} ${errMsg}`
+        `API ${endpoint} failed: ${res.status} ${errMsg}`,
       );
       error.status = res.status;
       error.body = data;
@@ -87,6 +87,7 @@ function useApi() {
    */
   const getSystems = ({
     filters, // advanced filters JSON string or object
+    tags,
     service_tag,
     issue,
     location_id,
@@ -113,7 +114,9 @@ function useApi() {
       if (issue) params.issue = issue;
       if (location_id) params.location_id = location_id;
     }
-
+    if (tags) {
+      params.tags = typeof tags === "string" ? tags : JSON.stringify(tags);
+    }
     const qs = buildQueryString(params);
     return fetchJSON(`/systems${qs}`);
   };
@@ -201,8 +204,8 @@ function useApi() {
     if (!(bothProvided || bothNull)) {
       return Promise.reject(
         new Error(
-          "Provide both root_cause_id and root_cause_sub_category_id, or set both to null."
-        )
+          "Provide both root_cause_id and root_cause_sub_category_id, or set both to null.",
+        ),
       );
     }
 
@@ -257,7 +260,7 @@ function useApi() {
       method: "DELETE",
     });
 
-  const moveSystemToReceived = async (service_tag, issue, note) => {
+  const moveSystemToReceived = async (service_tag, issue, rack_service_tag) => {
     // First fetch: move system
     const updateLocation = await fetchJSON(`/systems/${service_tag}/location`, {
       method: "PATCH",
@@ -283,7 +286,16 @@ function useApi() {
       }),
     });
 
-    return { updateLocation, updateIssue };
+    // Forth fetch: update rack service tag
+    const updateRackTag = await fetchJSON(`/systems/${service_tag}/rack`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rack_service_tag: rack_service_tag,
+      }),
+    });
+
+    return { updateLocation, updateIssue, updateRackTag };
   };
 
   const getSnapshot = ({
@@ -324,6 +336,13 @@ function useApi() {
       body: JSON.stringify({ ppid }),
     });
 
+  const updateSystemDOA = (tag, doa_number) =>
+    fetchJSON(`/systems/${tag}/doa`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doa_number }),
+    });
+
   const getSystemPallet = (service_tag) =>
     fetchJSON(`/systems/${service_tag}/pallet`);
 
@@ -345,16 +364,23 @@ function useApi() {
       }),
     });
 
-  const releasePallet = (pallet_number, doa_number) =>
+  const releasePallet = (pallet_number) =>
     fetchJSON(`/pallets/${pallet_number}/release`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doa_number }),
+      body: JSON.stringify({}),
     });
 
   const deletePallet = (pallet_number) =>
     fetchJSON(`/pallets/${pallet_number}`, {
       method: "DELETE",
+    });
+
+  const updateRackServiceTag = (service_tag, rack_service_tag) =>
+    fetchJSON(`/systems/${service_tag}/rack`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rack_service_tag }),
     });
 
   const getPallets = ({
@@ -392,6 +418,20 @@ function useApi() {
     return fetchJSON(`/pallets${qs}`);
   };
 
+  const updateHostMac = (service_tag, host_mac) =>
+    fetchJSON(`/systems/${service_tag}/host_mac`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host_mac }),
+    });
+
+  const updateBmcMac = (service_tag, bmc_mac) =>
+    fetchJSON(`/systems/${service_tag}/bmc_mac`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bmc_mac }),
+    });
+
   const getPallet = (pallet_number) =>
     fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
 
@@ -403,11 +443,11 @@ function useApi() {
       body: JSON.stringify({ locked }),
     });
 
-  const createPallet = ({ dpn, factory_code }) =>
+  const createPallet = () =>
     fetchJSON(`/pallets`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dpn, factory_code }),
+      body: JSON.stringify({}),
     });
 
   const getDpns = () => fetchJSON(`/systems/dpn`);
@@ -620,6 +660,42 @@ function useApi() {
       method: "DELETE",
     });
 
+  // -----------------------------
+  // Tags API
+  // -----------------------------
+
+  // List tags (optionally search by q)
+  const getTags = ({ q } = {}) =>
+    fetchJSON(`/tags${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+  // Create a tag { name }
+  const createTag = ({ code }) =>
+    fetchJSON(`/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: String(code || "").trim() }),
+    });
+
+  // List tags on a system
+  const getSystemTags = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`);
+
+  // Attach an existing tag to a system
+  const addSystemTag = (service_tag, tag_code) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_code: String(tag_code || "").trim() }),
+    });
+
+  // Remove a tag from a system
+  const removeSystemTag = (service_tag, tag_code) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_code: String(tag_code || "").trim() }),
+    });
+
   return {
     getSystems,
     getHistory,
@@ -642,6 +718,7 @@ function useApi() {
     getServerTime,
     getSnapshot,
     updateSystemPPID,
+    updateSystemDOA,
     getSystemPallet,
     getSystemPalletHistory,
     moveSystemBetweenPallets,
@@ -679,6 +756,14 @@ function useApi() {
     deletePartItem,
     getRootCauses,
     getRootCauseSubCategories,
+    getTags,
+    createTag,
+    getSystemTags,
+    addSystemTag,
+    removeSystemTag,
+    updateHostMac,
+    updateBmcMac,
+    updateRackServiceTag,
   };
 }
 

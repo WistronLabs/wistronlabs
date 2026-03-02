@@ -17,7 +17,7 @@ function Footer() {
         setServerZone(res?.zone || "UTC");
       } catch {
         setServerZone(
-          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
+          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
         );
       }
     })();
@@ -44,8 +44,10 @@ function Footer() {
   return (
     <footer className="bg-blue-900 text-white px-4 py-2 flex justify-between items-center text-sm h-[40px]">
       <div>
-        Server Local Time
-        {serverZone ? ` (${serverZone})` : ""}:{" "}
+        Local Time
+        {/*too long for footer*/}
+        {/* {serverZone ? ` (${serverZone})` : ""}:{" "} */}
+        {": "}
         <span className="font-mono">{displayTime}</span>
       </div>
       <div>&copy; {new Date().getFullYear()} Wistron</div>

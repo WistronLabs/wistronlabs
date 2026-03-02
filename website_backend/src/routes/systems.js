@@ -38,6 +38,7 @@ const { buildWhereClause } = require("../utils/buildWhereClause");
 const { systemOnLockedPallet } = require("../utils/systemOnLockedPallet");
 const { generatePalletNumber } = require("../utils/generatePalletNumber");
 const { ensureAdmin } = require("../utils/ensureAdmin");
+const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
 
 const NodeCache = require("node-cache");
 const snapshotCache = new NodeCache({ stdTTL: 8 * 60 * 60 }); // 8 hours
@@ -47,13 +48,28 @@ const router = express.Router();
 // Helper: fetch deleted user id
 async function getDeletedUserId() {
   const result = await db.query(
-    `SELECT id FROM users WHERE username = 'deleted_user@example.com'`
+    `SELECT id FROM users WHERE username = 'deleted_user@example.com'`,
   );
   return result.rows[0]?.id;
 }
 
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
+const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
+
+function requireMac12Hex(value, fieldName = "mac") {
+  const s = String(value ?? "")
+    .trim()
+    .toUpperCase();
+
+  // STRICT: must be exactly 12 hex chars, no separators
+  if (!/^[0-9A-F]{12}$/.test(s)) {
+    throw new Error(
+      `${fieldName} must be exactly 12 hex chars (example: A1B2C3D4E5F6)`,
+    );
+  }
+  return s;
+}
 
 function parseAndValidatePPID(ppidRaw) {
   const ppid = (ppidRaw || "").trim().toUpperCase();
@@ -88,12 +104,9 @@ function parseAndValidatePPID(ppidRaw) {
 
 /**
  * Assign a system to a pallet (or create a new pallet)
- * Pallets are segregated by factory_id AND dpn.
+ * Any open, unlocked pallet with free capacity can be used.
  */
-async function assignSystemToPallet(system_id, factory_id, dpn_id, client) {
-  if (!factory_id) throw new Error(`Cannot assign: factory_id is null`);
-  if (!dpn_id) throw new Error(`Cannot assign: dpn_id is missing`);
-
+async function assignSystemToPallet(system_id, client) {
   const { rows } = await client.query(
     `
     SELECT p.id, p.pallet_number
@@ -101,25 +114,27 @@ async function assignSystemToPallet(system_id, factory_id, dpn_id, client) {
     LEFT JOIN pallet_system ps
       ON p.id = ps.pallet_id AND ps.removed_at IS NULL
     WHERE p.status = 'open' AND p.locked = FALSE
-      AND p.factory_id = $1
-      AND p.dpn_id = $2
     GROUP BY p.id, p.pallet_number
     HAVING COUNT(ps.id) < 9
+    ORDER BY p.created_at ASC, p.id ASC
     LIMIT 1
     `,
-    [factory_id, dpn_id]
   );
 
   let palletId, palletNumber;
   if (rows.length) {
     ({ id: palletId, pallet_number: palletNumber } = rows[0]);
   } else {
-    const newNumber = await generatePalletNumber(factory_id, dpn_id, client);
+    const newNumber = await generatePalletNumber(client);
+    const shape = await allocateUniqueOpenPalletShape(client);
+    if (!shape) {
+      throw new Error("Too many pallets open at the same time.");
+    }
     const ins = await client.query(
-      `INSERT INTO pallet (factory_id, pallet_number, dpn_id)
-       VALUES ($1, $2, $3)
+      `INSERT INTO pallet (pallet_number, shape)
+       VALUES ($1, $2)
        RETURNING id, pallet_number`,
-      [factory_id, newNumber, dpn_id]
+      [newNumber, shape],
     );
     palletId = ins.rows[0].id;
     palletNumber = ins.rows[0].pallet_number;
@@ -128,7 +143,7 @@ async function assignSystemToPallet(system_id, factory_id, dpn_id, client) {
   await client.query(
     `INSERT INTO pallet_system (pallet_id, system_id)
      VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-    [palletId, system_id]
+    [palletId, system_id],
   );
 
   return { pallet_id: palletId, pallet_number: palletNumber };
@@ -151,7 +166,7 @@ function decodeDateCode(code) {
 async function getFactoryByPPIDCode(ppidCode) {
   const result = await db.query(
     `SELECT id, code, name FROM factory WHERE ppid_code = $1`,
-    [ppidCode]
+    [ppidCode],
   );
   return result.rows[0] || null;
 }
@@ -174,12 +189,12 @@ router.get("/factory", async (req, res) => {
            FROM factory
           WHERE code ILIKE $1 OR name ILIKE $1
           ORDER BY code ASC`,
-        [like]
+        [like],
       );
       return res.json(rows);
     }
     const { rows } = await db.query(
-      `SELECT id, code, name, ppid_code FROM factory ORDER BY code ASC`
+      `SELECT id, code, name, ppid_code FROM factory ORDER BY code ASC`,
     );
     return res.json(rows);
   } catch (e) {
@@ -193,7 +208,7 @@ router.get("/factory/:id", async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, code, name, ppid_code FROM factory WHERE id = $1`,
-      [req.params.id]
+      [req.params.id],
     );
     if (!rows.length)
       return res.status(404).json({ error: "Factory not found" });
@@ -215,7 +230,7 @@ router.post("/factory", authenticateToken, ensureAdmin, async (req, res) => {
       `INSERT INTO factory (code, name)
        VALUES ($1, $2)
        RETURNING id, code, name, ppid_code`,
-      [code.trim(), name.trim()]
+      [code.trim(), name.trim()],
     );
     return res.status(201).json(rows[0]);
   } catch (e) {
@@ -254,7 +269,7 @@ router.patch(
         `UPDATE factory SET ${fields.join(", ")}
          WHERE id = $${fields.length + 1}
        RETURNING id, code, name, ppid_code`,
-        [...vals, req.params.id]
+        [...vals, req.params.id],
       );
       if (!rows.length)
         return res.status(404).json({ error: "Factory not found" });
@@ -268,7 +283,7 @@ router.patch(
       }
       return res.status(500).json({ error: "Failed to update factory" });
     }
-  }
+  },
 );
 
 // DELETE factory (admin) – block if referenced
@@ -286,7 +301,7 @@ router.delete(
         EXISTS(SELECT 1 FROM system WHERE factory_id = $1) AS has_systems,
         EXISTS(SELECT 1 FROM pallet WHERE factory_id = $1) AS has_pallets
       `,
-        [id]
+        [id],
       );
       if (ref.rows[0].has_systems || ref.rows[0].has_pallets) {
         return res.status(409).json({
@@ -303,7 +318,7 @@ router.delete(
       console.error(e);
       return res.status(500).json({ error: "Failed to delete factory" });
     }
-  }
+  },
 );
 
 // ---------- DPN CRUD ----------
@@ -321,12 +336,12 @@ router.get("/dpn", async (req, res) => {
            OR CAST(config AS TEXT) ILIKE $1
            OR dell_customer ILIKE $1
           ORDER BY name ASC`,
-        [like]
+        [like],
       );
       return res.json(rows);
     }
     const { rows } = await db.query(
-      `SELECT id, name, config, dell_customer FROM dpn ORDER BY name ASC`
+      `SELECT id, name, config, dell_customer FROM dpn ORDER BY name ASC`,
     );
     return res.json(rows);
   } catch (e) {
@@ -340,7 +355,7 @@ router.get("/dpn/:id", async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, name, config, dell_customer FROM dpn WHERE id = $1`,
-      [req.params.id]
+      [req.params.id],
     );
     if (!rows.length) return res.status(404).json({ error: "DPN not found" });
     return res.json(rows[0]);
@@ -361,7 +376,7 @@ router.post("/dpn", authenticateToken, ensureAdmin, async (req, res) => {
       `INSERT INTO dpn (name, config, dell_customer)
         VALUES ($1, $2, $3)
         RETURNING id, name, config, dell_customer`,
-      [name.trim(), (config ?? "").trim(), (dell_customer ?? "").trim()]
+      [name.trim(), (config ?? "").trim(), (dell_customer ?? "").trim()],
     );
     return res.status(201).json(rows[0]);
   } catch (e) {
@@ -403,7 +418,7 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
       `UPDATE dpn SET ${fields.join(", ")}
          WHERE id = $${fields.length + 1}
        RETURNING id, name, config, dell_customer`,
-      [...vals, req.params.id]
+      [...vals, req.params.id],
     );
     if (!rows.length) return res.status(404).json({ error: "DPN not found" });
     return res.json(rows[0]);
@@ -427,7 +442,7 @@ router.delete("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
         EXISTS(SELECT 1 FROM system WHERE dpn_id = $1) AS has_systems,
         EXISTS(SELECT 1 FROM pallet WHERE dpn_id = $1) AS has_pallets
       `,
-      [id]
+      [id],
     );
     if (ref.rows[0].has_systems || ref.rows[0].has_pallets) {
       return res.status(409).json({
@@ -457,12 +472,12 @@ router.get("/root-cause", async (req, res) => {
            FROM root_cause
           WHERE name ILIKE $1
           ORDER BY name ASC`,
-        [like]
+        [like],
       );
       return res.json(rows);
     }
     const { rows } = await db.query(
-      `SELECT id, name FROM root_cause ORDER BY name ASC`
+      `SELECT id, name FROM root_cause ORDER BY name ASC`,
     );
     return res.json(rows);
   } catch (e) {
@@ -475,7 +490,7 @@ router.get("/root-cause/:id", async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, name FROM root_cause WHERE id = $1`,
-      [req.params.id]
+      [req.params.id],
     );
     if (!rows.length) return res.status(404).json({ error: "Not found" });
     return res.json(rows[0]);
@@ -496,12 +511,12 @@ router.get("/root-cause-sub-categories", async (req, res) => {
            FROM root_cause_sub_categories
           WHERE name ILIKE $1
           ORDER BY name ASC`,
-        [like]
+        [like],
       );
       return res.json(rows);
     }
     const { rows } = await db.query(
-      `SELECT id, name FROM root_cause_sub_categories ORDER BY name ASC`
+      `SELECT id, name FROM root_cause_sub_categories ORDER BY name ASC`,
     );
     return res.json(rows);
   } catch (e) {
@@ -516,7 +531,7 @@ router.get("/root-cause-sub-categories/:id", async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, name FROM root_cause_sub_categories WHERE id = $1`,
-      [req.params.id]
+      [req.params.id],
     );
     if (!rows.length) return res.status(404).json({ error: "Not found" });
     return res.json(rows[0]);
@@ -573,6 +588,7 @@ router.get("/root-cause-sub-categories/:id", async (req, res) => {
 router.get("/", async (req, res) => {
   const {
     filters,
+    tags,
     page = 1,
     page_size = 50,
     all,
@@ -602,12 +618,22 @@ router.get("/", async (req, res) => {
         ppid: "s.ppid",
         root_cause: "rc.name",
         root_cause_sub_category: "rcs.name",
+        host_mac: "s.host_mac",
+        bmc_mac: "s.bmc_mac",
       });
       if (filtersSQL) whereSQL = `WHERE ${filtersSQL}`;
     }
   }
-
-  // --- free-text search (NEW) ---
+  if (tags) {
+    const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
+    if (parsed.length > 0) {
+      const tagsSQL = parsed
+        .map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`)
+        .join(" AND ");
+      whereSQL = whereSQL ? `${whereSQL} AND (${tagsSQL})` : `WHERE ${tagsSQL}`;
+    }
+  }
+  console.log(whereSQL);
   // AND across terms, OR across fields per term
   // e.g. search="KR7T5 bianca" -> matches rows that contain "KR7T5" AND "bianca" somewhere among these columns
   if (search && String(search).trim()) {
@@ -615,10 +641,10 @@ router.get("/", async (req, res) => {
     const searchClauses = terms.map((t) => {
       const p = `%${t}%`;
       // push one param per field below (keep order consistent with SQL)
-      params.push(p, p, p, p, p, p, p, p, p, p);
-      //            1  2  3  4  5  6  7  8   9   10
+      params.push(p, p, p, p, p, p, p, p, p, p, p, p);
+      //            1  2  3  4  5  6   7   8   9   10  11  12
       // fields: service_tag, issue, location, dpn, dpn.config, dell_customer,
-      //         ppid, factory_code, rc.name, rcs.name
+      //         ppid, factory_code, rc.name, rcs.name, host_mac, bmc_mac
       return `(
         s.service_tag ILIKE $${params.length - 9} OR
         s.issue       ILIKE $${params.length - 8} OR
@@ -630,6 +656,8 @@ router.get("/", async (req, res) => {
         f.code        ILIKE $${params.length - 2} OR
         rc.name       ILIKE $${params.length - 1} OR
         rcs.name      ILIKE $${params.length - 0}
+        s.host_mac::text ILIKE $${params.length - 1} OR
+        s.bmc_mac::text  ILIKE $${params.length - 0}
       )`;
     });
 
@@ -683,6 +711,9 @@ router.get("/", async (req, res) => {
         s.serial,
         s.rev,
         s.ppid,
+        s.doa_number,
+        s.host_mac,
+        s.bmc_mac,
         s.rack_service_tag AS rack_id, 
         l.name AS location,
         f.code AS factory_code,
@@ -691,7 +722,8 @@ router.get("/", async (req, res) => {
         rcs.name AS root_cause_sub_category,
         first_history.changed_at AS date_created,
         first_user.username AS added_by,
-        last_history.changed_at AS date_modified
+        last_history.changed_at AS date_modified,
+        tags_agg.tags AS tags
       FROM system s
       JOIN location l ON s.location_id = l.id
       LEFT JOIN factory f ON s.factory_id = f.id
@@ -713,12 +745,32 @@ router.get("/", async (req, res) => {
         ORDER BY h.changed_at DESC
         LIMIT 1
       ) AS last_history ON TRUE
+
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+              'tag_id', x.id,
+              'code', x.code,
+              'description', x.description
+            )
+            ORDER BY x.code
+          ),
+          '[]'::jsonb
+        ) AS tags
+        FROM (
+          SELECT DISTINCT t.id, t.code, t.description
+          FROM system_tag st
+          JOIN tag t ON t.id = st.tag_id
+          WHERE st.system_id = s.id
+        ) x
+      ) AS tags_agg ON TRUE
     `;
 
     const [dataResult, countResult] = await Promise.all([
       db.query(
         `${baseSelect} ${whereSQL} ORDER BY ${orderSql} ${limitOffsetSQL}`,
-        params
+        params,
       ),
       !all || all === "false"
         ? db.query(
@@ -730,9 +782,28 @@ router.get("/", async (req, res) => {
             LEFT JOIN dpn d ON s.dpn_id = d.id
             LEFT JOIN root_cause rc                 ON rc.id  = s.root_cause_id
             LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(
+                JSONB_AGG(
+                  JSONB_BUILD_OBJECT(
+                    'tag_id', x.id,
+                    'code', x.code,
+                    'description', x.description
+                  )
+                  ORDER BY x.code
+                ),
+                '[]'::jsonb
+              ) AS tags
+              FROM (
+                SELECT DISTINCT t.id, t.code, t.description
+                FROM system_tag st
+                JOIN tag t ON t.id = st.tag_id
+                WHERE st.system_id = s.id
+              ) x
+            ) AS tags_agg ON TRUE
             ${whereSQL}
             `,
-            params
+            params,
           )
         : Promise.resolve({ rows: [] }),
     ]);
@@ -763,7 +834,7 @@ router.get("/snapshot", async (req, res) => {
     includeReceived, // 'true' to compute "Last Received On"
     format, // 'csv' to return CSV
     timezone, // for MM/DD in notes
-    simplified, // NEW: if true, apply simplified status mapping
+    simplified, // if true, apply simplified status mapping
   } = req.query;
 
   if (!date) {
@@ -786,7 +857,6 @@ router.get("/snapshot", async (req, res) => {
     includeReceived === true;
   const wantCSV = format === "csv";
 
-  // NEW: simplified flag
   const simplifiedFlag =
     simplified === "true" || simplified === "1" || simplified === true;
 
@@ -796,10 +866,10 @@ router.get("/snapshot", async (req, res) => {
   const serverZone = process.env.SERVER_TZ || "UTC";
   const displayZone = timezone || serverZone;
 
-  // NEW: add simplifiedFlag to cache key
   const cacheKey =
     `${date}:${locations || ""}:${includeNoteFlag}:${mode}:${start || ""}:` +
     `${includeReceivedFlag}:${displayZone}:${simplifiedFlag}`;
+
   if (!noCacheFlag && !wantCSV) {
     const cached = snapshotCache.get(cacheKey);
     if (cached) {
@@ -823,7 +893,7 @@ router.get("/snapshot", async (req, res) => {
     }
   }
 
-  // Notes aggregate (unchanged) ...
+  // Notes aggregate
   const selectNotesAggregate = includeNoteFlag
     ? `,
         nh.notes_history`
@@ -855,53 +925,75 @@ router.get("/snapshot", async (req, res) => {
     `
     : ``;
 
-  // Unit parts aggregate (unchanged) ...
+  // Unit parts aggregate
   const lateralJoinUnitParts = `
-  LEFT JOIN LATERAL (
-    SELECT COALESCE(
-      json_agg(
-        json_build_object(
-          'is_functional', pl.is_functional,
-          'ppid', pl.ppid,
-          'part_name', p.name,
-          'line',
-            CASE WHEN pl.is_functional
-              THEN 'Good Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
-              ELSE 'BAD PART - '  || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
-            END
-        )
-        ORDER BY pl.created_at DESC
-      ), '[]'::json
-    ) AS unit_parts
-    FROM part_list pl
-    JOIN parts p ON p.id = pl.part_id
-    WHERE pl.place = 'unit'::part_place
-      AND pl.unit_id = s.id
-  ) up ON TRUE
-`;
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(
+        json_agg(
+          json_build_object(
+            'is_functional', pl.is_functional,
+            'ppid', pl.ppid,
+            'part_name', p.name,
+            'part_dpn', p.dpn,
+            'line',
+              CASE WHEN pl.is_functional
+                THEN 'Good Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
+                ELSE
+                  CASE
+                    WHEN trim(l.name) ILIKE 'RMA%' OR trim(l.name) = 'Sent to L11'
+                      THEN 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '') || ' - ' || COALESCE(pl.ppid,'')
+                    ELSE 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '')
+                  END
+              END
+          )
+          ORDER BY pl.created_at DESC
+        ), '[]'::json
+      ) AS unit_parts
+      FROM part_list pl
+      JOIN parts p ON p.id = pl.part_id
+      WHERE pl.place = 'unit'::part_place
+        AND pl.unit_id = s.id
+    ) up ON TRUE
+  `;
 
-  // Per-day exclusion SQL (unchanged) ...
+  // Important: DISTINCT+ORDER BY must be handled via a subquery.
+  const lateralJoinTags = `
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(
+        JSONB_AGG(x.code ORDER BY x.code),
+        '[]'::jsonb
+      ) AS tag_codes
+      FROM (
+        SELECT DISTINCT t.code
+        FROM system_tag st
+        JOIN tag t ON t.id = st.tag_id
+        WHERE st.system_id = s.id
+      ) x
+    ) tags_agg ON TRUE
+  `;
+
+  // Per-day exclusion SQL
   let perDayExclusionSQL = ``;
   if (mode === "perday") {
     const startIdx = params.length + 1;
     const inactiveIdx = params.length + 2;
     perDayExclusionSQL = `
-    AND NOT (
-      l.id = ANY($${inactiveIdx}::int[])
-      AND h.changed_at < $${startIdx}
-      AND NOT EXISTS (
-        SELECT 1
-        FROM pallet p
-        JOIN pallet_system ps ON ps.pallet_id = p.id
-        WHERE p.status = 'released'
-          AND p.released_at >= $${startIdx}
-          AND p.released_at <= $1
-          AND ps.system_id = s.id
-          AND ps.added_at <= p.released_at
-          AND COALESCE(ps.removed_at, 'infinity'::timestamptz) >= p.released_at
+      AND NOT (
+        l.id = ANY($${inactiveIdx}::int[])
+        AND h.changed_at < $${startIdx}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pallet p
+          JOIN pallet_system ps ON ps.pallet_id = p.id
+          WHERE p.status = 'released'
+            AND p.released_at >= $${startIdx}
+            AND p.released_at <= $1
+            AND ps.system_id = s.id
+            AND ps.added_at <= p.released_at
+            AND COALESCE(ps.removed_at, 'infinity'::timestamptz) >= p.released_at
+        )
       )
-    )
-  `;
+    `;
     params.push(start);
     params.push(INACTIVE_LOCATION_IDS);
   }
@@ -920,6 +1012,7 @@ router.get("/snapshot", async (req, res) => {
       )
       SELECT 
         s.service_tag,
+        s.ppid,
         COALESCE(f.code, 'Not Entered Yet') AS factory_code,
         s.issue,
         d.name   AS dpn,
@@ -957,9 +1050,10 @@ router.get("/snapshot", async (req, res) => {
         ${
           includeReceivedFlag
             ? `,
-        to_char(last_recv.last_received_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_received_on`
+          to_char(last_recv.last_received_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_received_on`
             : ``
         }
+        , tags_agg.tag_codes AS tag_codes
       FROM system s
       JOIN latest_state h  ON h.system_id = s.id
       JOIN location l      ON h.to_location_id = l.id
@@ -969,6 +1063,7 @@ router.get("/snapshot", async (req, res) => {
       LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
       ${lateralJoinNotesAggregate}
       ${lateralJoinUnitParts}
+      ${lateralJoinTags}
       LEFT JOIN LATERAL (
         SELECT h0.changed_at AS first_at
         FROM system_location_history h0
@@ -1004,12 +1099,12 @@ router.get("/snapshot", async (req, res) => {
       ${perDayExclusionSQL}
       ORDER BY s.service_tag
       `,
-      params
+      params,
     );
 
     const rows = snapshotResult.rows;
 
-    // NEW: apply simplified mapping (but keep original for PIC usage)
+    // Apply simplified mapping (preserve original for PIC extraction in CSV)
     if (simplifiedFlag) {
       const reRMAComplete = /^RMA\s+(VID|CID|PID)\s+\(COMPLETE\)$/i;
       const reRMAPending = /^RMA\s+(VID|CID|PID)\s+\(PENDING\)$/i;
@@ -1017,7 +1112,7 @@ router.get("/snapshot", async (req, res) => {
 
       for (const r of rows) {
         const original = (r.location || "").trim();
-        r._orig_location = original; // preserve for PIC extraction in CSV
+        r._orig_location = original;
 
         if (reRMAComplete.test(original)) {
           r.location = "RMA Done";
@@ -1027,7 +1122,7 @@ router.get("/snapshot", async (req, res) => {
           r.location = "Fixed";
         } else if (reInDebugSet.test(original)) {
           r.location = "In Debug";
-        } // else leave as-is
+        }
       }
     }
 
@@ -1040,7 +1135,7 @@ router.get("/snapshot", async (req, res) => {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="snapshot_${(date || "").slice(0, 10)}_${mode}.csv"`
+      `attachment; filename="snapshot_${(date || "").slice(0, 10)}_${mode}.csv"`,
     );
     res.setHeader("Cache-Control", "no-store");
 
@@ -1053,6 +1148,7 @@ router.get("/snapshot", async (req, res) => {
       "From",
       "Status",
       "Service Tag",
+      "PPID",
       "DPN",
       "Config",
       ...(!simplifiedFlag ? ["Dell Customer"] : []),
@@ -1060,6 +1156,7 @@ router.get("/snapshot", async (req, res) => {
       "Note History",
       "Root Cause",
       "Unit Parts",
+      "Tags",
     ];
 
     const csvEsc = (v) => {
@@ -1073,22 +1170,10 @@ router.get("/snapshot", async (req, res) => {
       day: "2-digit",
     });
 
-    // const fmtDateTime = new Intl.DateTimeFormat("en-US", {
-    //   timeZone: "America/Chicago",
-    //   year: "numeric",
-    //   month: "2-digit",
-    //   day: "2-digit",
-    //   hour: "2-digit",
-    //   minute: "2-digit",
-    //   hour12: true,
-    // });
-
-    // replace your fmtDateTime with:
     const fmtExcelText = (iso) => {
       if (!iso) return "";
-      // displayZone already comes from query or SERVER_TZ
       return new Date(iso).toLocaleString("sv-SE", {
-        timeZone: displayZone, // e.g., "America/Chicago"
+        timeZone: displayZone,
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
@@ -1103,16 +1188,6 @@ router.get("/snapshot", async (req, res) => {
     lines.push(header.join(","));
 
     for (const r of rows) {
-      // const firstLocal = r.first_received_on
-      //   ? fmtDateTime.format(new Date(r.first_received_on))
-      //   : "";
-      // const lastLocal =
-      //   includeReceivedFlag && r.last_received_on
-      //     ? fmtDateTime.format(new Date(r.last_received_on))
-      //     : "";
-      // const modifiedLocal = r.date_modified
-      //   ? fmtDateTime.format(new Date(r.date_modified))
-      //   : "";
       const firstLocal = r.first_received_on
         ? fmtExcelText(r.first_received_on)
         : "";
@@ -1158,17 +1233,24 @@ router.get("/snapshot", async (req, res) => {
       if (Array.isArray(r.unit_parts) && r.unit_parts.length) {
         unitPartsText = r.unit_parts.map((e) => e.line).join("\n");
       }
+
       const rootCauseText = r.root_cause || "";
+
+      const tagsText =
+        Array.isArray(r.tag_codes) && r.tag_codes.length
+          ? r.tag_codes.join("\n")
+          : "";
 
       const row = [
         firstLocal ?? "",
-        includeReceivedFlag ? lastLocal ?? "" : "",
+        includeReceivedFlag ? (lastLocal ?? "") : "",
         modifiedLocal ?? "",
         r.rack_id ?? "",
         pic ?? "",
         r.factory_code ?? "",
-        r.location ?? "", // already simplified upstream if needed
+        r.location ?? "",
         r.service_tag ?? "",
+        r.ppid ?? "",
         r.dpn ?? "",
         r.config != null ? `Config ${r.config}` : "",
         ...(!simplifiedFlag ? [r.dell_customer ?? ""] : []),
@@ -1176,6 +1258,7 @@ router.get("/snapshot", async (req, res) => {
         noteHistoryText ?? "",
         rootCauseText ?? "",
         unitPartsText ?? "",
+        tagsText ?? "",
       ].map((v) => csvEsc(String(v)));
 
       lines.push(row.join(","));
@@ -1304,7 +1387,7 @@ router.get("/history", async (req, res) => {
         ORDER BY ${safeSortBy} ${safeSortOrder}
         ${limitOffsetSQL}
         `,
-        params
+        params,
       ),
       !all || all === "false"
         ? db.query(
@@ -1317,7 +1400,7 @@ router.get("/history", async (req, res) => {
             JOIN users u ON h.moved_by = u.id
             ${whereSQL}
             `,
-            params
+            params,
           )
         : Promise.resolve({ rows: [] }),
     ]);
@@ -1362,7 +1445,7 @@ router.get("/history/:id", async (req, res) => {
       JOIN users u ON h.moved_by = u.id
       WHERE h.id = $1
       `,
-      [id]
+      [id],
     );
 
     if (result.rows.length === 0) {
@@ -1390,24 +1473,13 @@ router.delete(
       // 1. Find system by service_tag
       const systemResult = await client.query(
         "SELECT id FROM system WHERE service_tag = $1",
-        [service_tag]
+        [service_tag],
       );
       if (systemResult.rows.length === 0) {
         await client.query("ROLLBACK");
         return res.status(404).json({ error: "System not found" });
       }
       const system_id = systemResult.rows[0].id;
-
-      // Resolve IDs for: "Sent to L11", "RMA VID", "RMA CID", "RMA PID"
-      const resolvedLocRes = await client.query(
-        `
-            SELECT id
-            FROM location
-            WHERE name = ANY($1)
-          `,
-        [["Sent to L11", "RMA VID", "RMA CID", "RMA PID"]]
-      );
-      const RESOLVED_LOCATION_IDS = resolvedLocRes.rows.map((r) => r.id);
 
       // 2. Get history entries newest → oldest
       const historyResult = await client.query(
@@ -1417,7 +1489,7 @@ router.delete(
         WHERE system_id = $1
         ORDER BY changed_at DESC
         `,
-        [system_id]
+        [system_id],
       );
       if (historyResult.rows.length === 0) {
         await client.query("ROLLBACK");
@@ -1439,14 +1511,14 @@ router.delete(
       // 3. Who is deleting? (check admin flag from DB)
       const meRes = await client.query(
         `SELECT admin FROM users WHERE id = $1`,
-        [req.user.userId]
+        [req.user.userId],
       );
       const isAdmin = !!meRes.rows[0]?.admin;
 
       // 3b. (Optional) Get deleted_user id, if present
       let deletedUserId = null;
       const deletedUserIdResult = await client.query(
-        `SELECT id FROM users WHERE username = 'deleted_user@example.com'`
+        `SELECT id FROM users WHERE username = 'deleted_user@example.com'`,
       );
       if (deletedUserIdResult.rows.length) {
         deletedUserId = deletedUserIdResult.rows[0].id;
@@ -1486,7 +1558,7 @@ router.delete(
                       root_cause_sub_category_id = NULL
                 WHERE id = $1
                 `,
-          [system_id]
+          [system_id],
         );
       }
 
@@ -1504,7 +1576,7 @@ router.delete(
         ORDER BY changed_at DESC
         LIMIT 1
         `,
-        [system_id]
+        [system_id],
       );
 
       const rollbackLocation =
@@ -1516,6 +1588,18 @@ router.delete(
         rollbackLocation,
         system_id,
       ]);
+
+      // If latest deleted history moved from resolved -> unresolved, clear per-unit DOA.
+      if (
+        deletedToLocationId &&
+        RESOLVED_LOCATION_IDS.includes(deletedToLocationId) &&
+        rollbackLocation &&
+        !RESOLVED_LOCATION_IDS.includes(rollbackLocation)
+      ) {
+        await client.query("UPDATE system SET doa_number = NULL WHERE id = $1", [
+          system_id,
+        ]);
+      }
 
       // 7. If we are LEAVING an RMA location, remove from any open pallet
       if (
@@ -1530,7 +1614,7 @@ router.delete(
             AND removed_at IS NULL
             AND pallet_id IN (SELECT id FROM pallet WHERE status = 'open')
           `,
-          [system_id]
+          [system_id],
         );
       }
 
@@ -1550,7 +1634,7 @@ router.delete(
     } finally {
       client.release();
     }
-  }
+  },
 );
 
 // GET /api/v1/systems/:service_tag/history
@@ -1559,7 +1643,7 @@ router.get("/:service_tag/history", async (req, res) => {
 
   const systemResult = await db.query(
     "SELECT id FROM system WHERE service_tag = $1",
-    [service_tag]
+    [service_tag],
   );
 
   if (systemResult.rows.length === 0) {
@@ -1578,7 +1662,7 @@ router.get("/:service_tag/history", async (req, res) => {
     WHERE h.system_id = $1
     ORDER BY h.changed_at DESC
   `,
-    [system_id]
+    [system_id],
   );
 
   res.json(result.rows);
@@ -1586,19 +1670,29 @@ router.get("/:service_tag/history", async (req, res) => {
 
 // POST /api/v1/systems
 router.post("/", authenticateToken, async (req, res) => {
-  const { service_tag, issue, location_id, ppid, rack_service_tag } = req.body;
+  const {
+    service_tag,
+    issue,
+    location_id,
+    ppid,
+    rack_service_tag,
+    host_mac,
+    bmc_mac,
+  } = req.body;
 
   if (
     !service_tag?.trim() ||
     !location_id ||
     !ppid?.trim() ||
-    !rack_service_tag?.trim()
+    !rack_service_tag?.trim() ||
+    !host_mac?.toString().trim() ||
+    !bmc_mac?.toString().trim()
   ) {
     return res.status(400).json({
-      error: "Service Tag, Location, PPID, and Rack Service Tag are required",
+      error:
+        "Service Tag, Location, PPID, Rack Service Tag, Host MAC, and BMC MAC are required",
     });
   }
-
   // normalize rack id
   const rackUpper = rack_service_tag.trim().toUpperCase();
 
@@ -1626,6 +1720,7 @@ router.post("/", authenticateToken, async (req, res) => {
     "BLANK",
     "???",
     "XXX",
+    "COOLANT",
   ];
 
   // to make matching easier, remove spaces and slashes for the check
@@ -1644,6 +1739,14 @@ router.post("/", authenticateToken, async (req, res) => {
     return res.status(400).json({ error: e.message });
   }
 
+  let hostMac12, bmcMac12;
+  try {
+    hostMac12 = requireMac12Hex(host_mac, "host_mac");
+    bmcMac12 = requireMac12Hex(bmc_mac, "bmc_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
   const client = await db.connect();
   try {
     await client.query("BEGIN");
@@ -1653,14 +1756,14 @@ router.post("/", authenticateToken, async (req, res) => {
       `INSERT INTO dpn (name) VALUES ($1)
        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
        RETURNING id`,
-      [parsed.dpn]
+      [parsed.dpn],
     );
     const dpn_id = upsertDpn.rows[0].id;
 
     // factory via PPID code
     const facRes = await client.query(
       `SELECT id FROM factory WHERE ppid_code = $1`,
-      [parsed.factoryCodeRaw]
+      [parsed.factoryCodeRaw],
     );
     const factory_id = facRes.rows[0]?.id || null;
     if (!factory_id)
@@ -1671,9 +1774,10 @@ router.post("/", authenticateToken, async (req, res) => {
       `
       INSERT INTO system
         (service_tag, issue, location_id, ppid, dpn_id, factory_id,
-         manufactured_date, serial, rev, rack_service_tag)
+        manufactured_date, serial, rev, rack_service_tag,
+        host_mac, bmc_mac)
       VALUES
-        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id
       `,
       [
@@ -1686,8 +1790,10 @@ router.post("/", authenticateToken, async (req, res) => {
         parsed.manufacturedDate,
         parsed.serial,
         parsed.rev,
-        rackUpper, // already uppercased above
-      ]
+        rackUpper,
+        hostMac12,
+        bmcMac12,
+      ],
     );
     const system_id = ins.rows[0].id;
 
@@ -1700,7 +1806,7 @@ router.post("/", authenticateToken, async (req, res) => {
         location_id,
         `added to system with issue "${issue}"`,
         req.user.userId,
-      ]
+      ],
     );
 
     await client.query("COMMIT");
@@ -1750,6 +1856,15 @@ router.post("/", authenticateToken, async (req, res) => {
           error: "PPID already exists (this unit is already in the system)",
         });
       }
+      if (err.constraint === "uq_system_host_mac") {
+        return res.status(409).json({ error: "Host MAC already exists" });
+      }
+      if (err.constraint === "uq_system_bmc_mac") {
+        return res.status(409).json({ error: "BMC MAC already exists" });
+      }
+      if (err.code === "23514") {
+        return res.status(400).json({ error: "MAC format invalid" });
+      }
       // fallback if some other unique hits in future
       return res
         .status(409)
@@ -1780,6 +1895,8 @@ router.get("/:service_tag", async (req, res) => {
         s.serial,
         s.rev,
         s.ppid,
+        s.host_mac,
+        s.bmc_mac,
         s.rack_service_tag AS rack_id,
         l.name AS location,
         f.code AS factory_code,
@@ -1790,7 +1907,9 @@ router.get("/:service_tag", async (req, res) => {
         first_history.changed_at AS date_created,
         first_user.username AS added_by,
         -- last history entry
-        last_history.changed_at AS date_modified
+        last_history.changed_at AS date_modified,
+        tags_agg.tags AS tags
+
       FROM system s
       JOIN location l ON s.location_id = l.id
       LEFT JOIN factory f ON s.factory_id = f.id
@@ -1816,10 +1935,30 @@ router.get("/:service_tag", async (req, res) => {
         ORDER BY h.changed_at DESC
         LIMIT 1
       ) AS last_history ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+              'tag_id', x.id,
+              'code', x.code,
+              'description', x.description
+            )
+            ORDER BY x.code
+          ),
+          '[]'::jsonb
+        ) AS tags
+        FROM (
+          SELECT DISTINCT t.id, t.code, t.description
+          FROM system_tag st
+          JOIN tag t ON t.id = st.tag_id
+          WHERE st.system_id = s.id
+        ) x
+      ) AS tags_agg ON TRUE
+
 
       WHERE s.service_tag = $1
       `,
-      [service_tag]
+      [service_tag],
     );
 
     if (result.rows.length === 0) {
@@ -1830,6 +1969,76 @@ router.get("/:service_tag", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch system" });
+  }
+});
+
+router.patch("/:service_tag/host_mac", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { host_mac } = req.body;
+
+  if (typeof host_mac === "undefined") {
+    return res.status(400).json({ error: "host_mac is required" });
+  }
+
+  let mac12;
+  try {
+    mac12 = requireMac12Hex(host_mac, "host_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE system SET host_mac = $1 WHERE service_tag = $2 RETURNING service_tag`,
+      [mac12, service_tag],
+    );
+
+    if (!result.rowCount)
+      return res.status(404).json({ error: "System not found" });
+    return res.json({ message: "HOST MAC updated" });
+  } catch (err) {
+    console.error(err);
+    if (err.code === "23505" && err.constraint === "uq_system_host_mac") {
+      return res.status(409).json({ error: "HOST MAC already exists" });
+    }
+    if (err.code === "23514")
+      return res.status(400).json({ error: "MAC format invalid" });
+    return res.status(500).json({ error: "Failed to update host_mac" });
+  }
+});
+
+router.patch("/:service_tag/bmc_mac", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { bmc_mac } = req.body;
+
+  if (typeof bmc_mac === "undefined") {
+    return res.status(400).json({ error: "bmc_mac is required" });
+  }
+
+  let mac12;
+  try {
+    mac12 = requireMac12Hex(bmc_mac, "bmc_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE system SET bmc_mac = $1 WHERE service_tag = $2 RETURNING service_tag`,
+      [mac12, service_tag],
+    );
+
+    if (!result.rowCount)
+      return res.status(404).json({ error: "System not found" });
+    return res.json({ message: "BMC MAC updated" });
+  } catch (err) {
+    console.error(err);
+    if (err.code === "23505" && err.constraint === "uq_system_bmc_mac") {
+      return res.status(409).json({ error: "BMC MAC already exists" });
+    }
+    if (err.code === "23514")
+      return res.status(400).json({ error: "MAC format invalid" });
+    return res.status(500).json({ error: "Failed to update bmc_mac" });
   }
 });
 
@@ -1894,7 +2103,7 @@ router.patch(
        WHERE service_tag = $1
        RETURNING id
       `,
-        [service_tag, root_cause_id, root_cause_sub_category_id]
+        [service_tag, root_cause_id, root_cause_sub_category_id],
       );
 
       if (!upd.rowCount) {
@@ -1911,7 +2120,7 @@ router.patch(
       LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
       WHERE s.service_tag = $1
       `,
-        [service_tag]
+        [service_tag],
       );
 
       return res.json({
@@ -1926,7 +2135,7 @@ router.patch(
         .status(500)
         .json({ error: "Failed to update root cause fields" });
     }
-  }
+  },
 );
 
 // PATCH /api/v1/systems/:service_tag/location
@@ -1958,7 +2167,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
          rev
        FROM system 
        WHERE service_tag = $1`,
-      [service_tag]
+      [service_tag],
     );
 
     if (!rows.length) {
@@ -2001,17 +2210,26 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(400).json({
           error: `Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
-            ", "
+            ", ",
           )}. Update PPID first.`,
         });
       }
     }
 
-    // Update location on system
-    await client.query(`UPDATE system SET location_id = $1 WHERE id = $2`, [
-      to_location_id,
-      system_id,
-    ]);
+    // Update location and clear DOA when moving from resolved -> unresolved.
+    await client.query(
+      `
+      UPDATE system
+      SET location_id = $1,
+          doa_number = CASE
+            WHEN $2::int = ANY($4::int[]) AND NOT ($1::int = ANY($4::int[]))
+              THEN NULL
+            ELSE doa_number
+          END
+      WHERE id = $3
+      `,
+      [to_location_id, from_location_id, system_id, RESOLVED_LOCATION_IDS],
+    );
 
     // Default to original note
     let finalNote = note;
@@ -2020,9 +2238,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
     if (RMA_LOCATION_IDS.includes(to_location_id)) {
       const { pallet_number } = await assignSystemToPallet(
         system_id,
-        factory_id,
-        dpn_id,
-        client
+        client,
       );
       finalNote = `${note} - added to ${pallet_number}`;
     } else if (RMA_LOCATION_IDS.includes(from_location_id)) {
@@ -2033,7 +2249,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         WHERE system_id = $1
           AND removed_at IS NULL
         `,
-        [system_id]
+        [system_id],
       );
     }
 
@@ -2042,7 +2258,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       `INSERT INTO system_location_history
        (system_id, from_location_id, to_location_id, note, moved_by)
        VALUES ($1, $2, $3, $4, $5)`,
-      [system_id, from_location_id, to_location_id, finalNote, req.user.userId]
+      [system_id, from_location_id, to_location_id, finalNote, req.user.userId],
     );
 
     await client.query("COMMIT");
@@ -2056,7 +2272,13 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
-    res.status(500).json({ error: "Failed to update location" });
+
+    const message = String(err?.message || "").trim();
+    if (message === "Too many pallets open at the same time.") {
+      return res.status(409).json({ error: message });
+    }
+
+    res.status(500).json({ error: message || "Failed to update location" });
   } finally {
     client.release();
   }
@@ -2074,7 +2296,7 @@ router.patch("/:service_tag/issue", authenticateToken, async (req, res) => {
   try {
     const result = await db.query(
       "UPDATE system SET issue = $1 WHERE service_tag = $2 RETURNING service_tag",
-      [issue, service_tag]
+      [issue, service_tag],
     );
 
     if (result.rowCount === 0) {
@@ -2085,6 +2307,132 @@ router.patch("/:service_tag/issue", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update issue" });
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/rack
+router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { rack_service_tag } = req.body;
+
+  // rack must exist (no null / no "")
+  if (rack_service_tag === undefined || rack_service_tag === null) {
+    return res.status(400).json({ error: "Rack Service Tag is required" });
+  }
+  if (!String(rack_service_tag).trim()) {
+    return res.status(400).json({ error: "Rack Service Tag is required" });
+  }
+
+  const stUpper = String(service_tag).trim().toUpperCase();
+  const rackUpper = String(rack_service_tag).trim().toUpperCase();
+
+  // SAME checks as POST
+  if (rackUpper.length !== 7) {
+    return res.status(400).json({
+      error: "Rack Service Tag must be exactly 7 characters long",
+    });
+  }
+
+  const fillerTokens = [
+    "UNK",
+    "UNKN",
+    "N/A",
+    "NA",
+    "NONE",
+    "NULL",
+    "(NULL)",
+    "NODATA",
+    "NOINFO",
+    "TBD",
+    "TBA",
+    "N/R",
+    "BLANK",
+    "???",
+    "XXX",
+    "COOLANT",
+  ];
+
+  const rackForMatch = rackUpper.replace(/[\s/.-]/g, "");
+  const hasFiller = fillerTokens.some((tok) => rackForMatch.includes(tok));
+  if (hasFiller) {
+    return res.status(400).json({
+      error: "Please provide a valid Rack Service Tag, not a filler value",
+    });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    // lock row + get old value so we can avoid firing webhook on no-op
+    const sel = await client.query(
+      `SELECT id, rack_service_tag
+         FROM system
+        WHERE service_tag = $1
+        FOR UPDATE`,
+      [stUpper],
+    );
+
+    if (sel.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const oldRack = sel.rows[0].rack_service_tag; // may be null in DB, but we won't set null
+    const changed = String(oldRack ?? "") !== String(rackUpper);
+
+    await client.query(
+      `UPDATE system
+          SET rack_service_tag = $1
+        WHERE service_tag = $2
+      RETURNING service_tag`,
+      [rackUpper, stUpper],
+    );
+
+    await client.query("COMMIT");
+
+    // respond first
+    res.json({ message: "Rack service tag updated" });
+
+    // webhook AFTER response
+    if (changed) {
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000); // 5s for ACK
+
+        const resp = await fetch("http://172.17.0.1:9000/", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Auth-Token": process.env.WEBHOOK_TOKEN || "",
+          },
+          body: JSON.stringify({
+            script: "/opt/hooks/on-system-created.sh",
+            args: [stUpper, rackUpper],
+            wait: "ack",
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+
+        const text = await resp.text();
+        if (!resp.ok) {
+          console.warn(`host-runner ack failed: ${resp.status} ${text}`);
+        } else {
+          console.log(`host-runner ack: ${text}`);
+        }
+      } catch (e) {
+        console.error("host-runner call failed:", e);
+      }
+    }
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+    console.error(err);
+    return res.status(500).json({ error: "Failed to update Rack Service Tag" });
+  } finally {
+    client.release();
   }
 });
 
@@ -2108,7 +2456,7 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
     // factory_id via dynamic ppid_code
     const { rows } = await db.query(
       "SELECT id FROM factory WHERE ppid_code = $1",
-      [parsed.factoryCodeRaw]
+      [parsed.factoryCodeRaw],
     );
     const factoryId = rows.length ? rows[0].id : null;
 
@@ -2121,7 +2469,7 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
       `INSERT INTO dpn (name) VALUES ($1)
        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
        RETURNING id`,
-      [parsed.dpn]
+      [parsed.dpn],
     );
     const dpnId = upsert.rows[0].id;
 
@@ -2141,7 +2489,7 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
 
     const result = await db.query(
       `UPDATE system SET ${setClauses} WHERE service_tag = $1 RETURNING service_tag`,
-      [service_tag, ...values]
+      [service_tag, ...values],
     );
 
     if (result.rowCount === 0) {
@@ -2152,6 +2500,45 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to update PPID data" });
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/doa
+router.patch("/:service_tag/doa", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const raw = req.body?.doa_number;
+  const doa_number =
+    typeof raw === "string" ? raw.trim() : raw == null ? "" : String(raw).trim();
+
+  if (doa_number.length > 20) {
+    return res
+      .status(400)
+      .json({ error: "doa_number must be 20 characters or fewer" });
+  }
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE system
+      SET doa_number = $1
+      WHERE service_tag = $2
+      RETURNING service_tag, doa_number
+      `,
+      [doa_number || null, service_tag],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    return res.json({
+      message: "System DOA updated",
+      service_tag: result.rows[0].service_tag,
+      doa_number: result.rows[0].doa_number,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Failed to update DOA number" });
   }
 });
 
@@ -2169,11 +2556,11 @@ router.patch(
       // 1. Get system details including location_id and ppid
       const { rows } = await client.query(
         `
-      SELECT id, factory_id, dpn_id, location_id, ppid
+      SELECT id, location_id, ppid
       FROM system
       WHERE service_tag = $1
       `,
-        [service_tag]
+        [service_tag],
       );
 
       if (!rows.length) {
@@ -2181,7 +2568,7 @@ router.patch(
         return res.status(404).json({ error: "System not found" });
       }
 
-      const { id: system_id, factory_id, dpn_id, location_id, ppid } = rows[0];
+      const { id: system_id, location_id, ppid } = rows[0];
 
       // 2. Validate RMA location
       if (!RMA_LOCATION_IDS.includes(location_id)) {
@@ -2200,15 +2587,6 @@ router.patch(
         });
       }
 
-      // 4. Validate factory_id and dpn
-      if (!factory_id || !dpn_id) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error:
-            "System must have factory_id and dpn set before being added to a pallet",
-        });
-      }
-
       // 4.5 Block if already on an active pallet (covers locked pallets too)
       const { rows: activePalletRows } = await client.query(
         `
@@ -2219,7 +2597,7 @@ router.patch(
         AND ps.removed_at IS NULL
       LIMIT 1
       `,
-        [system_id]
+        [system_id],
       );
       if (activePalletRows.length > 0) {
         const { pallet_number, locked, status } = activePalletRows[0];
@@ -2234,9 +2612,7 @@ router.patch(
       // 5. Assign to pallet (your helper already ignores locked pallets)
       const { pallet_id, pallet_number } = await assignSystemToPallet(
         system_id,
-        factory_id,
-        dpn_id,
-        client
+        client,
       );
 
       await client.query("COMMIT");
@@ -2253,7 +2629,7 @@ router.patch(
     } finally {
       client.release();
     }
-  }
+  },
 );
 
 // DELETE /api/v1/systems/:service_tag
@@ -2266,7 +2642,7 @@ router.delete(
 
     const result = await db.query(
       "DELETE FROM system WHERE service_tag = $1 RETURNING service_tag",
-      [service_tag]
+      [service_tag],
     );
 
     if (result.rowCount === 0) {
@@ -2274,7 +2650,7 @@ router.delete(
     }
 
     res.json({ message: "System deleted" });
-  }
+  },
 );
 
 router.get("/:service_tag/pallet", async (req, res) => {
@@ -2282,7 +2658,7 @@ router.get("/:service_tag/pallet", async (req, res) => {
 
   const systemRes = await db.query(
     `SELECT id FROM system WHERE service_tag = $1`,
-    [service_tag]
+    [service_tag],
   );
 
   if (systemRes.rows.length === 0) {
@@ -2296,6 +2672,7 @@ router.get("/:service_tag/pallet", async (req, res) => {
     SELECT
       p.id AS pallet_id,
       p.pallet_number,
+      p.shape,
       d.name AS dpn,      
       p.status,
       p.created_at,
@@ -2304,7 +2681,7 @@ router.get("/:service_tag/pallet", async (req, res) => {
       ps.added_at
     FROM pallet_system ps
     JOIN pallet p ON ps.pallet_id = p.id
-    JOIN factory f ON p.factory_id = f.id
+    LEFT JOIN factory f ON p.factory_id = f.id
     LEFT JOIN dpn d ON p.dpn_id = d.id
     WHERE ps.system_id = $1
       AND ps.removed_at IS NULL
@@ -2312,7 +2689,7 @@ router.get("/:service_tag/pallet", async (req, res) => {
     ORDER BY ps.added_at DESC
     LIMIT 1;
     `,
-    [systemId]
+    [systemId],
   );
 
   if (result.rows.length === 0) {
@@ -2329,7 +2706,7 @@ router.get("/:service_tag/pallet-history", async (req, res) => {
 
   const systemRes = await db.query(
     `SELECT id FROM system WHERE service_tag = $1`,
-    [service_tag]
+    [service_tag],
   );
 
   if (systemRes.rows.length === 0) {
@@ -2344,6 +2721,7 @@ router.get("/:service_tag/pallet-history", async (req, res) => {
       ps.id AS assignment_id,
       p.id AS pallet_id,
       p.pallet_number,
+      p.shape,
       d.name AS dpn,
       f.name AS factory,
       f.code AS factory_code,
@@ -2352,12 +2730,12 @@ router.get("/:service_tag/pallet-history", async (req, res) => {
       ps.removed_at
     FROM pallet_system ps
     JOIN pallet p ON ps.pallet_id = p.id
-    JOIN factory f ON p.factory_id = f.id
+    LEFT JOIN factory f ON p.factory_id = f.id
     LEFT JOIN dpn d ON p.dpn_id = d.id
     WHERE ps.system_id = $1
     ORDER BY ps.added_at ASC;
     `,
-    [systemId]
+    [systemId],
   );
 
   res.json(result.rows);

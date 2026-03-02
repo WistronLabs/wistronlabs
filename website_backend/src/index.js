@@ -20,7 +20,7 @@ app.use(
       "http://frk.wistronlabs.com",
     ],
     credentials: true,
-  })
+  }),
 );
 
 const systemsRouter = require("./routes/systems");
@@ -32,6 +32,9 @@ const { router: authRouter } = require("./routes/auth");
 const partItemsRouter = require("./routes/partItems");
 const partsRouter = require("./routes/parts");
 const partCategoriesRouter = require("./routes/partCategories");
+const migrationsRouter = require("./routes/migrations");
+const tagsRouter = require("./routes/tags");
+const systemTagsRouter = require("./routes/systemTags");
 
 app.use("/api/v1/systems", systemsRouter);
 app.use("/api/v1/locations", locationsRouter);
@@ -42,6 +45,9 @@ app.use("/api/v1/pallets", palletRouter);
 app.use("/api/v1/part-items", partItemsRouter);
 app.use("/api/v1/parts", partsRouter);
 app.use("/api/v1/part-categories", partCategoriesRouter);
+app.use("/api/v1/migrations", migrationsRouter);
+app.use("/api/v1/tags", tagsRouter);
+app.use("/api/v1/systems", systemTagsRouter);
 
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {

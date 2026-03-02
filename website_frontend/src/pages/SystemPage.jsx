@@ -1,6 +1,6 @@
-import { useEffect, useState, useContext, useMemo, use } from "react";
+import { useEffect, useState, useContext, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import Select, { components } from "react-select";
+import Select, { components as SelectComponents } from "react-select";
 import { Link } from "react-router-dom";
 
 import { DateTime } from "luxon";
@@ -31,124 +31,18 @@ import usePrintConfirmL11 from "../hooks/usePrintConfirmL11.jsx";
 import useToast from "../hooks/useToast.jsx";
 import useIsMobile from "../hooks/useIsMobile.jsx";
 import useDetailsModal from "../hooks/useDetailsModal.jsx";
-
-// --- parts select helpers ---
-
-// 1) group and sort parts into react-select "grouped options"
-// --- parts select helpers ---
-
-// 1) group and sort parts into react-select "grouped options"
-const buildGroupedPartOptions = (parts = []) => {
-  const byCat = new Map();
-
-  parts.forEach((p) => {
-    const cat = p.category_name || "Uncategorized";
-    const dpn = p.dpn || "";
-    const name = p.name || "";
-
-    // This is what will show in the closed select:
-    // [Part Name] [Part Category] - [DPN]
-    const displayLabel = `${name} ${cat}${dpn ? ` [${dpn}]` : ""}`;
-
-    if (!byCat.has(cat)) byCat.set(cat, []);
-    byCat.get(cat).push({
-      value: p.id,
-      label: displayLabel, // <-- used by react-select singleValue
-      name, // <-- keep raw part name for notes
-      dpn,
-      category_name: cat,
-      part_category_id: p.part_category_id,
-    });
-  });
-
-  return Array.from(byCat.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([label, options]) => ({
-      label,
-      options: options.sort((a, b) => a.label.localeCompare(b.label)),
-    }));
-};
-
-// 2) search by part label OR category name OR DPN
-const filterPartOption = (option, rawInput) => {
-  if (!rawInput) return true;
-  const term = rawInput.toLowerCase();
-
-  const label = (option?.label || "").toLowerCase();
-  const cat = (
-    option?.data?.category_name ??
-    option?.category_name ??
-    ""
-  ).toLowerCase();
-  const dpn = (option?.data?.dpn ?? option?.dpn ?? "").toLowerCase();
-
-  return (
-    label.includes(term) || cat.includes(term) || dpn.includes(term) // <-- NEW: searchable by DPN
-  );
-};
-
-// 3) custom  line (shows DPN + tiny category chip)
-const PartOption = (props) => {
-  const cat = props.data.category_name;
-  const dpn = props.data.dpn;
-
-  return (
-    <components.Option {...props}>
-      <div className="flex flex-col gap-1">
-        <div className="text-sm font-medium text-gray-800 truncate">
-          {props.data.name || props.label}
-        </div>
-        <div className="flex items-center justify-between gap-2">
-          {dpn && (
-            <span className="text-[10px] px-2 py-0.5 rounded bg-blue-50 text-blue-800 font-mono">
-              {dpn}
-            </span>
-          )}
-          <span className="text-[10px] px-2 py-0.5 rounded bg-gray-100 text-gray-700">
-            {cat}
-          </span>
-        </div>
-      </div>
-    </components.Option>
-  );
-};
-
-// 4) non-selectable group header
-const PartGroupLabel = (group) => (
-  <div className="text-xs font-semibold text-gray-500 uppercase tracking-wide py-1">
-    {group.label}
-  </div>
-);
-
-const PULL_FROM_UNIT_VALUE = "__PULL_FROM_UNIT__";
-
-const GoodPPIDOption = (props) => {
-  const { data } = props;
-
-  if (data.value === PULL_FROM_UNIT_VALUE) {
-    return (
-      <components.Option {...props}>
-        <span className="text-blue-600 font-semibold">{data.label}</span>
-      </components.Option>
-    );
-  }
-
-  return <components.Option {...props} />;
-};
-
-const GoodPPIDSingleValue = (props) => {
-  const { data } = props;
-
-  if (data.value === PULL_FROM_UNIT_VALUE) {
-    return (
-      <components.SingleValue {...props}>
-        <span className="text-blue-600 font-semibold">{data.label}</span>
-      </components.SingleValue>
-    );
-  }
-
-  return <components.SingleValue {...props} />;
-};
+import AddTagModal from "../components/system-page/AddTagModal.jsx";
+import AllTagsModal from "../components/system-page/AllTagsModal.jsx";
+import GoodPPIDOption from "../components/system-page/GoodPPIDOption.jsx";
+import GoodPPIDSingleValue from "../components/system-page/GoodPPIDSingleValue.jsx";
+import PartGroupLabel from "../components/system-page/PartGroupLabel.jsx";
+import PartOption from "../components/system-page/PartOption.jsx";
+import TagBubblesRow from "../components/system-page/TagBubblesRow.jsx";
+import { PULL_FROM_UNIT_VALUE } from "../components/system-page/systemPage.constants.js";
+import {
+  buildGroupedPartOptions,
+  filterPartOption,
+} from "../utils/partSelectHelpers.js";
 
 function SystemPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
@@ -181,6 +75,15 @@ function SystemPage() {
   const [rootCauseSubOptions, setRootCauseSubOptions] = useState([]); // [{value,label}]
   const [selectedRootCauseId, setSelectedRootCauseId] = useState(null);
   const [selectedRootCauseSubId, setSelectedRootCauseSubId] = useState(null);
+
+  // --- Tags UI state ---
+  const [systemTags, setSystemTags] = useState([]); // [{id,name}]
+  const [showAllTagsModal, setShowAllTagsModal] = useState(false);
+  const [showAddTagModal, setShowAddTagModal] = useState(false);
+
+  // UI behavior states
+  const [focusedTagId, setFocusedTagId] = useState(null); // when user clicks a truncated tag
+  const [showTopUntruncated, setShowTopUntruncated] = useState(false); // after focused "..." click
 
   const [tab, setTab] = useState("history");
   const [logsDir, setLogsDir] = useState(""); // e.g. "2025-09-25/"
@@ -244,12 +147,52 @@ function SystemPage() {
     getRootCauses,
     getRootCauseSubCategories,
     updateSystemRootCause,
+    getTags,
+    getSystemTags,
+    addSystemTag,
+    removeSystemTag,
   } = useApi();
 
   const { confirm, ConfirmDialog } = useConfirm();
   const { showToast, Toast } = useToast();
   const isMobile = useIsMobile();
   const navigate = useNavigate();
+
+  const tagKey = (t) =>
+    String(t?.code || "")
+      .trim()
+      .toLowerCase();
+
+  const handleDeleteTag = async (tag) => {
+    const key = tagKey(tag);
+    if (!key) return;
+
+    // Always exit focused mode and re-truncate immediately
+    setFocusedTagId((cur) => (String(cur) === key ? null : cur));
+    setShowTopUntruncated(false);
+
+    setSystemTags((prev) =>
+      (Array.isArray(prev) ? prev : []).filter((t) => tagKey(t) !== key),
+    );
+
+    try {
+      await removeSystemTag(serviceTag, tag.code);
+      showToast?.(`Deleted tag "${tag.code}"`, "success", 2500, "bottom-right");
+    } catch (e) {
+      // Rollback UI if API fails (put it back if still missing)
+      setSystemTags((prev) => {
+        const arr = Array.isArray(prev) ? prev : [];
+        if (arr.some((t) => tagKey(t) === key)) return arr;
+        return [tag, ...arr];
+      });
+
+      // optional: restore focus if it was focused
+      // setFocusedTagId(key);
+
+      const msg = e?.body?.error || e?.message || "Failed to delete tag";
+      showToast?.(msg, "error", 3000, "bottom-right");
+    }
+  };
 
   // BAD inventory PPIDs cache (by part)
   const [badOptionsCache, setBadOptionsCache] = useState(new Map()); // part_id -> [{value,label}]
@@ -281,12 +224,26 @@ function SystemPage() {
   const L11_NAME = "Sent to L11";
 
   // --- Pending Parts state ---
-  const [pendingBlocks, setPendingBlocks] = useState([]); // [{id, part_id, ppid}]
+  const [pendingBlocks, setPendingBlocks] = useState([]); // [{id, part_id}]
   const [partOptions, setPartOptions] = useState([]); // [{value,label}]
+  const [partsWithFunctionalInventory, setPartsWithFunctionalInventory] =
+    useState(new Set()); // Set<part_id>
   // when partOptions are grouped, this flattens all options for value lookup
   const flatPartOptions = useMemo(
     () => partOptions.flatMap((g) => g.options || []),
-    [partOptions]
+    [partOptions],
+  );
+  const pendingPartOptions = useMemo(
+    () =>
+      partOptions
+        .map((group) => ({
+          ...group,
+          options: (group.options || []).filter(
+            (opt) => !partsWithFunctionalInventory.has(opt.value),
+          ),
+        }))
+        .filter((group) => group.options.length > 0),
+    [partOptions, partsWithFunctionalInventory],
   );
   // All parts currently tracked in the unit (good + bad)
   const [unitParts, setUnitParts] = useState([]);
@@ -298,6 +255,7 @@ function SystemPage() {
   const [goodOptionsCache, setGoodOptionsCache] = useState(new Map()); // part_id -> [{value,label}]
   // Replacement selections for BAD in-unit parts (ppid -> replacement good ppid)
   const [replacementByOldPPID, setReplacementByOldPPID] = useState({});
+  const [originalPPIDByBadPPID, setOriginalPPIDByBadPPID] = useState({});
   const [donorSystems, setDonorSystems] = useState([]);
 
   // Load GOOD inventory PPIDs for a specific part_id (cached)
@@ -344,7 +302,7 @@ function SystemPage() {
           value: u.id,
           label: `${u.service_tag} – ${u.location || ""}`,
         })),
-    [donorSystems, system?.id]
+    [donorSystems, system?.id],
   );
 
   const donorUnitsById = useMemo(() => {
@@ -364,8 +322,8 @@ function SystemPage() {
                 ? { ppid: "", current_bad_ppid: "" } // reset dependent fields
                 : {}),
             }
-          : b
-      )
+          : b,
+      ),
     );
   };
 
@@ -376,6 +334,12 @@ function SystemPage() {
   const partNameById = useMemo(() => {
     const m = new Map();
     flatPartOptions.forEach((o) => m.set(o.value, o.name || o.label));
+    return m;
+  }, [flatPartOptions]);
+
+  const partDpnById = useMemo(() => {
+    const m = new Map();
+    flatPartOptions.forEach((o) => m.set(o.value, o.dpn || ""));
     return m;
   }, [flatPartOptions]);
 
@@ -421,9 +385,21 @@ function SystemPage() {
     let alive = true;
     (async () => {
       try {
-        const parts = await getParts(); // [{id,name}]
+        const [parts, functionalInventoryRows] = await Promise.all([
+          getParts(), // [{id,name}]
+          getPartItems({
+            place: "inventory",
+            is_functional: true,
+          }),
+        ]);
         if (!alive) return;
         setPartOptions(buildGroupedPartOptions(parts));
+        const inStockPartIds = new Set(
+          (functionalInventoryRows || [])
+            .map((r) => r.part_id)
+            .filter((id) => id != null),
+        );
+        setPartsWithFunctionalInventory(inStockPartIds);
       } catch (e) {
         console.error("Failed to load parts:", e);
       }
@@ -504,18 +480,18 @@ function SystemPage() {
         if (isRMAto) {
           catOpts = catOpts.filter((o) => o.label !== "NTF");
           baseSubOpts = baseSubOpts.filter(
-            (o) => o.label !== "No Trouble Found"
+            (o) => o.label !== "No Trouble Found",
           );
         } else {
           // Outside RMA: hide "Unable to Repair"
           baseSubOpts = baseSubOpts.filter(
-            (o) => o.label !== "Unable to Repair"
+            (o) => o.label !== "Unable to Repair",
           );
         }
 
         // Figure out the currently selected category label (after filtering)
         const selectedCat = catOpts.find(
-          (o) => String(o.value) === String(selectedRootCauseId)
+          (o) => String(o.value) === String(selectedRootCauseId),
         );
 
         let subOpts = baseSubOpts;
@@ -548,7 +524,7 @@ function SystemPage() {
         }
         if (
           !subOpts.some(
-            (o) => String(o.value) === String(selectedRootCauseSubId)
+            (o) => String(o.value) === String(selectedRootCauseSubId),
           )
         ) {
           setSelectedRootCauseSubId(null);
@@ -570,11 +546,11 @@ function SystemPage() {
   useEffect(() => {
     // If the chosen category is NTF, keep sub-category locked to NTF (when available)
     const selectedCat = rootCauseOptions.find(
-      (o) => String(o.value) === String(selectedRootCauseId)
+      (o) => String(o.value) === String(selectedRootCauseId),
     );
     if (selectedCat?.label === "NTF") {
       const ntfSub = rootCauseSubOptions.find(
-        (o) => o.label === "No Trouble Found"
+        (o) => o.label === "No Trouble Found",
       );
       if (ntfSub) setSelectedRootCauseSubId(String(ntfSub.value));
     }
@@ -587,7 +563,6 @@ function SystemPage() {
       {
         id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         part_id: null,
-        ppid: "",
       },
     ]);
   };
@@ -602,7 +577,7 @@ function SystemPage() {
     }
   };
 
-  // Update a field on a block (reset PPID when Part changes)
+  // Update a field on a pending block
   const updateBlock = (id, field, value) => {
     setPendingBlocks((list) =>
       list.map((b) =>
@@ -610,21 +585,15 @@ function SystemPage() {
           ? {
               ...b,
               [field]: value,
-              ...(field === "part_id" ? { ppid: "" } : {}),
             }
-          : b
-      )
+          : b,
+      ),
     );
   };
 
   // Remove a block
   const removeBlock = (id) =>
     setPendingBlocks((list) => list.filter((b) => b.id !== id));
-
-  // Ready to submit?
-  const canSubmitPending =
-    pendingBlocks.length > 0 &&
-    pendingBlocks.every((b) => !!b.part_id && !!(b.ppid || "").trim());
 
   // Preload parts + GOOD PPIDs when already in Debug (no need to choose To Location)
   useEffect(() => {
@@ -642,8 +611,8 @@ function SystemPage() {
         // Preload GOOD PPIDs for all part_ids currently tracked in the unit
         const ids = Array.from(
           new Set(
-            (unitParts || []).map((u) => u.part_id).filter((id) => id != null)
-          )
+            (unitParts || []).map((u) => u.part_id).filter((id) => id != null),
+          ),
         );
 
         for (const pid of ids) {
@@ -752,6 +721,7 @@ function SystemPage() {
         releasedPalletsData,
         partItemsRows,
         allSystemsRaw,
+        systemTagsData,
       ] = await Promise.all([
         getLocations(),
         getSystemHistory(serviceTag),
@@ -763,15 +733,15 @@ function SystemPage() {
           },
         }),
         getPartItems({ place: "unit", unit_id: systemsData.id }),
-        getSystems({ all: true }), // ⬅️ all units
+        getSystems({ all: true }),
+        getSystemTags(serviceTag),
       ]);
-
       const allSystems =
         allSystemsRaw?.results && Array.isArray(allSystemsRaw.results)
           ? allSystemsRaw.results
           : Array.isArray(allSystemsRaw)
-          ? allSystemsRaw
-          : [];
+            ? allSystemsRaw
+            : [];
 
       // For each unit:
       // isRMA = in RMA VID/CID/PID
@@ -784,8 +754,8 @@ function SystemPage() {
           p.active_systems?.some(
             (s) =>
               (s.service_tag || "").toUpperCase() ===
-              (u.service_tag || "").toUpperCase()
-          )
+              (u.service_tag || "").toUpperCase(),
+          ),
         );
 
         // keep all units that are NOT inactive RMA
@@ -794,6 +764,11 @@ function SystemPage() {
       });
 
       setSystem(systemsData);
+      setSystemTags(
+        Array.isArray(systemTagsData?.tags) ? systemTagsData.tags : [],
+      );
+      setFocusedTagId(null);
+      setShowTopUntruncated(false);
       setLocations(locationsData);
       setHistory(historyData);
       setStations(stationData);
@@ -810,11 +785,11 @@ function SystemPage() {
   let selectedStationObj = null;
   if (system?.location === "In L10") {
     selectedStationObj = stations.find(
-      (station) => station.system_service_tag === system.service_tag
+      (station) => station.system_service_tag === system.service_tag,
     );
   } else {
     selectedStationObj = stations.find(
-      (station) => station.station_name === selectedStation
+      (station) => station.station_name === selectedStation,
     );
   }
 
@@ -824,9 +799,9 @@ function SystemPage() {
   const hasAnyBadReplacementChosen = useMemo(
     () =>
       Object.values(replacementByOldPPID || {}).some(
-        (v) => (v || "").trim() !== ""
+        (v) => (v || "").trim() !== "",
       ),
-    [replacementByOldPPID]
+    [replacementByOldPPID],
   );
 
   const select40Styles = useMemo(
@@ -884,11 +859,24 @@ function SystemPage() {
         textOverflow: "ellipsis",
       }),
     }),
-    []
+    [],
   );
 
   // --- PPID normalization (case-insensitive uniqueness) ---
   const normPPID = (s) => (s || "").toUpperCase().trim();
+  const safeToken = (s) =>
+    String(s || "")
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  const makePendingTempPPID = (partId) => {
+    const st = safeToken(serviceTag);
+    const dpn = safeToken(partDpnById.get(partId) || "PART");
+    const timecode = `TMP${Date.now().toString(36).toUpperCase()}${Math.random()
+      .toString(36)
+      .slice(2, 6)
+      .toUpperCase()}`;
+    return `${st}${dpn}${timecode}`;
+  };
 
   const getEffectiveGoodPPID = (block) => {
     if (!block) return "";
@@ -908,14 +896,11 @@ function SystemPage() {
   }, [goodBlocks, replacementByOldPPID]);
 
   const selectedBadPPIDs = useMemo(() => {
-    const fromPending = pendingBlocks
-      .map((b) => normPPID(b.ppid))
-      .filter(Boolean);
     const fromOriginals = Object.values(goodActionByPPID)
       .map((cfg) => normPPID(cfg?.original_bad_ppid))
       .filter(Boolean);
-    return new Set([...fromPending, ...fromOriginals]);
-  }, [pendingBlocks, goodActionByPPID]);
+    return new Set(fromOriginals);
+  }, [goodActionByPPID]);
 
   // --- Filter helpers (show current value even if "reserved") ---
   const getFilteredGoodOptions = (part_id, currentValue) => {
@@ -1021,7 +1006,7 @@ function SystemPage() {
             original_bad_ppid: chosen.ppid,
           };
 
-          // ✅ Only force Defective if this is from a non-live *unit* donor
+          // Only force Defective if this is from a non-live *unit* donor
           // Inventory originals should NEVER force "Defective".
           const isNonLiveDonor =
             chosen.place === "unit" &&
@@ -1056,8 +1041,6 @@ function SystemPage() {
   };
 
   const handleDelete = async () => {
-    console.log("deleting");
-
     const confirmed = await confirm({
       title: "Confirm Deletion",
       message: `Are you sure you want to delete this unit? This action cannot be undone.`,
@@ -1084,7 +1067,6 @@ function SystemPage() {
       navigate("/"); // redirect to home page
     } catch (err) {
       console.error(err);
-      console.log("Error deleting unit:", err);
       showToast("Error deleting unit", "error", 3000, "bottom-right");
     }
   };
@@ -1095,7 +1077,7 @@ function SystemPage() {
         "Cannot delete the first location entry",
         "error",
         3000,
-        "bottom-right"
+        "bottom-right",
       );
       return;
     }
@@ -1189,7 +1171,7 @@ function SystemPage() {
                   .textContent.trim()
                   .replace(/\/$/, "");
                 href = Array.from(col.querySelectorAll("a"))[0].getAttribute(
-                  "href"
+                  "href",
                 );
                 if (href === "../") return; // skip parent directory row
               }
@@ -1217,7 +1199,7 @@ function SystemPage() {
             const nameLux = DateTime.fromISO(name, { zone: "utc" });
             const nameLocal = nameLux.isValid
               ? formatDateHumanReadable(
-                  new Date(nameLux.setZone(serverZone).toISO())
+                  new Date(nameLux.setZone(serverZone).toISO()),
                 )
               : name;
             //push entry
@@ -1250,13 +1232,13 @@ function SystemPage() {
     const goodInUnitNow = new Set(
       (unitParts || [])
         .filter((i) => i.is_functional === true)
-        .map((i) => normPPID(i.ppid))
+        .map((i) => normPPID(i.ppid)),
     );
 
     // 2) GOOD parts we are explicitly removing this submit
     //    (only entries with an action AND an original_bad_ppid actually execute)
     const gaEntries = Object.entries(goodActionByPPID).filter(
-      ([g, cfg]) => !!cfg?.action && !!cfg?.original_bad_ppid
+      ([g, cfg]) => !!cfg?.action && !!cfg?.original_bad_ppid,
     );
     for (const [g] of gaEntries) goodInUnitNow.delete(normPPID(g));
 
@@ -1281,7 +1263,7 @@ function SystemPage() {
 
   const L10_LOCATION_ID = useMemo(
     () => locations.find((l) => l.name === "In L10")?.id,
-    [locations]
+    [locations],
   );
 
   // Will the unit still contain any BAD parts after this submit?
@@ -1290,7 +1272,7 @@ function SystemPage() {
     const bad = new Set(
       (unitParts || [])
         .filter((i) => i.is_functional === false)
-        .map((i) => normPPID(i.ppid))
+        .map((i) => normPPID(i.ppid)),
     );
 
     // remove BAD parts the user will mark as working
@@ -1303,7 +1285,7 @@ function SystemPage() {
 
     // add BAD parts that will be newly flagged in this submit (Pending blocks)
     for (const b of pendingBlocks) {
-      if (b.part_id && (b.ppid || "").trim()) bad.add(normPPID(b.ppid));
+      if (b.part_id) bad.add(`TMP-${b.id}`);
     }
 
     // add BAD parts that will be brought back into the unit via Good-part actions
@@ -1339,13 +1321,11 @@ function SystemPage() {
     }
 
     const movingToPending = toId === 4;
-    const newBadCount = pendingBlocks.filter(
-      (b) => b.part_id && (b.ppid || "").trim()
-    ).length;
+    const newBadCount = pendingBlocks.filter((b) => b.part_id).length;
 
     // any currently-tracked BAD parts in the unit?
     const hasBadTrackedNow = (unitParts || []).some(
-      (i) => i.is_functional === false
+      (i) => i.is_functional === false,
     );
 
     if (movingToPending) {
@@ -1353,7 +1333,7 @@ function SystemPage() {
         // keep existing behavior while already IN Pending Parts
         if (newBadCount === 0) {
           setFormError(
-            "Mark at least one additional part as defective before moving to Pending Parts again."
+            "Mark at least one additional part as defective before moving to Pending Parts again.",
           );
           return;
         }
@@ -1361,7 +1341,7 @@ function SystemPage() {
         // only error if there are NO current bad parts AND no new pending parts added
         if (!hasBadTrackedNow && newBadCount === 0) {
           setFormError(
-            "At least one part must be marked as defective before moving to Pending Parts"
+            "At least one part must be marked as defective before moving to Pending Parts",
           );
           return;
         }
@@ -1374,7 +1354,7 @@ function SystemPage() {
     // Rule #4: if a BAD part is being added AND there exists GOOD inventory of that part, block submit
     if (pendingBlocks.length > 0) {
       for (const b of pendingBlocks) {
-        if (!b.part_id || !(b.ppid || "").trim()) continue;
+        if (!b.part_id) continue;
         const invGood = await getPartItems({
           place: "inventory",
           is_functional: true,
@@ -1383,7 +1363,7 @@ function SystemPage() {
         if ((invGood || []).length > 0) {
           const partName = partNameById.get(b.part_id) || `#${b.part_id}`;
           setFormError(
-            `This unit cannot be placed in pending parts for a ${partName} when there are ${partName}s in inventory`
+            `This unit cannot be placed in pending parts for a ${partName} when there are ${partName}s in inventory`,
           );
           return;
         }
@@ -1393,31 +1373,34 @@ function SystemPage() {
     const movingToRMA = RMA_LOCATION_IDS.includes(toId);
     if (movingToRMA && willHaveGoodAfterSubmit) {
       setFormError(
-        "Remove or return all good parts before moving this unit to an RMA location."
+        "Remove or return all good parts before moving this unit to an RMA location.",
       );
       return;
     }
 
     const badInUnit = (unitParts || []).filter(
-      (i) => i.is_functional === false
+      (i) => i.is_functional === false,
     );
     const remainingBad = badInUnit.filter(
       (item) =>
-        !toRemovePPIDs.has(item.ppid) && !replacementByOldPPID[item.ppid] // will be replaced (moved out) this submit
+        !toRemovePPIDs.has(item.ppid) && !replacementByOldPPID[item.ppid], // will be replaced (moved out) this submit
     ).length;
     // Build part-change note lines before we mutate anything
-    const toCreate = pendingBlocks.filter(
-      (b) => b.part_id && (b.ppid || "").trim()
-    );
+    const toCreate = pendingBlocks.filter((b) => b.part_id);
     const removing = Array.from(toRemovePPIDs || []);
 
     if (toId === 4) {
       const up = (s) => (s || "").toUpperCase().trim();
-      const nameOfPart = (i) =>
-        (i?.part_name && i.part_name.trim()) ||
-        (i?.part_id != null
-          ? partNameById.get(i.part_id) || `#${i.part_id}`
-          : "Part");
+      const formatPartWithDpn = (i) => {
+        const name =
+          (i?.part_name && i.part_name.trim()) ||
+          (i?.part_id != null
+            ? partNameById.get(i.part_id) || `#${i.part_id}`
+            : "Part");
+        const dpn =
+          i?.part_dpn || (i?.part_id != null ? partDpnById.get(i.part_id) : "");
+        return dpn ? `${name} [${dpn}]` : name;
+      };
 
       // PPID -> current item in unit (so we can read part_id/name)
       const byPPID = new Map((unitParts || []).map((i) => [up(i.ppid), i]));
@@ -1439,10 +1422,15 @@ function SystemPage() {
 
       // 4) add newly flagged BADs (pending blocks)
       for (const b of pendingBlocks) {
-        if (b.part_id && (b.ppid || "").trim()) {
-          const ppid = up(b.ppid);
+        if (b.part_id) {
+          const pseudoPpid = `TMP-${b.id}`;
           // synthesize a minimal item so nameOfPart works
-          badNow.set(ppid, { part_id: b.part_id, part_name: null, ppid });
+          badNow.set(pseudoPpid, {
+            part_id: b.part_id,
+            part_name: null,
+            part_dpn: partDpnById.get(b.part_id) || "",
+            ppid: pseudoPpid,
+          });
         }
       }
 
@@ -1460,11 +1448,11 @@ function SystemPage() {
 
       // Build label lines for EVERY remaining BAD PPID (no name-based dedupe)
       const labelLines = Array.from(badNow.entries())
-        .map(([ppid, info]) => `${nameOfPart(info)}`)
+        .map(([, info]) => formatPartWithDpn(info))
         .sort((a, b) => a.localeCompare(b));
 
       const blob = await pdf(
-        <SystemPendingPartsLabel parts={labelLines} />
+        <SystemPendingPartsLabel parts={labelLines} />,
       ).toBlob();
       const url = URL.createObjectURL(blob);
       window.open(url);
@@ -1474,8 +1462,8 @@ function SystemPage() {
     // ---- Existing note lines (Pending Parts) ----
     const addedNotes = toCreate.map((b) => {
       const name = partNameById.get(b.part_id) || `#${b.part_id}`;
-      const ppid = String(b.ppid).toUpperCase().trim();
-      return ` - ${name} (${ppid}) in system identified as non working with none in stock.`;
+      const dpn = partDpnById.get(b.part_id) || "N/A";
+      return ` - ${name} [${dpn}] in system identified as non working with none in stock.`;
     });
 
     const removedNotes = removing.map((ppid) => {
@@ -1485,7 +1473,9 @@ function SystemPage() {
         (item?.part_id
           ? partNameById.get(item.part_id) || `#${item.part_id}`
           : "Part");
-      return ` - ${name} (${ppid}) in system identified as working.`;
+      const dpn =
+        item?.part_dpn || (item?.part_id ? partDpnById.get(item.part_id) : "");
+      return ` - ${name}${dpn ? ` [${dpn}]` : ""} in system identified as working.`;
     });
 
     // ---- NEW preview lists (must be declared BEFORE they’re used) ----
@@ -1494,7 +1484,7 @@ function SystemPage() {
         b.part_id &&
         (b.ppid || "").trim() &&
         b.ppid !== PULL_FROM_UNIT_VALUE &&
-        (b.current_bad_ppid || "").trim()
+        (b.current_bad_ppid || "").trim(),
     );
 
     const pullFromUnitPreview = goodBlocks.filter(
@@ -1503,7 +1493,7 @@ function SystemPage() {
         b.ppid === PULL_FROM_UNIT_VALUE &&
         (b.current_bad_ppid || "").trim() &&
         (b.donor_ppid || "").trim() &&
-        b.donor_unit_id
+        b.donor_unit_id,
     );
 
     const pullUnitNotes = pullFromUnitPreview.map((b) => {
@@ -1518,11 +1508,11 @@ function SystemPage() {
 
     // 🔹 PREVIEW ARRAYS FOR NOTES (just like the actual mutations later)
     const actionEntriesPreview = Object.entries(goodActionByPPID).filter(
-      ([goodPPID, cfg]) => !!cfg?.action && !!cfg?.original_bad_ppid
+      ([goodPPID, cfg]) => !!cfg?.action && !!cfg?.original_bad_ppid,
     );
 
     const replEntriesPreview = Object.entries(replacementByOldPPID).filter(
-      ([oldBadPPID, replPPID]) => !!oldBadPPID && !!replPPID
+      ([oldBadPPID, replPPID]) => !!oldBadPPID && !!replPPID,
     );
 
     // 1) Good part added to the system, bad part placed into inventory
@@ -1536,7 +1526,7 @@ function SystemPage() {
     // 2) Good part currently in the system returned / reconciled (Defective | Not Needed)
     const returnedNotes = actionEntriesPreview.map(([goodPPID, cfg]) => {
       const item = (unitParts || []).find(
-        (r) => normPPID(r.ppid) === normPPID(goodPPID)
+        (r) => normPPID(r.ppid) === normPPID(goodPPID),
       );
       const name =
         item?.part_name ||
@@ -1576,15 +1566,20 @@ function SystemPage() {
 
     // 3) Pending part fulfilled by a replacement PPID
     const fulfilledNotes = replEntriesPreview.map(([oldBadPPID, goodPPID]) => {
+      const originalForTemp = normPPID(
+        originalPPIDByBadPPID[oldBadPPID] ||
+          originalPPIDByBadPPID[normPPID(oldBadPPID)],
+      );
+      const displayBadPPID = originalForTemp || oldBadPPID;
       const item = (unitParts || []).find(
-        (r) => normPPID(r.ppid) === normPPID(oldBadPPID)
+        (r) => normPPID(r.ppid) === normPPID(oldBadPPID),
       );
       const name =
         item?.part_name ||
         (item?.part_id
           ? partNameById.get(item.part_id) || `#${item.part_id}`
           : "Part");
-      return ` - Pending Part ${name} (${String(oldBadPPID)
+      return ` - Pending Part ${name} (${String(displayBadPPID)
         .toUpperCase()
         .trim()}) has been fulfilled by (${String(goodPPID)
         .toUpperCase()
@@ -1600,15 +1595,31 @@ function SystemPage() {
       ...returnedNotes,
       ...fulfilledNotes,
     ];
-    const noteToSend = (noteLines.length
-      ? `${note.trim()}${note.trim() ? "\n" : ""}${noteLines.join(" ")}`
-      : note).replace(/\r\n|\r|\n/g, ". ");
+    const noteToSend = (
+      noteLines.length
+        ? `${note.trim()}${note.trim() ? "\n" : ""}${noteLines.join(" ")}`
+        : note
+    ).replace(/\r\n|\r|\n/g, ". ");
 
     if (movingToL10 && remainingBad > 0 && !hasAnyBadReplacementChosen) {
       setFormError(
-        "Add a Replacement PPID for at least one defective part (or resolve/remove all) before moving to In L10."
+        "Add a Replacement PPID for at least one defective part (or resolve/remove all) before moving to In L10.",
       );
       return;
+    }
+
+    for (const [oldBadPPID, replPPID] of Object.entries(replacementByOldPPID)) {
+      if (!replPPID) continue;
+      const original = normPPID(
+        originalPPIDByBadPPID[oldBadPPID] ||
+          originalPPIDByBadPPID[normPPID(oldBadPPID)],
+      );
+      if (!original) {
+        setFormError(
+          "Enter an Original PPID for each bad part that has a Replacement PPID.",
+        );
+        return;
+      }
     }
 
     // REQUIRE: part, good PPID (inventory or donor), current defective ppid for each good block
@@ -1625,7 +1636,7 @@ function SystemPage() {
 
       if (!(partOk && goodOk && badOk && donorOk)) {
         setFormError(
-          "For each Good Part, please select a Part, a Replacement PPID (or Donor PPID), the Current Defective PPID, and a Donor Unit when pulling from a unit."
+          "For each Good Part, please select a Part, a Replacement PPID (or Donor PPID), the Current Defective PPID, and a Donor Unit when pulling from a unit.",
         );
         setSubmitting(false);
         return;
@@ -1634,7 +1645,7 @@ function SystemPage() {
       const effectiveGood = getEffectiveGoodPPID(b);
       if (effectiveGood && effectiveGood === normPPID(b.current_bad_ppid)) {
         setFormError(
-          "Replacement/Donor PPID and Current Defective PPID must be different."
+          "Replacement/Donor PPID and Current Defective PPID must be different.",
         );
         setSubmitting(false);
         return;
@@ -1649,14 +1660,14 @@ function SystemPage() {
 
       if (!cfg.original_bad_ppid?.trim()) {
         setFormError(
-          "For each Good part marked Not Needed or Defective, you must select an Original PPID."
+          "For each Good part marked Not Needed or Defective, you must select an Original PPID.",
         );
         return;
       }
 
       if (good === normPPID(cfg.original_bad_ppid)) {
         setFormError(
-          "Original PPID must be different from the current good PPID."
+          "Original PPID must be different from the current good PPID.",
         );
         return;
       }
@@ -1690,15 +1701,6 @@ function SystemPage() {
     // Extra safety: no duplicate BAD picks across pending/original
     {
       const bads = new Set();
-      for (const b of pendingBlocks) {
-        const v = normPPID(b.ppid);
-        if (!v) continue;
-        if (bads.has(v)) {
-          setFormError("Duplicate BAD PPID in Pending Parts.");
-          return;
-        }
-        bads.add(v);
-      }
       for (const cfg of Object.values(goodActionByPPID)) {
         const n = normPPID(cfg?.original_bad_ppid);
         if (!n) continue;
@@ -1720,7 +1722,7 @@ function SystemPage() {
     ].includes(destName);
     if (REQUIRES_RC && (!selectedRootCauseId || !selectedRootCauseSubId)) {
       setFormError(
-        "Root Cause and Sub Category are required when moving to RMA (VID/CID/PID) or Sent to L11."
+        "Root Cause and Sub Category are required when moving to RMA (VID/CID/PID) or Sent to L11.",
       );
       return;
     }
@@ -1766,7 +1768,7 @@ function SystemPage() {
             ((b.ppid && b.ppid !== PULL_FROM_UNIT_VALUE) ||
               (b.ppid === PULL_FROM_UNIT_VALUE &&
                 (b.donor_ppid || "").trim() &&
-                b.donor_unit_id))
+                b.donor_unit_id)),
         );
 
         await Promise.all(
@@ -1808,7 +1810,7 @@ function SystemPage() {
                 addDonorNote(
                   donorTag,
                   ` - ${partName} (${donorGoodPPID}) was pulled from this system and installed into ${system.service_tag}; ` +
-                    `(${badPPID}) has been recorded here as non-working as part of this swap.`
+                    `(${badPPID}) has been recorded here as non-working as part of this swap.`,
                 );
               }
             } else {
@@ -1830,7 +1832,7 @@ function SystemPage() {
                 last_unit_id: system.id,
               });
             }
-          })
+          }),
         );
       }
 
@@ -1843,7 +1845,7 @@ function SystemPage() {
       //         → inventory swap (GOOD → inventory, BAD → unit).
       if (Object.keys(goodActionByPPID).length > 0) {
         const entries = Object.entries(goodActionByPPID).filter(
-          ([, cfg]) => !!cfg?.action
+          ([, cfg]) => !!cfg?.action,
         );
 
         await Promise.all(
@@ -1852,7 +1854,7 @@ function SystemPage() {
             const action = cfg.action; // "not_needed" | "defective"
 
             const goodItem = (unitParts || []).find(
-              (r) => normPPID(r.ppid) === good
+              (r) => normPPID(r.ppid) === good,
             );
             if (!goodItem) return;
 
@@ -1928,7 +1930,7 @@ function SystemPage() {
 
                 addDonorNote(
                   originTag,
-                  ` - ${partName} (${good}) was reconciled with ${system.service_tag} via unit-to-unit swap (original BAD: ${candidate.ppid}, marked ${reason} in the process).`
+                  ` - ${partName} (${good}) was reconciled with ${system.service_tag} via unit-to-unit swap (original BAD: ${candidate.ppid}, marked ${reason} in the process).`,
                 );
               }
 
@@ -2033,35 +2035,47 @@ function SystemPage() {
             }
 
             await updatePartItem(good, goodUpdate);
-          })
+          }),
         );
       }
 
       // 1) Create any new bad parts the user added (as in-unit, non-functional)
       if (pendingBlocks.length > 0) {
-        const toCreate = pendingBlocks.filter(
-          (b) => b.part_id && (b.ppid || "").trim()
-        );
+        const toCreate = pendingBlocks.filter((b) => b.part_id);
         await Promise.all(
           toCreate.map((b) =>
-            createPartItem(String(b.ppid).toUpperCase().trim(), {
+            createPartItem(makePendingTempPPID(b.part_id), {
               part_id: b.part_id,
               place: "unit",
               unit_id: system.id,
               is_functional: false,
-            })
-          )
+            }),
+          ),
         );
       }
       // 1b) Replacements for BAD parts: move BAD out to inventory, move GOOD from inventory into unit
       const replEntries = Object.entries(replacementByOldPPID).filter(
-        ([oldBadPPID, replPPID]) => !!oldBadPPID && !!replPPID
+        ([oldBadPPID, replPPID]) => !!oldBadPPID && !!replPPID,
       );
       if (replEntries.length > 0) {
         await Promise.all(
           replEntries.map(async ([oldBadPPID, goodPPID]) => {
+            const oldBadNorm = String(oldBadPPID).toUpperCase().trim();
+            const originalForTemp = normPPID(
+              originalPPIDByBadPPID[oldBadPPID] ||
+                originalPPIDByBadPPID[oldBadNorm],
+            );
+            const badPPIDToMove = originalForTemp || oldBadNorm;
+
+            if (originalForTemp && originalForTemp !== oldBadNorm) {
+              await updatePartItem(oldBadNorm, {
+                ppid: originalForTemp,
+                is_functional: false,
+              });
+            }
+
             // Move the BAD from unit -> inventory (keep nonfunctional)
-            await updatePartItem(String(oldBadPPID).toUpperCase().trim(), {
+            await updatePartItem(badPPIDToMove, {
               place: "inventory",
               unit_id: null,
               is_functional: false,
@@ -2073,7 +2087,7 @@ function SystemPage() {
               place: "unit",
               unit_id: system.id,
             });
-          })
+          }),
         );
       }
       // 2) Delete any existing non-functional parts the user marked as working
@@ -2089,7 +2103,7 @@ function SystemPage() {
               last_unit_id: system.id, // moved out of this unit
             });
             await deletePartItem(ppid);
-          })
+          }),
         );
 
         await refreshUnitParts();
@@ -2106,7 +2120,7 @@ function SystemPage() {
 
         if (!(bothSet || bothNull)) {
           setFormError(
-            "Select both Root Cause and Sub Category, or clear both."
+            "Select both Root Cause and Sub Category, or clear both.",
           );
           setSubmitting(false);
           return;
@@ -2125,7 +2139,7 @@ function SystemPage() {
           Object.entries(donorLocationNotes).map(async ([donorTag, lines]) => {
             const donor = donorSystems.find(
               (u) =>
-                (u.service_tag || "").toUpperCase() === donorTag.toUpperCase()
+                (u.service_tag || "").toUpperCase() === donorTag.toUpperCase(),
             );
 
             const donorLocName = donor?.location || "Received";
@@ -2143,18 +2157,17 @@ function SystemPage() {
               to_location_id: donorLocId,
               note: donorNote,
             });
-          })
+          }),
         );
       }
 
       // 3) Move the unit
-      // ⬅️ Backend now returns { message, pallet_number?, dpn?, factory_code? } when moving into RMA
       const resp = await updateSystemLocation(serviceTag, {
         to_location_id: toId,
         note: noteToSend,
       });
 
-      // ✅ Update station mapping
+      // Update station mapping
       if (selectedStationObj && toId === 5) {
         await updateStation(selectedStationObj.station_name, {
           system_id: system.id,
@@ -2178,13 +2191,13 @@ function SystemPage() {
                 dell_customer: system.dell_customer,
               },
             ]}
-          />
+          />,
         ).toBlob();
         const url = URL.createObjectURL(blob);
         window.open(url);
       }
 
-      // ✅ If RMA destination, print RMA label (prefer backend response)
+      // If RMA destination, print RMA label (prefer backend response)
       if (RMA_LOCATION_IDS.includes(toId)) {
         // Prefer values from response; fall back to current system or a single read of getSystemPallet()
         let palletNumber = resp?.pallet_number || null;
@@ -2192,12 +2205,13 @@ function SystemPage() {
         let factoryCode = resp?.factory_code ?? system?.factory_code ?? null;
         let shape = resp?.shape || null;
 
-        if (!palletNumber || !dpn || !factoryCode) {
+        if (!palletNumber || !dpn || !factoryCode || !shape) {
           try {
             const palletInfo = await getSystemPallet(system.service_tag);
             palletNumber = palletNumber || palletInfo?.pallet_number || null;
             dpn = dpn ?? palletInfo?.dpn ?? null;
             factoryCode = factoryCode ?? palletInfo?.factory_code ?? null;
+            shape = shape || palletInfo?.shape || null;
           } catch {
             // ignore — we’ll handle the “no palletNumber” case below
           }
@@ -2220,7 +2234,7 @@ function SystemPage() {
                   location: "RMA",
                 },
               ]}
-            />
+            />,
           ).toBlob();
 
           const url = URL.createObjectURL(blob);
@@ -2230,7 +2244,7 @@ function SystemPage() {
             "Moved to RMA, but pallet number isn’t available yet. Check backend logs.",
             "error",
             4000,
-            "bottom-right"
+            "bottom-right",
           );
         }
       }
@@ -2245,6 +2259,7 @@ function SystemPage() {
       setSelectedRootCauseSubId(null);
       setGoodActionByPPID({});
       setReplacementByOldPPID({});
+      setOriginalPPIDByBadPPID({});
       setInvOriginalsByPPID({});
       setAutoOriginalLockedByPPID({});
       // Clear cached GOOD/BAD option lists so dropdowns re-fetch from backend
@@ -2286,7 +2301,7 @@ function SystemPage() {
                 dell_customer: system.dell_customer,
               },
             ]}
-          />
+          />,
         ).toBlob();
         const url = URL.createObjectURL(blob);
         window.open(url);
@@ -2306,7 +2321,7 @@ function SystemPage() {
               url: `${FRONTEND_URL}${system.service_tag}`,
             },
           ]}
-        />
+        />,
       ).toBlob();
       const url = URL.createObjectURL(blob);
       window.open(url);
@@ -2317,16 +2332,21 @@ function SystemPage() {
 
     // any bad parts currently tracked in the unit?
     const hasBadParts = (unitParts || []).some(
-      (i) => i.is_functional === false
+      (i) => i.is_functional === false,
     );
 
     // helper: turn an item into a display name (no PPID)
     const nameOfPart = (i) =>
-      (i?.part_name && i.part_name.trim()) ||
-      (i?.part_id != null
-        ? flatPartOptions.find((o) => o.value === i.part_id)?.label ??
-          `#${i.part_id}`
-        : "Part");
+      (() => {
+        const name =
+          (i?.part_name && i.part_name.trim()) ||
+          (i?.part_id != null
+            ? partNameById.get(i.part_id) || `#${i.part_id}`
+            : "Part");
+        const dpn =
+          i?.part_dpn || (i?.part_id != null ? partDpnById.get(i.part_id) : "");
+        return dpn ? `${name} [${dpn}]` : name;
+      })();
 
     // If there are bad parts, ask which label to print
     if (hasBadParts) {
@@ -2340,7 +2360,7 @@ function SystemPage() {
           .sort((a, b) => a.localeCompare(b));
 
         const blob = await pdf(
-          <SystemPendingPartsLabel parts={labelLines} />
+          <SystemPendingPartsLabel parts={labelLines} />,
         ).toBlob();
         const url = URL.createObjectURL(blob);
         window.open(url);
@@ -2379,7 +2399,7 @@ function SystemPage() {
             {
               service_tag: system.service_tag,
               pallet_number: palletInfo.pallet_number,
-              dpn: palletInfo.dpn,
+              dpn: palletInfo.dpn || system.dpn,
               shape: palletInfo.shape,
               config: system.config,
               dell_customer: system.dell_customer,
@@ -2389,7 +2409,7 @@ function SystemPage() {
             },
           ]}
         />
-      )
+      ),
     ).toBlob();
 
     const url = URL.createObjectURL(blob);
@@ -2413,7 +2433,7 @@ function SystemPage() {
   useEffect(() => {
     if (isResolved) {
       setFormError(
-        "If you need to work on this system again, you must re-add it through the tracking menu"
+        "If you need to work on this system again, you must re-add it through the tracking menu",
       );
     } else {
       setFormError(""); // or null
@@ -2424,8 +2444,8 @@ function SystemPage() {
   const isInPalletNumber =
     releasedPallets.find((p) =>
       p.active_systems?.some(
-        (s) => (s.service_tag || "").toUpperCase() === target
-      )
+        (s) => (s.service_tag || "").toUpperCase() === target,
+      ),
     )?.pallet_number ?? null;
 
   // Effective IDs for selects: prefer local pick, else backend value (stringified)
@@ -2446,6 +2466,46 @@ function SystemPage() {
       <ConfirPrintmModal />
       <ConfirPrintmModalPendingParts />
       <ConfirPrintmModalL11 />
+      {showAllTagsModal && (
+        <AllTagsModal
+          tags={systemTags}
+          onClose={() => setShowAllTagsModal(false)}
+        />
+      )}
+
+      {showAddTagModal && (
+        <AddTagModal
+          onClose={() => setShowAddTagModal(false)}
+          serviceTag={serviceTag}
+          existingSystemTags={systemTags}
+          getTags={getTags}
+          addSystemTag={addSystemTag}
+          showToast={showToast}
+          selectStyles={select40Styles}
+          onAdded={async () => {
+            // refresh just tags (fast)
+            try {
+              const res = await getSystemTags(serviceTag);
+
+              // res.tags is the array you showed
+              const normalized = (res?.tags || []).map((t) => ({
+                id: t.tag_id,
+                code: t.code,
+                name: t.code, // keep UI compatibility if some code still uses name
+                description: t.description ?? null,
+                created_at: t.created_at,
+                created_by: t.created_by,
+              }));
+
+              setSystemTags(normalized);
+              setFocusedTagId(null);
+              setShowTopUntruncated(false);
+            } catch (e) {
+              console.error("refresh tags failed", e);
+            }
+          }}
+        />
+      )}
       <main className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6">
         {loading ? (
           <LoadingSkeleton rows={6} />
@@ -2468,19 +2528,32 @@ function SystemPage() {
                   Service Tag{" "}
                   <span className="text-blue-600">{serviceTag}</span>
                 </h1>
-                <span>
-                  {system?.config && (
-                    <span className="mr-2 inline-block mt-1 px-2 py-1 bg-blue-100 text-blue-800 text-xs sm:text-sm font-bold rounded-full uppercase">
-                      Config {system.config}{" "}
-                      {system.dell_customer && `- ${system.dell_customer}`}
-                    </span>
-                  )}
-                  {system?.issue && (
-                    <span className="inline-block mt-1 px-2 py-1 bg-red-100 text-red-800 text-xs sm:text-sm font-bold rounded-full uppercase">
-                      {system.issue}
-                    </span>
-                  )}
-                </span>
+                <div className="flex flex-col">
+                  <span>
+                    {system?.config && (
+                      <span className="mr-2 inline-block mt-1 px-2 py-1 bg-blue-100 text-blue-800 text-xs sm:text-sm font-bold rounded-full uppercase">
+                        Config {system.config}{" "}
+                        {system.dell_customer && `- ${system.dell_customer}`}
+                      </span>
+                    )}
+                    {system?.issue && (
+                      <span className="inline-block mt-1 px-2 py-1 bg-red-100 text-red-800 text-xs sm:text-sm font-bold rounded-full uppercase">
+                        {system.issue}
+                      </span>
+                    )}
+                  </span>
+                  <TagBubblesRow
+                    tags={systemTags}
+                    token={token}
+                    focusedTagId={focusedTagId}
+                    setFocusedTagId={setFocusedTagId}
+                    showTopUntruncated={showTopUntruncated}
+                    setShowTopUntruncated={setShowTopUntruncated}
+                    onOpenAll={() => setShowAllTagsModal(true)}
+                    onOpenAdd={() => setShowAddTagModal(true)}
+                    onDeleteTag={handleDeleteTag}
+                  />
+                </div>
               </div>
 
               <div className="flex flex-col sm:flex-row gap-2">
@@ -2572,10 +2645,10 @@ function SystemPage() {
                             const title = rmaBlocked
                               ? "Remove/return all good parts before moving to an RMA location."
                               : l10Blocked
-                              ? "Add a Replacement PPID for at least one defective part to move to In L10."
-                              : isResolved
-                              ? "Resolved units can’t be moved."
-                              : undefined;
+                                ? "Add a Replacement PPID for at least one defective part to move to In L10."
+                                : isResolved
+                                  ? "Resolved units can’t be moved."
+                                  : undefined;
 
                             return (
                               <button
@@ -2597,7 +2670,7 @@ function SystemPage() {
                                 {loc.name}
                               </button>
                             );
-                          }
+                          },
                         )}
                       </div>
 
@@ -2647,7 +2720,7 @@ function SystemPage() {
                           {goodBlocks.map((block) => {
                             const partValue =
                               flatPartOptions.find(
-                                (o) => o.value === block.part_id
+                                (o) => o.value === block.part_id,
                               ) || null;
 
                             return (
@@ -2675,7 +2748,7 @@ function SystemPage() {
                                         updateGoodBlock(
                                           block.id,
                                           "part_id",
-                                          opt ? opt.value : null
+                                          opt ? opt.value : null,
                                         );
                                         if (opt?.value)
                                           await loadGoodOptions(opt.value);
@@ -2746,7 +2819,7 @@ function SystemPage() {
                                         ...((block.part_id &&
                                           getFilteredGoodOptions(
                                             block.part_id,
-                                            block.ppid
+                                            block.ppid,
                                           )) ||
                                           []),
                                         {
@@ -2779,14 +2852,14 @@ function SystemPage() {
                                         updateGoodBlock(
                                           block.id,
                                           "current_bad_ppid",
-                                          e.target.value
+                                          e.target.value,
                                         )
                                       }
                                       onBlur={(e) =>
                                         updateGoodBlock(
                                           block.id,
                                           "current_bad_ppid",
-                                          e.target.value.toUpperCase().trim()
+                                          e.target.value.toUpperCase().trim(),
                                         )
                                       }
                                       className={`w-full h-10 rounded-md border px-3 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
@@ -2835,7 +2908,7 @@ function SystemPage() {
                                             ? donorUnitOptions.find(
                                                 (o) =>
                                                   o.value ===
-                                                  block.donor_unit_id
+                                                  block.donor_unit_id,
                                               ) || null
                                             : null
                                         }
@@ -2843,7 +2916,7 @@ function SystemPage() {
                                           updateGoodBlock(
                                             block.id,
                                             "donor_unit_id",
-                                            opt ? opt.value : null
+                                            opt ? opt.value : null,
                                           )
                                         }
                                         options={donorUnitOptions}
@@ -2866,14 +2939,14 @@ function SystemPage() {
                                           updateGoodBlock(
                                             block.id,
                                             "donor_ppid",
-                                            e.target.value
+                                            e.target.value,
                                           )
                                         }
                                         onBlur={(e) =>
                                           updateGoodBlock(
                                             block.id,
                                             "donor_ppid",
-                                            e.target.value.toUpperCase().trim()
+                                            e.target.value.toUpperCase().trim(),
                                           )
                                         }
                                         className={`w-full h-10 rounded-md border px-3 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
@@ -2911,7 +2984,7 @@ function SystemPage() {
                             {pendingBlocks.map((block) => {
                               const partValue =
                                 flatPartOptions.find(
-                                  (o) => o.value === block.part_id
+                                  (o) => o.value === block.part_id,
                                 ) || null;
                               return (
                                 <div
@@ -2936,67 +3009,13 @@ function SystemPage() {
                                         updateBlock(
                                           block.id,
                                           "part_id",
-                                          opt ? opt.value : null
+                                          opt ? opt.value : null,
                                         )
                                       }
-                                      options={partOptions} // grouped: [{ label, options: [...] }, ...]
+                                      options={pendingPartOptions} // grouped: only parts with functional inventory qty = 0
                                       filterOption={filterPartOption} // search by part OR category
                                       components={{ Option: PartOption }} // show category chip on each option
                                       formatGroupLabel={PartGroupLabel} // non-selectable group headers
-                                    />
-                                  </div>
-
-                                  {/* PPID Input */}
-                                  <div className="flex-1">
-                                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                                      Defective Part PPID
-                                    </label>
-                                    <input
-                                      type="text"
-                                      inputMode="text"
-                                      autoCapitalize="characters"
-                                      autoCorrect="off"
-                                      spellCheck="false"
-                                      placeholder="Scan or type PPID"
-                                      value={block.ppid}
-                                      onChange={(e) =>
-                                        updateBlock(
-                                          block.id,
-                                          "ppid",
-                                          e.target.value
-                                        )
-                                      }
-                                      onBlur={(e) => {
-                                        const v = e.target.value
-                                          .toUpperCase()
-                                          .trim();
-                                        updateBlock(block.id, "ppid", v);
-
-                                        if (v) {
-                                          // If this BAD PPID was selected as an "Original PPID" anywhere, clear it
-                                          setGoodActionByPPID((prev) => {
-                                            const next = { ...prev };
-                                            for (const g of Object.keys(next)) {
-                                              if (
-                                                normPPID(
-                                                  next[g]?.original_bad_ppid
-                                                ) === normPPID(v)
-                                              ) {
-                                                next[g] = {
-                                                  ...next[g],
-                                                  original_bad_ppid: "",
-                                                };
-                                              }
-                                            }
-                                            return next;
-                                          });
-                                        }
-                                      }}
-                                      className={`w-full h-10 rounded-md border px-3 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                                        !block.ppid || !block.part_id
-                                          ? "border-amber-300"
-                                          : "border-gray-300"
-                                      }`}
                                     />
                                   </div>
 
@@ -3057,25 +3076,71 @@ function SystemPage() {
                                 </div>
                                 <input
                                   className="w-full h-10 rounded-md border border-gray-300 px-3 bg-gray-50 cursor-not-allowed"
-                                  value={item.part_name || `#${item.part_id}`}
+                                  value={
+                                    item.part_name
+                                      ? item.part_dpn
+                                        ? `${item.part_name} [${item.part_dpn}]`
+                                        : item.part_name
+                                      : `#${item.part_id}`
+                                  }
                                   disabled
                                   readOnly
                                 />
                               </div>
-                              <div className="flex-1">
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  PPID
-                                </label>
-                                <input
-                                  className="w-full h-10 rounded-md border border-gray-300 px-3 bg-gray-50 cursor-not-allowed"
-                                  value={item.ppid || ""}
-                                  disabled
-                                  readOnly
-                                />
-                              </div>
+                              {!isBad && (
+                                <div className="flex-1">
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    PPID
+                                  </label>
+                                  <input
+                                    className="w-full h-10 rounded-md border border-gray-300 px-3 bg-gray-50 cursor-not-allowed"
+                                    value={item.ppid || ""}
+                                    disabled
+                                    readOnly
+                                  />
+                                </div>
+                              )}
                               {/* Actions for BAD parts */}
                               {isBad && toLocationId != 4 && (
                                 <div className="flex flex-col md:flex-row md:items-center gap-3">
+                                  {canAddGoodParts && (
+                                    <div className="shrink-0 basis-[280px] w-[280px]">
+                                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Original PPID
+                                      </label>
+                                      <input
+                                        type="text"
+                                        inputMode="text"
+                                        autoCapitalize="characters"
+                                        autoCorrect="off"
+                                        spellCheck="false"
+                                        placeholder="Enter original PPID"
+                                        disabled={queued || formDisabled}
+                                        value={
+                                          originalPPIDByBadPPID[item.ppid] || ""
+                                        }
+                                        onChange={(e) =>
+                                          setOriginalPPIDByBadPPID((prev) => ({
+                                            ...prev,
+                                            [item.ppid]: e.target.value,
+                                          }))
+                                        }
+                                        onBlur={(e) =>
+                                          setOriginalPPIDByBadPPID((prev) => ({
+                                            ...prev,
+                                            [item.ppid]: e.target.value
+                                              .toUpperCase()
+                                              .trim(),
+                                          }))
+                                        }
+                                        className={`w-full h-10 rounded-md border px-3 ${
+                                          queued || formDisabled
+                                            ? "border-gray-300 bg-gray-100 text-gray-500 cursor-not-allowed"
+                                            : "border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                        }`}
+                                      />
+                                    </div>
+                                  )}
                                   {/* Replacement PPID (only when allowed) */}
                                   {canAddGoodParts && (
                                     <div className="shrink-0 basis-[280px] w-[280px] ">
@@ -3112,6 +3177,12 @@ function SystemPage() {
                                             ...s,
                                             [item.ppid]: next,
                                           }));
+                                          if (!next) {
+                                            setOriginalPPIDByBadPPID((s) => ({
+                                              ...s,
+                                              [item.ppid]: "",
+                                            }));
+                                          }
                                           if (next) {
                                             // Clear the same PPID if it was chosen in any Good Part block
                                             setGoodBlocks((list) =>
@@ -3119,8 +3190,8 @@ function SystemPage() {
                                                 normPPID(b.ppid) ===
                                                 normPPID(next)
                                                   ? { ...b, ppid: "" }
-                                                  : b
-                                              )
+                                                  : b,
+                                              ),
                                             );
                                           }
                                           // If a replacement is chosen, ensure "Mark as Working" is OFF (your existing code)
@@ -3136,12 +3207,12 @@ function SystemPage() {
                                         }}
                                         options={getFilteredGoodOptions(
                                           item.part_id,
-                                          replacementByOldPPID[item.ppid]
+                                          replacementByOldPPID[item.ppid],
                                         )}
                                       />
                                     </div>
                                   )}
-                                  {!isInPendingParts && (
+                                  {!isInPendingParts && !isResolved && (
                                     <div className="md:w-auto">
                                       {(() => {
                                         // Is there a chosen replacement PPID that exists in the GOOD inventory cache?
@@ -3151,7 +3222,7 @@ function SystemPage() {
                                           !!chosen &&
                                           (
                                             goodOptionsCache.get(
-                                              item.part_id
+                                              item.part_id,
                                             ) || []
                                           ).some((opt) => opt.value === chosen);
 
@@ -3175,14 +3246,23 @@ function SystemPage() {
                                                 }
                                                 return next;
                                               });
+                                              setOriginalPPIDByBadPPID((s) => {
+                                                const next = { ...s };
+                                                if (
+                                                  !toRemovePPIDs.has(item.ppid)
+                                                ) {
+                                                  next[item.ppid] = "";
+                                                }
+                                                return next;
+                                              });
                                             }}
                                             className={`relative px-3 py-2 rounded-md text-white whitespace-nowrap mt-5 
                                       ${
                                         queued
                                           ? "bg-gray-500 hover:bg-gray-600"
                                           : disableMark
-                                          ? "bg-gray-400 cursor-not-allowed"
-                                          : "bg-green-600 hover:bg-gren-700"
+                                            ? "bg-gray-400 cursor-not-allowed"
+                                            : "bg-green-600 hover:bg-gren-700"
                                       }`}
                                             title={
                                               validReplacement
@@ -3217,7 +3297,7 @@ function SystemPage() {
                                   const hasSearched =
                                     Object.prototype.hasOwnProperty.call(
                                       invOriginalsByPPID,
-                                      goodPPID
+                                      goodPPID,
                                     );
 
                                   const matches = hasSearched
@@ -3225,7 +3305,7 @@ function SystemPage() {
                                     : [];
 
                                   const liveMatches = matches.filter(
-                                    (m) => m.is_live_origin
+                                    (m) => m.is_live_origin,
                                   );
                                   const hasAnyMatches = matches.length > 0;
                                   const hasLiveMatches = liveMatches.length > 0;
@@ -3236,7 +3316,7 @@ function SystemPage() {
                                     !matches.some((m) => m.owner_unit_id);
 
                                   const hasInventoryMatches = matches.some(
-                                    (m) => !m.owner_unit_id
+                                    (m) => !m.owner_unit_id,
                                   );
 
                                   const currentOrig =
@@ -3246,7 +3326,7 @@ function SystemPage() {
                                     matches.find(
                                       (m) =>
                                         normPPID(m.ppid) ===
-                                        normPPID(currentOrig)
+                                        normPPID(currentOrig),
                                     ) || null;
 
                                   // Good part came from inventory if it has no last_unit_id
@@ -3265,7 +3345,7 @@ function SystemPage() {
                                     !hasAnyMatches
                                       ? getFilteredBadOptions(
                                           item.part_id,
-                                          currentOrig
+                                          currentOrig,
                                         )
                                       : [];
 
@@ -3275,7 +3355,7 @@ function SystemPage() {
                                         .filter(
                                           (r) =>
                                             !r.owner_unit_id ||
-                                            r.owner_unit_id !== system.id
+                                            r.owner_unit_id !== system.id,
                                         )
                                         .filter((r) => {
                                           const v = normPPID(r.ppid);
@@ -3328,13 +3408,13 @@ function SystemPage() {
                                     (fromInventoryGood
                                       ? true
                                       : hasInventoryOnly
-                                      ? // Only inventory matches (no donor units) → allow Not Needed
-                                        true
-                                      : hasAnyMatches
-                                      ? // Have donor-unit matches → require at least one live donor
-                                        hasLiveMatches
-                                      : // No matches at all → allow
-                                        true);
+                                        ? // Only inventory matches (no donor units) → allow Not Needed
+                                          true
+                                        : hasAnyMatches
+                                          ? // Have donor-unit matches → require at least one live donor
+                                            hasLiveMatches
+                                          : // No matches at all → allow
+                                            true);
 
                                   const canChooseDefective = true;
 
@@ -3390,23 +3470,23 @@ function SystemPage() {
                                     const alreadySearched =
                                       Object.prototype.hasOwnProperty.call(
                                         invOriginalsByPPID,
-                                        goodPPID
+                                        goodPPID,
                                       );
                                     if (!alreadySearched) {
                                       await autoSelectOriginalForGood(
                                         goodPPID,
-                                        item.part_id
+                                        item.part_id,
                                       );
                                     }
                                   };
 
                                   // ----- Helper messages (under the buttons) -----
                                   const unitMatches = matches.filter(
-                                    (m) => m.owner_unit_id
+                                    (m) => m.owner_unit_id,
                                   );
                                   const hasUnitMatches = unitMatches.length > 0;
                                   const inventoryMatchesOnly = matches.filter(
-                                    (m) => !m.owner_unit_id
+                                    (m) => !m.owner_unit_id,
                                   );
 
                                   const moreThanOneInventoryMatch =
@@ -3520,7 +3600,7 @@ function SystemPage() {
                                                     // If there were no last_unit matches, ensure inventory BADs are loaded
                                                     if (!hasAnyMatches) {
                                                       await loadBadOptions(
-                                                        item.part_id
+                                                        item.part_id,
                                                       );
                                                     }
                                                   }}
@@ -3533,9 +3613,9 @@ function SystemPage() {
                                                         ? matches.find(
                                                             (m) =>
                                                               normPPID(
-                                                                m.ppid
+                                                                m.ppid,
                                                               ) ===
-                                                              normPPID(next)
+                                                              normPPID(next),
                                                           )
                                                         : null;
 
@@ -3583,7 +3663,7 @@ function SystemPage() {
                                                           ...prev,
                                                           [goodPPID]: nextCfg,
                                                         };
-                                                      }
+                                                      },
                                                     );
 
                                                     if (next) {
@@ -3593,8 +3673,8 @@ function SystemPage() {
                                                           normPPID(b.ppid) ===
                                                           normPPID(next)
                                                             ? { ...b, ppid: "" }
-                                                            : b
-                                                        )
+                                                            : b,
+                                                        ),
                                                       );
                                                     }
                                                   }}
@@ -3604,7 +3684,7 @@ function SystemPage() {
                                                       const meta =
                                                         props.data.meta || {};
                                                       return (
-                                                        <components.Option
+                                                        <SelectComponents.Option
                                                           {...props}
                                                         >
                                                           <>
@@ -3625,7 +3705,7 @@ function SystemPage() {
                                                           </>
                                                           {"  "}
                                                           {props.data.value}
-                                                        </components.Option>
+                                                        </SelectComponents.Option>
                                                       );
                                                     },
                                                   }}
@@ -3643,7 +3723,7 @@ function SystemPage() {
                                                 type="button"
                                                 onClick={() =>
                                                   handleActionClick(
-                                                    "not_needed"
+                                                    "not_needed",
                                                   )
                                                 }
                                                 disabled={formDisabled}
@@ -3695,7 +3775,7 @@ function SystemPage() {
                                 const hasSearchedForOriginal =
                                   Object.prototype.hasOwnProperty.call(
                                     invOriginalsByPPID,
-                                    item.ppid
+                                    item.ppid,
                                   );
                                 if (!hasSearchedForOriginal) return null;
 
@@ -3704,7 +3784,7 @@ function SystemPage() {
                                 if (invMatches.length === 0) return null;
 
                                 const originalBad = normPPID(
-                                  goodCfg.original_bad_ppid || ""
+                                  goodCfg.original_bad_ppid || "",
                                 );
 
                                 // Safely find the selected match (if any)
@@ -3719,12 +3799,12 @@ function SystemPage() {
                                 }
 
                                 const unitMatches = invMatches.filter(
-                                  (m) => m.owner_unit_id
+                                  (m) => m.owner_unit_id,
                                 );
                                 const hasUnitMatches = unitMatches.length > 0;
 
                                 const inventoryMatchesOnly = invMatches.filter(
-                                  (m) => !m.owner_unit_id
+                                  (m) => !m.owner_unit_id,
                                 );
                                 const moreThanOneInventoryMatch =
                                   inventoryMatchesOnly.length > 1;
@@ -3854,7 +3934,7 @@ function SystemPage() {
                                       rootCauseOptions.find(
                                         (o) =>
                                           String(o.value) ===
-                                          String(rcEffectiveId)
+                                          String(rcEffectiveId),
                                       ) || null
                                     }
                                     onChange={(opt) => {
@@ -3891,12 +3971,12 @@ function SystemPage() {
                                       rootCauseSubOptions.find(
                                         (o) =>
                                           String(o.value) ===
-                                          String(rcSubEffectiveId)
+                                          String(rcSubEffectiveId),
                                       ) || null
                                     }
                                     onChange={(opt) =>
                                       setSelectedRootCauseSubId(
-                                        opt ? String(opt.value) : null
+                                        opt ? String(opt.value) : null,
                                       )
                                     }
                                     options={rootCauseSubOptions}
@@ -4001,7 +4081,7 @@ function SystemPage() {
                                     label: "Station " + station.station_name,
                                   }))
                                   .find(
-                                    (opt) => opt.value === selectedStation
+                                    (opt) => opt.value === selectedStation,
                                   ) || null
                               }
                               onChange={(option) =>
@@ -4107,7 +4187,7 @@ function SystemPage() {
                       changed_at_title: "Updated At",
                       changed_at: formatDateHumanReadable(
                         entry.changed_at,
-                        serverTimeZone
+                        serverTimeZone,
                       ),
                       moved_by_title: "Moved By",
                       moved_by:
@@ -4141,13 +4221,13 @@ function SystemPage() {
                               color: "bg-green-100 text-green-800",
                             }
                           : val === "Received" ||
-                            val === "In Debug - Wistron" ||
-                            val === "In L10"
-                          ? { type: "pill", color: "bg-red-100 text-red-800" }
-                          : {
-                              type: "pill",
-                              color: "bg-yellow-100 text-yellow-800",
-                            },
+                              val === "In Debug - Wistron" ||
+                              val === "In L10"
+                            ? { type: "pill", color: "bg-red-100 text-red-800" }
+                            : {
+                                type: "pill",
+                                color: "bg-yellow-100 text-yellow-800",
+                              },
                       from_location: (val) =>
                         val === "Sent to L11" ||
                         val === "RMA CID" ||
@@ -4158,16 +4238,16 @@ function SystemPage() {
                               color: "bg-green-100 text-green-800",
                             }
                           : val === "Received" ||
-                            val === "In Debug - Wistron" ||
-                            val === "In L10"
-                          ? { type: "pill", color: "bg-red-100 text-red-800" }
-                          : {
-                              type: "pill",
-                              color: "bg-yellow-100 text-yellow-800",
-                            },
+                              val === "In Debug - Wistron" ||
+                              val === "In L10"
+                            ? { type: "pill", color: "bg-red-100 text-red-800" }
+                            : {
+                                type: "pill",
+                                color: "bg-yellow-100 text-yellow-800",
+                              },
                       note: (val) =>
                         val?.includes(
-                          "Moving back to received from Inactive"
+                          "Moving back to received from Inactive",
                         ) ||
                         val?.includes("Moving back to processed from Inactive")
                           ? "font-semibold"
@@ -4192,7 +4272,7 @@ function SystemPage() {
                       field: "changed_at",
                       equals: formatDateHumanReadable(
                         history[0]?.changed_at,
-                        serverTimeZone
+                        serverTimeZone,
                       ), // only show action button for the most recent entry
                     }}
                   />
@@ -4215,7 +4295,7 @@ function SystemPage() {
                     allowSearch={false}
                     rootHref={`${baseUrl.replace(
                       /\/$/,
-                      ""
+                      "",
                     )}/l10_logs/${serviceTag}/`}
                     currentDir={logsDir}
                     onDirChange={setLogsDir}

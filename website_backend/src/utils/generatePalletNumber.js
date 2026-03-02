@@ -1,51 +1,45 @@
+const { getServerTimeZone } = require("./serverTimeZone");
+
 /**
  * Generate a pallet number in the format:
- * PAL-[FACTORY]-[DPN]-MMDDYYXX
- * Where XX is sequential per (factory_id + dpn_id) per day.
+ * PALLET-YYYYMMDD-###
+ * Serial resets each server-local day.
  *
- * @param {number} factory_id
- * @param {number} dpn_id
  * @param {object} client - a pg client inside an open transaction
  * @returns {Promise<string>}
  */
-async function generatePalletNumber(factory_id, dpn_id, client) {
-  // Factory code
-  const { rows: fRows } = await client.query(
-    `SELECT code FROM factory WHERE id = $1`,
-    [factory_id]
+async function generatePalletNumber(client) {
+  const tz = getServerTimeZone();
+
+  const {
+    rows: [dayRow],
+  } = await client.query(
+    `SELECT to_char(now() AT TIME ZONE $1, 'YYYYMMDD') AS ymd`,
+    [tz],
   );
-  if (!fRows.length) throw new Error(`Factory with id ${factory_id} not found`);
-  const factoryCode = fRows[0].code;
+  const ymd = dayRow.ymd;
+  const prefix = `PALLET-${ymd}-`;
 
-  if (!dpn_id) throw new Error("Cannot create pallet without a DPN");
-
-  // DPN name
-  const { rows: dRows } = await client.query(
-    `SELECT name FROM dpn WHERE id = $1`,
-    [dpn_id]
-  );
-  if (!dRows.length) throw new Error(`DPN with id ${dpn_id} not found`);
-  const dpnName = dRows[0].name;
-
-  // MMDDYY string
-  const now = new Date();
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  const yy = String(now.getFullYear()).slice(-2);
-  const dateStr = `${mm}${dd}${yy}`;
-
-  // Count existing pallets today for (factory_id, dpn_id)
-  const { rows: countRows } = await client.query(
-    `SELECT COUNT(*)::int AS count
-         FROM pallet
-        WHERE factory_id = $1
-          AND dpn_id     = $2
-          AND to_char(created_at, 'MMDDYY') = $3`,
-    [factory_id, dpn_id, dateStr]
+  const { rows } = await client.query(
+    `
+    SELECT COALESCE(
+      MAX(
+        CASE
+          WHEN pallet_number ~ ('^' || $1 || '[0-9]+$')
+          THEN substring(pallet_number from length($1) + 1)::int
+          ELSE NULL
+        END
+      ),
+      0
+    ) AS max_serial
+    FROM pallet
+    WHERE pallet_number LIKE ($1 || '%')
+    `,
+    [prefix],
   );
 
-  const suffix = String(countRows[0].count + 1).padStart(2, "0");
-  return `PAL-${factoryCode}-${dpnName}-${dateStr}${suffix}`;
+  const nextSerial = Number(rows[0]?.max_serial || 0) + 1;
+  return `${prefix}${String(nextSerial).padStart(3, "0")}`;
 }
 
 module.exports = { generatePalletNumber };

@@ -26,7 +26,7 @@ export default function AddSystemModal({
           scanner.clear();
           setShowScanner(false);
         },
-        (err) => console.warn(err)
+        (err) => console.warn(err),
       );
     }
     return () => {
@@ -130,7 +130,25 @@ export default function AddSystemModal({
                 title="PPID must be exactly 23 uppercase alphanumeric characters"
                 maxLength={23}
               />
+              <InputField
+                label="Host MAC"
+                name="host_mac"
+                required
+                autoUpper
+                pattern="^[0-9A-F]{12}$"
+                title="Host MAC must be exactly 12 hex characters (A1B2C3D4E5F6)"
+                maxLength={12}
+              />
 
+              <InputField
+                label="BMC MAC"
+                name="bmc_mac"
+                required
+                autoUpper
+                pattern="^[0-9A-F]{12}$"
+                title="BMC MAC must be exactly 12 hex characters (A1B2C3D4E5F6)"
+                maxLength={12}
+              />
               <InputField
                 label="Rack Service Tag"
                 name="rack_service_tag"
@@ -147,10 +165,10 @@ export default function AddSystemModal({
           ) : (
             <>
               <TextAreaField
-                label="CSV Input (service_tag,issue,ppid,rack_service_tag) — all required"
+                label="CSV Input (service tag, issue, ppid, host mac, bmc mac, rack tag) — all required"
                 name="bulk_csv"
-                placeholder={`ABCDE64,Post fail,MX0JJ3MGWSJ0057200JMA00,DEFGHI4
-ABCDE64,No power,MX0JJ3MGWSJ0057200JMA00,DEFGHI4`}
+                placeholder={`ABCDE64,Post fail,MX0JJ3MGWSJ0057200JMA00,DEFGHI4,A1B2C3D4E5F6,A1B2C3D4E5F7
+ABCDE65,No power,MX0JJ3MGWSJ0057200JMA00,DEFGHI4,A1B2C3D4E5F8,A1B2C3D4E5F9`}
                 rows={5}
                 required
               />

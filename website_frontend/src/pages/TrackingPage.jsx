@@ -48,6 +48,7 @@ function TrackingPage() {
   const [dellCustomers, setDellCustomers] = useState([]);
   const [factories, setFactories] = useState([]);
   const [configs, setConfigs] = useState([]);
+  const [customTags, setCustomTags] = useState([]);
 
   const [serverTime, setServerTime] = useState([]);
 
@@ -74,18 +75,23 @@ function TrackingPage() {
     getSnapshot,
     getSystemHistory,
     getSystem,
+    getTags,
+    updateHostMac,
+    updateBmcMac,
   } = useApi();
 
   const fetchData = async () => {
     setLoading(true);
 
     try {
-      const [locationsData, serverTimeData, dpnsData, factoriesData] = await Promise.all([
-        getLocations(),
-        getServerTime(),
-        getDpns(),
-        getFactories(),
-      ]);
+      const [locationsData, serverTimeData, dpnsData, factoriesData, tagsData] =
+        await Promise.all([
+          getLocations(),
+          getServerTime(),
+          getDpns(),
+          getFactories(),
+          getTags(),
+        ]);
 
       const activeLocationNames = locationsData
         .filter((loc) => activeLocationIDs.includes(loc.id))
@@ -95,7 +101,7 @@ function TrackingPage() {
       const serverLocalNow = DateTime.fromFormat(
         serverTimeData.localtime,
         "MM/dd/yyyy, hh:mm:ss a",
-        { zone: serverTimeData.zone }
+        { zone: serverTimeData.zone },
       );
 
       let activeLocationSnapshotFirstDay,
@@ -161,9 +167,14 @@ function TrackingPage() {
       setLocationChartHistory(filteredHistory);
       setServerTime(serverTimeData);
       setSnapshot(activeLocationSnapshotFirstDay);
-      setDellCustomers(dpnsData.map((d) => d.dell_customer).filter((d,i, self) => d && i === self.indexOf(d)));
+      setDellCustomers(
+        dpnsData
+          .map((d) => d.dell_customer)
+          .filter((d, i, self) => d && i === self.indexOf(d)),
+      );
       setFactories(factoriesData.map((f) => f.code));
       setConfigs([...new Set(dpnsData.map(x => x.config))].filter(x => x).sort());
+      setCustomTags(tagsData.map((t) => t.code));
     } catch (err) {
       setError(err.message);
       console.error(err.message);
@@ -180,7 +191,14 @@ function TrackingPage() {
   const { showToast, Toast } = useToast();
   const isMobile = useIsMobile();
 
-  async function addOrUpdateSystem(service_tag, issue, ppid, rack_service_tag) {
+  async function addOrUpdateSystem(
+    service_tag,
+    issue,
+    ppid,
+    rack_service_tag,
+    host_mac,
+    bmc_mac,
+  ) {
     const { data: inactiveSystems } = await fetchSystems({
       page_size: 150,
       inactive: true,
@@ -197,12 +215,14 @@ function TrackingPage() {
       location_id: 1, // "Received"
       ppid,
       rack_service_tag,
+      host_mac,
+      bmc_mac,
     };
 
     const inactive = inactiveSystems.find(
       (sys) =>
         sys.service_tag.trim().toUpperCase() ===
-        service_tag.trim().toUpperCase()
+        service_tag.trim().toUpperCase(),
     );
 
     try {
@@ -218,22 +238,24 @@ function TrackingPage() {
           return null;
         }
 
-        await moveSystemToReceived(service_tag, issue, "added to system");
+        await moveSystemToReceived(service_tag, issue, rack_service_tag);
+
+        // if the system already exists, set/refresh MACs here so you don't rely on old/missing values
+        await updateHostMac(service_tag, host_mac);
+        await updateBmcMac(service_tag, bmc_mac);
+
         showToast(
           `${service_tag} moved back to received`,
           "success",
           3000,
-          "top-right"
+          "top-right",
         );
       } else {
         await createSystem(payload);
-        //showToast(`${service_tag} created`, "success", 3000, "top-right");
       }
 
-      // 🔎 Strictly use getSystem to retrieve the full record
       const sysFull = await getSystem(service_tag);
 
-      // Build the printable object with safe fallbacks
       return {
         service_tag,
         issue: sysFull?.issue ?? issue ?? "",
@@ -245,12 +267,8 @@ function TrackingPage() {
     } catch (err) {
       console.error(err);
 
-      const msg =
-        err?.body?.error || // <- the good part
-        err?.message || // fallback
-        "Unknown error";
+      const msg = err?.body?.error || err?.message || "Unknown error";
 
-      //showToast(msg, "error", 3000, "top-right");
       return msg;
     }
   }
@@ -259,31 +277,66 @@ function TrackingPage() {
     e.preventDefault();
     const formData = new FormData(e.target);
 
+    const isMac12Hex = (s) =>
+      /^[0-9A-F]{12}$/.test(
+        String(s ?? "")
+          .trim()
+          .toUpperCase(),
+      );
+
     if (!bulkMode) {
       // ---------- SINGLE ADD ----------
       const service_tag = formData.get("service_tag")?.trim().toUpperCase();
       const issue = formData.get("issue")?.trim() || null;
       const ppid = formData.get("ppid")?.trim().toUpperCase();
       const rack_service_tag = formData.get("rack_service_tag")?.trim();
+      const host_mac = formData.get("host_mac")?.trim().toUpperCase();
+      const bmc_mac = formData.get("bmc_mac")?.trim().toUpperCase();
 
-      if (!service_tag || !ppid || !issue | !rack_service_tag) {
+      if (
+        !service_tag ||
+        !ppid ||
+        !issue ||
+        !rack_service_tag ||
+        !host_mac ||
+        !bmc_mac
+      ) {
         setAddSystemFormError("All fields are required.");
         return;
       }
-      if (issue.length > 50) {
-        setAddSystemFormError(`Please keep issue field under 50 characters (current: ${issue.length})`);
+
+      if (!isMac12Hex(host_mac)) {
+        setAddSystemFormError(
+          "Host MAC must be exactly 12 hex characters (A1B2C3D4E5F6).",
+        );
         return;
       }
+      if (!isMac12Hex(bmc_mac)) {
+        setAddSystemFormError(
+          "BMC MAC must be exactly 12 hex characters (A1B2C3D4E5F6).",
+        );
+        return;
+      }
+
+      if (issue.length > 50) {
+        setAddSystemFormError(
+          `Please keep issue field under 50 characters (current: ${issue.length})`,
+        );
+        return;
+      }
+
       setAddSystemFormError(null);
 
       let printable = null;
 
-      // add/move then fetch full system via getSystem (inside addOrUpdateSystem)
+      // UPDATED: pass macs
       printable = await addOrUpdateSystem(
         service_tag,
         issue,
         ppid,
-        rack_service_tag
+        rack_service_tag,
+        host_mac,
+        bmc_mac,
       );
 
       // ---------- PDF for single ----------
@@ -291,7 +344,7 @@ function TrackingPage() {
         await delay(500);
         try {
           const blob = await pdf(
-            <SystemPDFLabel systems={[printable]} />
+            <SystemPDFLabel systems={[printable]} />,
           ).toBlob();
 
           const url = URL.createObjectURL(blob);
@@ -302,7 +355,7 @@ function TrackingPage() {
         setTimeout(
           () =>
             showToast("Successfully added unit", "success", 3000, "top-right"),
-          3000
+          3000,
         );
       } else if (printable) {
         setAddSystemFormError(printable);
@@ -320,45 +373,63 @@ function TrackingPage() {
       }
       setAddSystemFormError(null);
 
-      // 1) Pre-validate: every non-empty line must have 4 non-empty items
+      // Pre-validate
       const rawLines = csv.split(/\r?\n/).map((l) => l.trim());
-      const lines = rawLines.filter((l) => l.length > 0); // skip blank lines
+      const lines = rawLines.filter((l) => l.length > 0);
 
       const longIssues = [];
       const badLines = [];
+      const badMacLines = [];
+
       const parsed = lines.map((line, idx) => {
         const parts = line.split(/\t|,/).map((s) => (s ?? "").trim());
-        // Expect exact ly 4 non-empty fields
-        const [rawTag, issue, ppid, rackServiceTag] = parts;
-        const ok =
-          parts.length === 4 && rawTag && issue && ppid && rackServiceTag;
 
-        if (!ok) badLines.push(idx + 1); // 1-based line number
-        if (issue.length > 50) longIssues.push(idx+1);
-        return { rawTag, issue, ppid, rackServiceTag };
+        // Expect exactly 6 non-empty fields:
+        // service_tag, issue, ppid, rack_service_tag, host_mac, bmc_mac
+        const [rawTag, issue, ppid, hostMac, bmcMac, rackServiceTag] = parts;
+
+        const ok =
+          parts.length === 6 &&
+          rawTag &&
+          issue &&
+          ppid &&
+          rackServiceTag &&
+          hostMac &&
+          bmcMac;
+
+        if (!ok) badLines.push(idx + 1);
+
+        if (issue?.length > 50) longIssues.push(idx + 1);
+
+        const host12 = String(hostMac ?? "")
+          .trim()
+          .toUpperCase();
+        const bmc12 = String(bmcMac ?? "")
+          .trim()
+          .toUpperCase();
+
+        if (ok && (!isMac12Hex(host12) || !isMac12Hex(bmc12))) {
+          badMacLines.push(idx + 1);
+        }
+
+        return { rawTag, issue, ppid, rackServiceTag, host12, bmc12 };
       });
 
       if (badLines.length > 0) {
         setAddSystemFormError(
-          `Bulk import error: lines missing required 4 fields → ${badLines.join(
-            ", "
-          )}`
+          `Bulk import error: lines missing required 6 fields → ${badLines.join(", ")}`,
         );
-        // showToast(
-        //   `Bulk import error: lines missing required 4 fields → ${badLines.join(
-        //     ", "
-        //   )}`,
-        //   "error",
-        //   6000,
-        //   "top-right"
-        // );
-        return; // stop before doing any mutations
+        return;
       }
       if (longIssues.length > 0) {
         setAddSystemFormError(
-          `Issue error: issues on lines exceed 50 characters → ${longIssues.join(
-            ", "
-          )}`
+          `Issue error: issues on lines exceed 50 characters → ${longIssues.join(", ")}`,
+        );
+        return;
+      }
+      if (badMacLines.length > 0) {
+        setAddSystemFormError(
+          `MAC error: lines must include host_mac and bmc_mac as 12 hex chars → ${badMacLines.join(", ")}`,
         );
         return;
       }
@@ -367,14 +438,23 @@ function TrackingPage() {
 
       let addOrUpdateSysrtemError = false;
       const systemsPDF = [];
-      for (const { rawTag, issue, ppid, rackServiceTag } of parsed) {
+      for (const {
+        rawTag,
+        issue,
+        ppid,
+        rackServiceTag,
+        host12,
+        bmc12,
+      } of parsed) {
         let printable = null;
         try {
           printable = await addOrUpdateSystem(
             rawTag.toUpperCase(),
             issue, // required & non-empty from validation
             ppid.toUpperCase(),
-            rackServiceTag
+            rackServiceTag,
+            host12,
+            bmc12,
           );
         } catch (err) {
           console.error("Error processing line:", rawTag, err);
@@ -385,7 +465,7 @@ function TrackingPage() {
           systemsPDF.push(printable);
         } else {
           setAddSystemFormError(
-            `Stopped processing at ${rawTag}: ${printable}`
+            `Stopped processing at ${rawTag}: ${printable}`,
           );
           addOrUpdateSysrtemError = true;
           break; // stop processing on error message
@@ -397,7 +477,7 @@ function TrackingPage() {
         await delay(500);
         try {
           const blob = await pdf(
-            <SystemPDFLabel systems={systemsPDF} />
+            <SystemPDFLabel systems={systemsPDF} />,
           ).toBlob();
           const url = URL.createObjectURL(blob);
           window.open(url, "_blank");
@@ -414,7 +494,7 @@ function TrackingPage() {
       setTimeout(
         () =>
           showToast("Successfully added units", "success", 3000, "top-right"),
-        3000
+        3000,
       );
     }
   }
@@ -458,7 +538,7 @@ function TrackingPage() {
       if (idiotProof) params.set("simplified", "true");
 
       const resp = await fetch(
-        `${BACKEND_URL}/systems/snapshot?${params.toString()}`
+        `${BACKEND_URL}/systems/snapshot?${params.toString()}`,
       );
       if (!resp.ok) throw new Error(await resp.text());
 
@@ -478,7 +558,7 @@ function TrackingPage() {
         `Report for ${reportDate} downloading`,
         "success",
         3000,
-        "top-right"
+        "top-right",
       );
     } catch (err) {
       console.error("Failed to generate report", err);
@@ -494,7 +574,7 @@ function TrackingPage() {
         serverZone: serverTime.zone,
       });
     },
-    [showActive, showInactive, serverTime]
+    [showActive, showInactive, serverTime],
   );
 
   return (
@@ -510,17 +590,19 @@ function TrackingPage() {
             position="botom"
             show={!token == true}
           >
-            <button
-              onClick={() => {
-                setAddSystemFormError(null);
-                setShowModal(true);
-              }}
-              className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
-                !token ? "opacity-30 pointer-events-none" : ""
-              }`}
-            >
-              + Add System
-            </button>
+            {token && (
+              <button
+                onClick={() => {
+                  setAddSystemFormError(null);
+                  setShowModal(true);
+                }}
+                className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
+                  !token ? "opacity-30 pointer-events-none" : ""
+                }`}
+              >
+                + Add System
+              </button>
+            )}
           </Tooltip>
         </div>
 
@@ -610,8 +692,11 @@ function TrackingPage() {
                   ["Sent to L11", "RMA CID", "RMA VID", "RMA PID"].includes(val)
                     ? { type: "pill", color: "bg-green-100 text-green-800" }
                     : ["Received", "In Debug - Wistron", "In L10"].includes(val)
-                    ? { type: "pill", color: "bg-red-100 text-red-800" }
-                    : { type: "pill", color: "bg-yellow-100 text-yellow-800" },
+                      ? { type: "pill", color: "bg-red-100 text-red-800" }
+                      : {
+                          type: "pill",
+                          color: "bg-yellow-100 text-yellow-800",
+                        },
               }}
               linkType="internal"
               truncate={true}
@@ -627,10 +712,14 @@ function TrackingPage() {
                     ]
               }
               possibleSearchTags={[
-                ...locations.map((l) => ({field: "location", value: l.name})),
+                ...locations.map((l) => ({ field: "location", value: l.name })),
                 ...configs.map(c => ({field: "config", value: c})),
-                ...dellCustomers.map((d) => ({field: "dell_customer", value: d})),
-                ...factories.map((f) => ({field: "factory", value: f})),
+                ...dellCustomers.map((d) => ({
+                  field: "dell_customer",
+                  value: d,
+                })),
+                ...factories.map((f) => ({ field: "factory", value: f })),
+                ...customTags.map((t) => ({ field: "tags", value: t })),
               ]}
             />
             <button

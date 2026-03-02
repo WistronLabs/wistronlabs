@@ -51,7 +51,10 @@ function Header() {
             className="h-[25px] md:h-[30px]"
           />
           <h1 className="text-[1.5rem] md:text-[1.8rem] font-medium pt-1">
-            {LOCATION} Dashboard
+            {LOCATION} Dashboard{" "}
+            {import.meta.env.DEV && (
+              <span className="text-sm text-red-400">(DEV)</span>
+            )}
           </h1>
         </div>
 

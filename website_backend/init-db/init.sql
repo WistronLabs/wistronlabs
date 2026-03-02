@@ -53,6 +53,7 @@ CREATE TABLE system (
     serial VARCHAR(100),
     rev VARCHAR(50),
     ppid VARCHAR(100),
+    doa_number VARCHAR(20),
 
     CONSTRAINT system_ppid_key UNIQUE (ppid)
 );

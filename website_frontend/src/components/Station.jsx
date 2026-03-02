@@ -59,6 +59,13 @@ function Station({
   const renderStatus = (status, message) => {
     const base =
       "relative inline-flex items-center justify-center min-w-24 px-2 py-1 rounded-md md:rounded-full text-xs font-medium text-center";
+    if (status === 3)
+      return (
+        <span className={`${base} bg-gray-200 text-gray-700`} title={tooltip}>
+          {message}
+        </span>
+      );
+
     if (status === 0)
       return (
         <span
@@ -95,6 +102,20 @@ function Station({
         </span>
       );
     }
+
+    if (status === 4)
+      return (
+        <span className={`${base} bg-green-100 text-green-800`} title={tooltip}>
+          {message}
+        </span>
+      );
+
+    if (status === 5)
+      return (
+        <span className={`${base} bg-red-100 text-red-800`} title={tooltip}>
+          {message}
+        </span>
+      );
 
     return (
       <span className={`${base} bg-red-100 text-red-800`} title={tooltip}>
