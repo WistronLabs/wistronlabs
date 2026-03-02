@@ -1202,6 +1202,9 @@ function SystemPage() {
                   new Date(nameLux.setZone(serverZone).toISO()),
                 )
               : name;
+            if (!nameLux.isValid && !nameLocal.match(/^run_[a-zA-Z0-9]{6,7}.*\.log$/) && !nameLocal.match(/^output\.log$/)) {
+              return
+            }
             //push entry
             entries.push({
               name: nameLocal?.startsWith("L11")
