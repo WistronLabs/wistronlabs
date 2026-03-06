@@ -5,6 +5,10 @@ import ReactPaginate from "react-paginate";
 import TagBar from "./TagBar.jsx";
 import { useDebounce } from "../hooks/useDebounce.jsx";
 
+// In-memory cache for optional cross-route persistence.
+// This survives component unmount/remount, but resets on full page refresh.
+const searchContainerSSStateCache = new Map();
+
 export default function SearchContainerSS({
   title,
   displayOrder,
@@ -23,11 +27,18 @@ export default function SearchContainerSS({
   page: externalPage,
   onPageChange,
   possibleSearchTags = [],
+  persistStateKey = null,
 }) {
+  const persistedState = persistStateKey
+    ? searchContainerSSStateCache.get(persistStateKey)
+    : null;
+
   const [internalPage, setInternalPage] = useState(1);
   const [sortBy, setSortBy] = useState(defaultSortBy || displayOrder[0]);
   const [sortAsc, setSortAsc] = useState(defaultSortAsc ?? true);
-  const [searchTerm, setSearchTerm] = useState("");
+  const [searchTerm, setSearchTerm] = useState(
+    () => persistedState?.searchTerm ?? "",
+  );
 
   const [data, setData] = useState([]);
   const [displayedData, setDisplayedData] = useState([]);
@@ -36,10 +47,16 @@ export default function SearchContainerSS({
   const [pageSize, setPageSize] = useState(itemsPerPage);
 
   const [open, setOpen] = useState(false);
-  const [searchTags, setSearchTags] = useState([]);
-  const [availableTags, setAvailableTags] = useState(possibleSearchTags);
-  const [tagGroups, setTagGroups] = useState([]);
-  const [currentGroup, setCurrentGroup] = useState(0);
+  const [searchTags, setSearchTags] = useState(
+    () => persistedState?.searchTags ?? [],
+  );
+  const [availableTags, setAvailableTags] = useState(
+    () => persistedState?.availableTags ?? possibleSearchTags,
+  );
+  const [tagGroups, setTagGroups] = useState(() => persistedState?.tagGroups ?? []);
+  const [currentGroup, setCurrentGroup] = useState(
+    () => persistedState?.currentGroup ?? 0,
+  );
 
   const searchRef = useRef(null);
   const tagGroupsScrollRef = useRef(null);
@@ -203,6 +220,28 @@ export default function SearchContainerSS({
     el.scrollTop = el.scrollHeight;
   }, [tagGroups.length]);
 
+  useEffect(() => {
+    if (!persistStateKey) return;
+    searchContainerSSStateCache.set(persistStateKey, {
+      searchTerm,
+      searchTags,
+      availableTags,
+      tagGroups,
+      currentGroup,
+    });
+  }, [
+    persistStateKey,
+    searchTerm,
+    searchTags,
+    availableTags,
+    tagGroups,
+    currentGroup,
+  ]);
+
+  const hasEmptyTagGroup = tagGroups.some(
+    (tg) => !tg?.searchTags || tg.searchTags.length === 0,
+  );
+
   return (
     <div className="flex flex-col pt-2 space-y-2">
       <div className="flex justify-between items-center mb-6 gap-3">
@@ -335,8 +374,13 @@ export default function SearchContainerSS({
                       </div>
                     ))}
                 <div
-                  className="mx-2 my-2 px-3 py-2 text-sm rounded-lg border border-blue-200 bg-blue-50 text-blue-700 font-medium hover:bg-blue-100 cursor-pointer"
+                  className={`mx-2 my-2 px-3 py-2 text-sm rounded-lg border font-medium ${
+                    hasEmptyTagGroup
+                      ? "border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed"
+                      : "border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 cursor-pointer"
+                  }`}
                   onClick={() => {
+                    if (hasEmptyTagGroup) return;
                     //Set the current focused group to the new group
                     setCurrentGroup(tagGroups.length);
                     const next = [

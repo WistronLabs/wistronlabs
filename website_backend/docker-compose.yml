@@ -16,10 +16,14 @@ services:
       - ./env/common.env
       - ./env/site.env
       - ./env/secrets.env
+    environment:
+      - L10_LOGS_ROOT=/app/l10_logs
     ports:
       - "${APP_HOST_PORT}:3000"
     depends_on:
       - db
+    volumes:
+      - "/var/www/html/l10_logs:/app/l10_logs:ro"
     command: npm start
 
 volumes:

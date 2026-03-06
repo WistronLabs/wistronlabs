@@ -673,6 +673,7 @@ function TrackingPage() {
             <SearchContainerSS
               page={page}
               onPageChange={(newPage) => setPage(newPage)}
+              persistStateKey="tracking-systems"
               title=""
               fetchData={fetchSystemsWithFlags}
               displayOrder={[
