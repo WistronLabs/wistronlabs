@@ -32,6 +32,8 @@
  */
 
 const express = require("express");
+const fs = require("fs/promises");
+const path = require("path");
 const db = require("../db");
 const { authenticateToken } = require("./auth");
 const { buildWhereClause } = require("../utils/buildWhereClause");
@@ -44,6 +46,61 @@ const NodeCache = require("node-cache");
 const snapshotCache = new NodeCache({ stdTTL: 8 * 60 * 60 }); // 8 hours
 
 const router = express.Router();
+
+function escapeRegExp(str) {
+  return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function firstExistingDir(candidates = []) {
+  for (const dir of candidates) {
+    if (!dir) continue;
+    try {
+      await fs.access(dir);
+      return dir;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+async function hasL11ArchiveForServiceTag(logsRoot, serviceTag) {
+  if (!logsRoot || !serviceTag) return false;
+
+  const st = String(serviceTag || "").trim();
+  if (!st) return false;
+
+  const matcher = new RegExp(
+    `^L11_logs_ST_${escapeRegExp(st)}_RT_[^./]+\\.tgz$`,
+    "i",
+  );
+  const serviceTagDir = path.join(logsRoot, st);
+
+  let topEntries = [];
+  try {
+    topEntries = await fs.readdir(serviceTagDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  const queue = [{ dir: serviceTagDir, entries: topEntries, depth: 0 }];
+  while (queue.length > 0) {
+    const { dir, entries, depth } = queue.shift();
+    for (const entry of entries) {
+      if (entry.isFile() && matcher.test(entry.name)) return true;
+      if (entry.isDirectory() && depth < 2) {
+        const subdir = path.join(dir, entry.name);
+        try {
+          const subEntries = await fs.readdir(subdir, { withFileTypes: true });
+          queue.push({ dir: subdir, entries: subEntries, depth: depth + 1 });
+        } catch {
+          // ignore unreadable subdir
+        }
+      }
+    }
+  }
+  return false;
+}
 
 // Helper: fetch deleted user id
 async function getDeletedUserId() {
@@ -1179,6 +1236,7 @@ router.get("/snapshot", async (req, res) => {
       "Root Cause",
       "Unit Parts",
       "Tags",
+      "L11 Logs Found",
     ];
 
     const csvEsc = (v) => {
@@ -1208,6 +1266,24 @@ router.get("/snapshot", async (req, res) => {
 
     const lines = [];
     lines.push(header.join(","));
+
+    const logsRoot = await firstExistingDir([
+      process.env.L10_LOGS_ROOT,
+      path.resolve(process.cwd(), "../l10_logs"),
+      path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+      path.resolve(process.cwd(), "l10_logs"),
+    ]);
+    const l11LogFoundByServiceTag = new Map();
+    await Promise.all(
+      rows.map(async (r) => {
+        const st = String(r.service_tag || "")
+          .trim()
+          .toUpperCase();
+        if (!st || l11LogFoundByServiceTag.has(st)) return;
+        const found = await hasL11ArchiveForServiceTag(logsRoot, st);
+        l11LogFoundByServiceTag.set(st, found);
+      }),
+    );
 
     for (const r of rows) {
       const firstLocal = r.first_received_on
@@ -1283,6 +1359,13 @@ router.get("/snapshot", async (req, res) => {
         rootCauseText ?? "",
         unitPartsText ?? "",
         tagsText ?? "",
+        l11LogFoundByServiceTag.get(
+          String(r.service_tag || "")
+            .trim()
+            .toUpperCase(),
+        )
+          ? "yes"
+          : "no",
       ].map((v) => csvEsc(String(v)));
 
       lines.push(row.join(","));

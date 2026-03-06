@@ -66,6 +66,7 @@ function SystemPage() {
   const [selectedStation, setSelectedStation] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [downloads, setDownloads] = useState([]);
+  const [hasL11RackLogs, setHasL11RackLogs] = useState(false);
   const [releasedPallets, setreleasedPallets] = useState([]);
 
   const [serverTimeZone, setServerTimeZone] = useState("UTC");
@@ -1171,6 +1172,7 @@ function SystemPage() {
       try {
         const { zone: serverZone = "UTC" } = await getServerTime();
         setServerTimeZone(serverZone);
+        let foundL11RackArchive = false;
 
         const dirPart = logsDir
           ? logsDir.replace(/^\//, "").replace(/\/?$/, "/")
@@ -1222,16 +1224,26 @@ function SystemPage() {
               : rawDate; // fallback if parsing fails
 
             const nameLux = DateTime.fromISO(name, { zone: "utc" });
-            const nameLocal = nameLux.isValid
-              ? formatDateHumanReadable(
-                  new Date(nameLux.setZone(serverZone).toISO()),
-                )
+            const nameLocalCompact = nameLux.isValid
+              ? `${nameLux.setZone(serverZone).toFormat("MM/dd/yy hh:mm")}${nameLux
+                  .setZone(serverZone)
+                  .toFormat("a")
+                  .toUpperCase()}`
               : name;
+            const l11RackArchiveMatch = name.match(
+              /^L11_logs_ST_[^_]+_RT_([^./]+)\.tgz$/i,
+            );
+            if (l11RackArchiveMatch) foundL11RackArchive = true;
+            const keepOriginalLabel =
+              !nameLux.isValid || /^L11/i.test(name) || /^L10\s+Test/i.test(name);
+            const displayName = l11RackArchiveMatch
+              ? `L11 Logs - Rack ${l11RackArchiveMatch[1]}`
+              : keepOriginalLabel
+                ? name
+                : `L10 Test ${nameLocalCompact}`;
             //push entry
             entries.push({
-              name: nameLocal?.startsWith("L11")
-                ? nameLocal
-                : `L10 test ran on ${nameLocal}`,
+              name: displayName,
               href: new URL(href, link).href, // RESOLVE robustly (handles absolute or relative)
               name_title: "File Name",
               date: formattedDate,
@@ -1240,8 +1252,10 @@ function SystemPage() {
           }
         });
         setDownloads(entries);
+        setHasL11RackLogs(foundL11RackArchive);
       } catch (err) {
         console.error("Failed to fetch downloads:", err);
+        setHasL11RackLogs(false);
       }
     };
     fetchDownloads();
@@ -2547,7 +2561,7 @@ function SystemPage() {
           </>
         ) : (
           <>
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
               <div>
                 <h1 className="text-2xl sm:text-3xl font-bold text-gray-800">
                   Service Tag{" "}
@@ -2567,7 +2581,7 @@ function SystemPage() {
                       </span>
                     )}
                   </span>
-                  {(receivedCount > 1 || rmaCount > 0) && (
+                  {(receivedCount > 1 || rmaCount > 0 || hasL11RackLogs) && (
                     <div className="mt-1 flex flex-wrap gap-2">
                       {receivedCount > 1 && (
                         <span className="inline-block px-2 py-1 bg-yellow-100 text-yellow-800 text-xs sm:text-sm font-bold rounded-full">
@@ -2577,6 +2591,11 @@ function SystemPage() {
                       {rmaCount > 0 && (
                         <span className="inline-block px-2 py-1 bg-yellow-100 text-yellow-800 text-xs sm:text-sm font-bold rounded-full">
                           Unit RMAd {rmaCount} Time{rmaCount > 1 ? "s" : ""}
+                        </span>
+                      )}
+                      {hasL11RackLogs && (
+                        <span className="inline-block px-2 py-1 bg-green-100 text-green-800 text-xs sm:text-sm font-bold rounded-full">
+                          L11 Logs Found
                         </span>
                       )}
                     </div>
@@ -2595,7 +2614,7 @@ function SystemPage() {
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-start gap-2">
                 {!isRMA || (isRMA && isInPalletNumber) ? (
                   <button
                     type="button"

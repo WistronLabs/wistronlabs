@@ -69,7 +69,7 @@ function TagBubblesRow({
     const hoveringDelete = String(deleteHoverId) === id;
 
     return (
-      <div className="mt-2 flex flex-wrap gap-2">
+      <div className="mt-1 flex flex-wrap gap-2">
         <button
           type="button"
           onMouseEnter={() => canEdit && setDeleteHoverId(id)}
@@ -121,7 +121,7 @@ function TagBubblesRow({
   const showAllBubble = total > 3;
 
   return (
-    <div className="mt-2 flex flex-wrap gap-2">
+    <div className="mt-1 flex flex-wrap gap-2">
       {top.map((t) => {
         const id = tagKey(t);
         const raw = t.code;
