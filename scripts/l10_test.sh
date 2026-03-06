@@ -13,19 +13,14 @@ Usage:
   ./l10_test.sh [options]
 
 Options:
-  -t <SERVICE_TAG>                    Set service tag (skip service tag prompt)
   -m                                  Skip backend MAC pull; prompt for MACs manually
   -o                                  Open interactive module picker
   -h                                  Show this help and exit
 
-Notes:
-  - -m and -t cannot be used together.
-
 Examples:
   ./l10_test.sh
-  ./l10_test.sh -st GV7Z0J4
   ./l10_test.sh -m
-  ./l10_test.sh -o -st GV7Z0J4
+  ./l10_test.sh -o
 EOF
 }
 
@@ -61,28 +56,6 @@ fi
 SKIP_BACKEND_MAC_PULL=0
 RUN_OPTION_PICKER=0
 SERVICE_TAG=""
-USED_T_FLAG=0
-
-# Pre-parse only -st <SERVICE_TAG>; keep existing getopts flow for -m/-o.
-remaining_args=()
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -t|-T)
-      if [[ $# -lt 2 ]]; then
-        err "Flag $1 requires a service tag value."
-        exit 1
-      fi
-      SERVICE_TAG="$2"
-      USED_T_FLAG=1
-      shift 2
-      ;;
-    *)
-      remaining_args+=("$1")
-      shift
-      ;;
-  esac
-done
-set -- "${remaining_args[@]}"
 
 while getopts ":mo" opt; do
   case "$opt" in
@@ -92,11 +65,6 @@ while getopts ":mo" opt; do
   esac
 done
 shift $((OPTIND - 1))
-
-if [[ "$USED_T_FLAG" -eq 1 && "$SKIP_BACKEND_MAC_PULL" -eq 1 ]]; then
-  err "-m and -t cannot be used at the same time."
-  exit 1
-fi
 
 api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
 
@@ -183,14 +151,8 @@ if [[ "$http_code" != "200" ]]; then
 fi 
 
 # Second: fetch the body and extract system_service_tag
-CURRENT_REMOTE_SERVICE_TAG=$(curl -s \
+SERVICE_TAG=$(curl -s \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')
-
-
-if [[ -z "$SERVICE_TAG" ]]; then
-  read -p "Enter Service Tag (e.g., A1B264): " SERVICE_TAG
-fi
-
 
 
 CONFIG_TMP=$(mktemp)
@@ -226,18 +188,8 @@ fi
 
 
 
-if [[ "$CURRENT_REMOTE_SERVICE_TAG" == "null" ]]; then
-    err "This system has not been assigned to 'L10' on Station $SESSION_NUMBER in the tracking website. Please update its status and re-run this command."
-    exit 1
-fi
-
-if [[ "$CURRENT_REMOTE_SERVICE_TAG" != "$SERVICE_TAG" ]]; then
-    echo ""
-    err "Station $SESSION_NUMBER currently has a system ($CURRENT_REMOTE_SERVICE_TAG) assigned that does not match this system's service tag ($SERVICE_TAG)."
-    echo ""
-    echo "Please either:"
-    echo "  1. Mark $CURRENT_REMOTE_SERVICE_TAG as 'Sent to L11' or 'RMA - [TYPE]' on the tracking website."
-    echo "  2. Move $CURRENT_REMOTE_SERVICE_TAG back to 'In Debug - Wistron'."
+if [[ "$SERVICE_TAG" == "null" ]]; then
+    err "There is no system assigned to 'L10' on Station $SESSION_NUMBER in the tracking website. Please update its status and re-run this command."
     exit 1
 fi
 
