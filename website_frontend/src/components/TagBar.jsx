@@ -104,7 +104,8 @@ export default function TagBar({
               </span>
               <span
                 className="relative w-5 h-5 rounded-full flex items-center justify-center hover:bg-black/10 hover:cursor-pointer"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   handleChange(
                     searchTags.filter(
                       (st) => !matchTag(`${t.field}: ${t.value}`, st),

@@ -628,8 +628,8 @@ router.get("/", async (req, res) => {
     const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
     if (parsed.length > 0) {
       const tagsSQL = parsed
-        .map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`)
-        .join(" AND ");
+        .map((g) => `(${g.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ")})`)
+          .join(" OR ");
       whereSQL = whereSQL ? `${whereSQL} AND (${tagsSQL})` : `WHERE ${tagsSQL}`;
     }
   }

@@ -104,9 +104,10 @@ export default function SearchContainerSS({
             ],
           }
         : null,
-      tags: tagGroups.some((tg) => tg.searchTags.length > 0)
-        ? tagGroups.map((tg) => tg.searchTags.filter((st) => st.field === "tags").map((st) => st.value))
-          .reduce((acc, e) => [...acc, ...e], [])
+      tags: tagGroups.some((tg) => tg.searchTags.some((st) => st.field === "tags") > 0)
+        ? tagGroups
+          .filter((tg) => tg.searchTags.some((st) => st.field === "tags"))
+          .map((tg) => tg.searchTags.filter((st) => st.field === "tags").map((st) => st.value))
         : null,
     })
       .then((res) => {
@@ -232,14 +233,14 @@ export default function SearchContainerSS({
                         isActive={i === currentGroup && open}
                         handleChange={(st, at) => {
                           // Auto-remove groups that became empty
+                          const next = [...tagGroups];
+                          next[i] = { searchTags: st, availableTags: at };
                           if (!st.length) {
-                            const filtered = tagGroups.filter((_, j) => j !== i);
+                            const filtered = next.filter((_, j) => j !== i);
                             setTagGroups(filtered);
                             syncCurrentGroupView(filtered, i - 1);
                             return;
                           }
-                          const next = [...tagGroups];
-                          next[i] = { searchTags: st, availableTags: at };
                           setTagGroups(next);
                           syncCurrentGroupView(next, i);
                         }}
