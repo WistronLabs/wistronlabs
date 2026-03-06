@@ -997,6 +997,7 @@ router.get("/snapshot", async (req, res) => {
     params.push(start);
     params.push(INACTIVE_LOCATION_IDS);
   }
+  const rmaParamIdx = params.length + 1;
 
   try {
     const snapshotResult = await db.query(
@@ -1053,6 +1054,8 @@ router.get("/snapshot", async (req, res) => {
           to_char(last_recv.last_received_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_received_on`
             : ``
         }
+        , COALESCE(hist_counts.times_received, 0) AS times_received
+        , COALESCE(hist_counts.times_rma, 0) AS times_rma
         , tags_agg.tag_codes AS tag_codes
       FROM system s
       JOIN latest_state h  ON h.system_id = s.id
@@ -1071,6 +1074,23 @@ router.get("/snapshot", async (req, res) => {
         ORDER BY h0.changed_at ASC
         LIMIT 1
       ) AS first_history ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) FILTER (
+            WHERE h4.to_location_id = ${RECEIVED_LOCATION_ID}
+              AND h4.changed_at <= $1
+          )::int AS times_received,
+          COUNT(*) FILTER (
+            WHERE h4.to_location_id = ANY($${rmaParamIdx}::int[])
+              AND (
+                h4.from_location_id IS NULL
+                OR NOT (h4.from_location_id = ANY($${rmaParamIdx}::int[]))
+              )
+              AND h4.changed_at <= $1
+          )::int AS times_rma
+        FROM system_location_history h4
+        WHERE h4.system_id = s.id
+      ) AS hist_counts ON TRUE
       ${
         includeReceivedFlag
           ? `
@@ -1099,7 +1119,7 @@ router.get("/snapshot", async (req, res) => {
       ${perDayExclusionSQL}
       ORDER BY s.service_tag
       `,
-      params,
+      [...params, RMA_LOCATION_IDS],
     );
 
     const rows = snapshotResult.rows;
@@ -1143,6 +1163,8 @@ router.get("/snapshot", async (req, res) => {
       "First Received On",
       "Last Received On",
       "Date Modified",
+      "Received Count",
+      "RMA Count",
       "Rack ID",
       "PIC",
       "From",
@@ -1245,6 +1267,8 @@ router.get("/snapshot", async (req, res) => {
         firstLocal ?? "",
         includeReceivedFlag ? (lastLocal ?? "") : "",
         modifiedLocal ?? "",
+        r.times_received ?? 0,
+        r.times_rma ?? 0,
         r.rack_id ?? "",
         pic ?? "",
         r.factory_code ?? "",

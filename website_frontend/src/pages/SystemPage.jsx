@@ -118,6 +118,31 @@ function SystemPage() {
     .map((loc) => loc.name);
 
   const isRMA = rmaNames?.includes(currentLocation);
+  const rmaLocationSet = useMemo(
+    () => new Set([...(rmaNames || []), "RMA VID", "RMA CID", "RMA PID"]),
+    [rmaNames],
+  );
+  const receivedCount = useMemo(() => {
+    const returnsToReceived = (history || []).reduce((count, entry) => {
+      const noteText = String(entry?.note || "").toLowerCase();
+      return noteText.includes("moving back to received from inactive")
+        ? count + 1
+        : count;
+    }, 0);
+    // Initial receipt + number of returns from inactive.
+    return 1 + returnsToReceived;
+  }, [history]);
+  const rmaCount = useMemo(
+    () =>
+      (history || []).reduce((count, entry) => {
+        const toLocation = String(entry?.to_location || "");
+        const fromLocation = String(entry?.from_location || "");
+        const movedIntoRma =
+          rmaLocationSet.has(toLocation) && !rmaLocationSet.has(fromLocation);
+        return movedIntoRma ? count + 1 : count;
+      }, 0),
+    [history, rmaLocationSet],
+  );
 
   const { token } = useContext(AuthContext);
   const baseUrl =
@@ -2542,6 +2567,20 @@ function SystemPage() {
                       </span>
                     )}
                   </span>
+                  {(receivedCount > 1 || rmaCount > 0) && (
+                    <div className="mt-1 flex flex-wrap gap-2">
+                      {receivedCount > 1 && (
+                        <span className="inline-block px-2 py-1 bg-yellow-100 text-yellow-800 text-xs sm:text-sm font-bold rounded-full">
+                          Unit Received {receivedCount} Times
+                        </span>
+                      )}
+                      {rmaCount > 0 && (
+                        <span className="inline-block px-2 py-1 bg-yellow-100 text-yellow-800 text-xs sm:text-sm font-bold rounded-full">
+                          Unit RMAd {rmaCount} Time{rmaCount > 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <TagBubblesRow
                     tags={systemTags}
                     token={token}
