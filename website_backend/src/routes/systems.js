@@ -702,19 +702,20 @@ router.get("/", async (req, res) => {
       //            1  2  3  4  5  6   7   8   9   10  11  12
       // fields: service_tag, issue, location, dpn, dpn.config, dell_customer,
       //         ppid, factory_code, rc.name, rcs.name, host_mac, bmc_mac
+      const base = params.length - 11;
       return `(
-        s.service_tag ILIKE $${params.length - 9} OR
-        s.issue       ILIKE $${params.length - 8} OR
-        l.name        ILIKE $${params.length - 7} OR
-        d.name        ILIKE $${params.length - 6} OR
-        d.config      ILIKE $${params.length - 5} OR
-        d.dell_customer ILIKE $${params.length - 4} OR
-        s.ppid        ILIKE $${params.length - 3} OR
-        f.code        ILIKE $${params.length - 2} OR
-        rc.name       ILIKE $${params.length - 1} OR
-        rcs.name      ILIKE $${params.length - 0}
-        s.host_mac::text ILIKE $${params.length - 1} OR
-        s.bmc_mac::text  ILIKE $${params.length - 0}
+        s.service_tag     ILIKE $${base} OR
+        s.issue           ILIKE $${base + 1} OR
+        l.name            ILIKE $${base + 2} OR
+        d.name            ILIKE $${base + 3} OR
+        d.config          ILIKE $${base + 4} OR
+        d.dell_customer   ILIKE $${base + 5} OR
+        s.ppid            ILIKE $${base + 6} OR
+        f.code            ILIKE $${base + 7} OR
+        rc.name           ILIKE $${base + 8} OR
+        rcs.name          ILIKE $${base + 9} OR
+        s.host_mac::text  ILIKE $${base + 10} OR
+        s.bmc_mac::text   ILIKE $${base + 11}
       )`;
     });
 

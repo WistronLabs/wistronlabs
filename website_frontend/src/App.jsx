@@ -1,4 +1,4 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 
 import TrackingPage from "./pages/TrackingPage";
 import StationPage from "./pages/StationPage";
@@ -21,10 +21,17 @@ import ShippingPage from "./pages/ShippingPage";
 
 function App() {
   const LOCATION = import.meta.env.VITE_LOCATION;
+  const location = useLocation();
 
   useEffect(() => {
     document.title = `${LOCATION} Dashboard`;
   }, []);
+
+  useEffect(() => {
+    if (location.pathname === "/auth") return;
+    const fullPath = `${location.pathname}${location.search}${location.hash}`;
+    sessionStorage.setItem("postLoginRedirect", fullPath);
+  }, [location.pathname, location.search, location.hash]);
 
   return (
     <>

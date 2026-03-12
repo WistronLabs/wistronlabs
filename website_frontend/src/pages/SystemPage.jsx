@@ -4237,6 +4237,7 @@ function SystemPage() {
               {tab === "history" ? (
                 <>
                   <SearchContainer
+                    key="system-history-search"
                     data={history.map((entry) => ({
                       ...entry,
                       from_location_title: "From",
@@ -4338,6 +4339,7 @@ function SystemPage() {
               ) : (
                 <>
                   <SearchContainer
+                    key="system-logs-search"
                     data={downloads}
                     displayOrder={["name", "date"]}
                     defaultSortBy={"date"}
