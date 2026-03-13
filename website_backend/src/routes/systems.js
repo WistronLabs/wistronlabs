@@ -99,6 +99,43 @@ async function getDirectorySizeBytes(dirPath) {
   return total;
 }
 
+async function hasAnyFileNewerThan(dirPath, threshold) {
+  if (!dirPath || !threshold || Number.isNaN(new Date(threshold).getTime())) {
+    return false;
+  }
+
+  const thresholdMs = new Date(threshold).getTime();
+  const queue = [dirPath];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === "ENOENT") continue;
+      throw err;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = await fs.stat(fullPath);
+        if ((stat?.mtime?.getTime?.() || 0) > thresholdMs) return true;
+      } catch {
+        // ignore unreadable file
+      }
+    }
+  }
+
+  return false;
+}
+
 async function hasL11ArchiveForServiceTagAndRack(logsRoot, serviceTag, rackTag) {
   if (!logsRoot || !serviceTag || !rackTag) return false;
 
@@ -149,6 +186,7 @@ async function getDeletedUserId() {
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
 const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
+const RECEIVED_LOCATION_ID = 1;
 const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
 const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
 const ALLOWED_PHOTO_MIME = new Set([
@@ -2535,8 +2573,9 @@ router.patch(
 router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
   const { service_tag } = req.params;
   const { to_location_id, note } = req.body;
+  const targetLocationId = Number(to_location_id);
 
-  if (!to_location_id || !note) {
+  if (!Number.isInteger(targetLocationId) || !note) {
     return res
       .status(400)
       .json({ error: "to_location_id and note are required" });
@@ -2579,6 +2618,47 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       rev,
     } = rows[0];
 
+    // Moving into a resolved location requires new logs since latest Received.
+    if (RESOLVED_LOCATION_IDS.includes(targetLocationId)) {
+      const latestReceived = await client.query(
+        `
+        SELECT changed_at
+        FROM system_location_history
+        WHERE system_id = $1
+          AND to_location_id = $2
+        ORDER BY changed_at DESC
+        LIMIT 1
+        `,
+        [system_id, RECEIVED_LOCATION_ID],
+      );
+
+      if (!latestReceived.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "Cannot move to resolved location: no Received timestamp found for this system.",
+        });
+      }
+
+      const receivedAt = latestReceived.rows[0].changed_at;
+      const logsRoot = await firstExistingDir([
+        process.env.L10_LOGS_ROOT,
+        path.resolve(process.cwd(), "../l10_logs"),
+        path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+        path.resolve(process.cwd(), "l10_logs"),
+      ]);
+      const stSegment = safeServiceTagSegment(service_tag);
+      const serviceTagDir = logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+      const hasNewFile = await hasAnyFileNewerThan(serviceTagDir, receivedAt);
+
+      if (!hasNewFile) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Add evidence (logs or photos) before resolving this unit.",
+        });
+      }
+    }
+
     //check if system is on a locked pallet
     const onLocked = await systemOnLockedPallet(client, system_id);
     if (onLocked) {
@@ -2590,7 +2670,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
     }
 
     // RMA validation
-    if (RMA_LOCATION_IDS.includes(to_location_id)) {
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
       const missingFields = [];
       if (!factory_id) missingFields.push("factory_id");
       if (!ppid) missingFields.push("ppid");
@@ -2600,7 +2680,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       if (!rev) missingFields.push("rev");
 
       if (missingFields.length) {
-        await client.query("ROLLBACK");
+      await client.query("ROLLBACK");
         return res.status(400).json({
           error: `Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
             ", ",
@@ -2621,14 +2701,14 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
           END
       WHERE id = $3
       `,
-      [to_location_id, from_location_id, system_id, RESOLVED_LOCATION_IDS],
+      [targetLocationId, from_location_id, system_id, RESOLVED_LOCATION_IDS],
     );
 
     // Default to original note
     let finalNote = note;
 
     // Handle RMA-specific logic
-    if (RMA_LOCATION_IDS.includes(to_location_id)) {
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
       const { pallet_number } = await assignSystemToPallet(
         system_id,
         client,
@@ -2651,14 +2731,14 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       `INSERT INTO system_location_history
        (system_id, from_location_id, to_location_id, note, moved_by)
        VALUES ($1, $2, $3, $4, $5)`,
-      [system_id, from_location_id, to_location_id, finalNote, req.user.userId],
+      [system_id, from_location_id, targetLocationId, finalNote, req.user.userId],
     );
 
     await client.query("COMMIT");
     // If we added to an RMA pallet, include it in the response
     return res.json({
       message: "Location updated",
-      ...(RMA_LOCATION_IDS.includes(to_location_id)
+      ...(RMA_LOCATION_IDS.includes(targetLocationId)
         ? { pallet_number: finalNote.split(" - added to ")[1] }
         : {}),
     });

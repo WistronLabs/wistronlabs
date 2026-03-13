@@ -13,19 +13,14 @@ Usage:
   ./l10_test.sh [options]
 
 Options:
-  -t <SERVICE_TAG>                    Set service tag (skip service tag prompt)
   -m                                  Skip backend MAC pull; prompt for MACs manually
   -o                                  Open interactive module picker
   -h                                  Show this help and exit
 
-Notes:
-  - -m and -t cannot be used together.
-
 Examples:
   ./l10_test.sh
-  ./l10_test.sh -st GV7Z0J4
   ./l10_test.sh -m
-  ./l10_test.sh -o -st GV7Z0J4
+  ./l10_test.sh -o
 EOF
 }
 
@@ -61,40 +56,20 @@ fi
 SKIP_BACKEND_MAC_PULL=0
 RUN_OPTION_PICKER=0
 SERVICE_TAG=""
-USED_T_FLAG=0
-
-# Pre-parse only -st <SERVICE_TAG>; keep existing getopts flow for -m/-o.
-remaining_args=()
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    -t|-T)
-      if [[ $# -lt 2 ]]; then
-        err "Flag $1 requires a service tag value."
-        exit 1
-      fi
-      SERVICE_TAG="$2"
-      USED_T_FLAG=1
-      shift 2
-      ;;
-    *)
-      remaining_args+=("$1")
-      shift
-      ;;
-  esac
-done
-set -- "${remaining_args[@]}"
 
 while getopts ":mo" opt; do
   case "$opt" in
     m | M) SKIP_BACKEND_MAC_PULL=1 ;;
     o | O) RUN_OPTION_PICKER=1 ;;
-    *) ;;
+    \?) err "Unknown option: -$OPTARG"; print_help; exit 1 ;;
   esac
 done
 shift $((OPTIND - 1))
 
-if [[ "$USED_T_FLAG" -eq 1 && "$SKIP_BACKEND_MAC_PULL" -eq 1 ]]; then
-  err "-m and -t cannot be used at the same time."
+# Reject any remaining non-option args.
+if [[ $# -gt 0 ]]; then
+  err "Unexpected argument(s): $*"
+  print_help
   exit 1
 fi
 
@@ -185,12 +160,12 @@ fi
 # Second: fetch the body and extract system_service_tag
 CURRENT_REMOTE_SERVICE_TAG=$(curl -s \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')
+SERVICE_TAG="$CURRENT_REMOTE_SERVICE_TAG"
 
-
-if [[ -z "$SERVICE_TAG" ]]; then
-  read -p "Enter Service Tag (e.g., A1B264): " SERVICE_TAG
+if [[ -z "$SERVICE_TAG" || "$SERVICE_TAG" == "null" ]]; then
+    err "No system is currently assigned to Station $SESSION_NUMBER. Assign a unit to this station and re-run."
+    exit 1
 fi
-
 
 
 CONFIG_TMP=$(mktemp)
@@ -223,23 +198,7 @@ if [[ -z "$CONFIG" || "$CONFIG" == "null" ]]; then
   exit 1
 fi
 
-
-
-
-if [[ "$CURRENT_REMOTE_SERVICE_TAG" == "null" ]]; then
-    err "This system has not been assigned to 'L10' on Station $SESSION_NUMBER in the tracking website. Please update its status and re-run this command."
-    exit 1
-fi
-
-if [[ "$CURRENT_REMOTE_SERVICE_TAG" != "$SERVICE_TAG" ]]; then
-    echo ""
-    err "Station $SESSION_NUMBER currently has a system ($CURRENT_REMOTE_SERVICE_TAG) assigned that does not match this system's service tag ($SERVICE_TAG)."
-    echo ""
-    echo "Please either:"
-    echo "  1. Mark $CURRENT_REMOTE_SERVICE_TAG as 'Sent to L11' or 'RMA - [TYPE]' on the tracking website."
-    echo "  2. Move $CURRENT_REMOTE_SERVICE_TAG back to 'In Debug - Wistron'."
-    exit 1
-fi
+echo "INFO - SERVICE TAG FROM STATION $SESSION_NUMBER: $SERVICE_TAG"
 
 
 BMC_MAC=""
@@ -810,6 +769,11 @@ while true; do
     ELAPSED_TIME=$((CURRENT_TIME - HOST_ASSIGNMENT_START_TIME))
 
     if ((ELAPSED_TIME > HOST_ASSIGNMENT_TIMEOUT)); then
+        echo ""
+        echo "INFO - Recording FRU Data"
+        ipmi fru print
+        echo ""
+
         err "It is taking too long to get a HOST IP, please check if the host is on"
         echo "Recommended Action:"
         echo "  - Re-run this l10_test.sh while monitoring the system via BIOS serial to confirm the system is booting correctly."
@@ -857,6 +821,11 @@ while ! ssh_ready; do
   elapsed=$((now - SSH_READY_START))
 
   if (( elapsed > SSH_READY_TIMEOUT )); then
+    echo ""
+    echo "INFO - Recording FRU Data"
+    ipmi fru print
+    echo ""
+
     err "SSH is not fully up (handshake/command) on $HOST_IP after $SSH_READY_TIMEOUT seconds."
     echo "Note: port 22 may be open before sshd is ready (banner exchange timeouts)."
     exit 1
