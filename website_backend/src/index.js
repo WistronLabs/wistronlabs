@@ -13,6 +13,7 @@ app.use(
   cors({
     origin: [
       "http://localhost:5174",
+      "http://100.122.156.49:5173", // IP address of Gios macbook
       "http://tss.wistronlabs.com",
       "http://localhost:5173",
       "https://tss.wistronlabs.com",

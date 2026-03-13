@@ -23,7 +23,7 @@ services:
     depends_on:
       - db
     volumes:
-      - "/var/www/html/l10_logs:/app/l10_logs:ro"
+      - "/var/www/html/l10_logs:/app/l10_logs"
     command: npm start
 
 volumes:

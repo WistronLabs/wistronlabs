@@ -447,6 +447,53 @@ function useApi() {
       body: JSON.stringify({ bmc_mac }),
     });
 
+  const uploadSystemPhoto = async (
+    service_tag,
+    file,
+    authTokenOverride = null,
+  ) => {
+    if (!file) throw new Error("Photo file is required");
+    const form = new FormData();
+    form.append("photo", file);
+
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/photos`,
+      {
+        method: "POST",
+        headers: {
+          ...(authTokenOverride || token
+            ? { Authorization: `Bearer ${authTokenOverride || token}` }
+            : {}),
+        },
+        body: form,
+      },
+    );
+
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json()
+      : await res.text();
+
+    if (!res.ok) {
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/photos failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+    return data;
+  };
+
+  const getSystemPhotos = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/photos`);
+  const getSystemL11LogsFound = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-logs-found`);
+
   const getPallet = (pallet_number) =>
     fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
 
@@ -779,6 +826,9 @@ function useApi() {
     updateHostMac,
     updateBmcMac,
     updateRackServiceTag,
+    uploadSystemPhoto,
+    getSystemPhotos,
+    getSystemL11LogsFound,
   };
 }
 

@@ -61,6 +61,20 @@ export default function useDetailsModal(showToast, onUpdated) {
     return fields.some((f) => !d[f]);
   };
 
+  const formatBytes = (bytes) => {
+    const n = Number(bytes);
+    if (!Number.isFinite(n) || n < 0) return "0 B";
+    if (n < 1024) return `${n} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let value = n / 1024;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    return `${value.toFixed(2)} ${units[idx]}`;
+  };
+
   const handleCopy = async (key) => {
     const value = details?.[key];
     if (!value) return;
@@ -290,6 +304,10 @@ export default function useDetailsModal(showToast, onUpdated) {
                     zone: "utc",
                   }).toFormat("MM/dd/yyyy")}
                 </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="font-medium">System Folder Size:</span>
+                <span>{formatBytes(details.l10_logs_total_size_bytes)}</span>
               </div>
             </div>
           </>
