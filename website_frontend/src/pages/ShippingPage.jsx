@@ -1167,18 +1167,51 @@ export default function ShippingPage() {
     setReleaseErrors({});
 
     // STEP 1: Move systems
-    for (const move of moves) {
-      try {
-        await moveSystemBetweenPallets({
-          service_tag: move.service_tag,
-          from_pallet_number: move.from_pallet_number,
-          to_pallet_number: move.to_pallet_number,
-        });
-      } catch (err) {
+    // Execute in dependency-aware passes:
+    // if a move fails only because destination is full, defer it and retry after
+    // other moves may have freed capacity.
+    let pendingMoves = [...moves];
+    let pass = 0;
+    while (pendingMoves.length > 0) {
+      pass += 1;
+      let progressThisPass = false;
+      const deferred = [];
+
+      for (const move of pendingMoves) {
+        try {
+          await moveSystemBetweenPallets({
+            service_tag: move.service_tag,
+            from_pallet_number: move.from_pallet_number,
+            to_pallet_number: move.to_pallet_number,
+          });
+          progressThisPass = true;
+        } catch (err) {
+          const msg = String(err?.message || "");
+          if (msg.toLowerCase().includes("destination pallet is full")) {
+            deferred.push(move);
+            continue;
+          }
+          showToast(`Move failed for ${move.service_tag}: ${msg}`, "error");
+          return;
+        }
+      }
+
+      if (deferred.length === 0) {
+        break;
+      }
+      if (!progressThisPass) {
+        const blocked = deferred[0];
         showToast(
-          `Move failed for ${move.service_tag}: ${err.message}`,
+          `Move failed for ${blocked.service_tag}: Destination pallet is full (max 9 systems)`,
           "error",
         );
+        return;
+      }
+      pendingMoves = deferred;
+
+      // Safety cap (should never hit under normal conditions).
+      if (pass > moves.length + 2) {
+        showToast("Move failed: could not resolve pallet move ordering", "error");
         return;
       }
     }

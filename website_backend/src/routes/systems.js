@@ -34,6 +34,7 @@
 const express = require("express");
 const fs = require("fs/promises");
 const path = require("path");
+const multer = require("multer");
 const db = require("../db");
 const { authenticateToken } = require("./auth");
 const { buildWhereClause } = require("../utils/buildWhereClause");
@@ -41,6 +42,7 @@ const { systemOnLockedPallet } = require("../utils/systemOnLockedPallet");
 const { generatePalletNumber } = require("../utils/generatePalletNumber");
 const { ensureAdmin } = require("../utils/ensureAdmin");
 const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
+const { getServerTimeZone } = require("../utils/serverTimeZone");
 
 const NodeCache = require("node-cache");
 const snapshotCache = new NodeCache({ stdTTL: 8 * 60 * 60 }); // 8 hours
@@ -64,14 +66,85 @@ async function firstExistingDir(candidates = []) {
   return null;
 }
 
-async function hasL11ArchiveForServiceTag(logsRoot, serviceTag) {
-  if (!logsRoot || !serviceTag) return false;
+async function getDirectorySizeBytes(dirPath) {
+  if (!dirPath) return 0;
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return 0;
+    throw err;
+  }
+
+  let total = 0;
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isFile()) {
+      try {
+        const stat = await fs.stat(fullPath);
+        total += stat.size || 0;
+      } catch {
+        // ignore unreadable file
+      }
+      continue;
+    }
+    if (entry.isDirectory()) {
+      try {
+        total += await getDirectorySizeBytes(fullPath);
+      } catch {
+        // ignore unreadable directory
+      }
+    }
+  }
+  return total;
+}
+
+async function hasAnyFileNewerThan(dirPath, threshold) {
+  if (!dirPath || !threshold || Number.isNaN(new Date(threshold).getTime())) {
+    return false;
+  }
+
+  const thresholdMs = new Date(threshold).getTime();
+  const queue = [dirPath];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === "ENOENT") continue;
+      throw err;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = await fs.stat(fullPath);
+        if ((stat?.mtime?.getTime?.() || 0) > thresholdMs) return true;
+      } catch {
+        // ignore unreadable file
+      }
+    }
+  }
+
+  return false;
+}
+
+async function hasL11ArchiveForServiceTagAndRack(logsRoot, serviceTag, rackTag) {
+  if (!logsRoot || !serviceTag || !rackTag) return false;
 
   const st = String(serviceTag || "").trim();
-  if (!st) return false;
+  const rack = String(rackTag || "").trim();
+  if (!st || !rack) return false;
 
   const matcher = new RegExp(
-    `^L11_logs_ST_${escapeRegExp(st)}_RT_[^./]+\\.tgz$`,
+    `^L11_logs_ST_${escapeRegExp(st)}_RT_${escapeRegExp(rack)}\\.tgz$`,
     "i",
   );
   const serviceTagDir = path.join(logsRoot, st);
@@ -113,6 +186,27 @@ async function getDeletedUserId() {
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
 const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
+const RECEIVED_LOCATION_ID = 1;
+const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
+const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
+const ALLOWED_PHOTO_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PHOTO_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (!ALLOWED_PHOTO_MIME.has(file.mimetype)) {
+      return cb(new Error("Unsupported photo type"));
+    }
+    cb(null, true);
+  },
+});
 
 function requireMac12Hex(value, fieldName = "mac") {
   const s = String(value ?? "")
@@ -126,6 +220,49 @@ function requireMac12Hex(value, fieldName = "mac") {
     );
   }
   return s;
+}
+
+function safeServiceTagSegment(v) {
+  return String(v || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "");
+}
+
+function extensionFromMime(mime) {
+  switch ((mime || "").toLowerCase()) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    case "image/heic":
+      return ".heic";
+    case "image/heif":
+      return ".heif";
+    default:
+      return "";
+  }
+}
+
+function sanitizeBaseName(name) {
+  const raw = String(name || "").trim().replace(/\.[^/.]+$/, "");
+  const cleaned = raw
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return cleaned || "photo";
+}
+
+function timestampSuffix(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
 }
 
 function parseAndValidatePPID(ppidRaw) {
@@ -702,19 +839,20 @@ router.get("/", async (req, res) => {
       //            1  2  3  4  5  6   7   8   9   10  11  12
       // fields: service_tag, issue, location, dpn, dpn.config, dell_customer,
       //         ppid, factory_code, rc.name, rcs.name, host_mac, bmc_mac
+      const base = params.length - 11;
       return `(
-        s.service_tag ILIKE $${params.length - 9} OR
-        s.issue       ILIKE $${params.length - 8} OR
-        l.name        ILIKE $${params.length - 7} OR
-        d.name        ILIKE $${params.length - 6} OR
-        d.config      ILIKE $${params.length - 5} OR
-        d.dell_customer ILIKE $${params.length - 4} OR
-        s.ppid        ILIKE $${params.length - 3} OR
-        f.code        ILIKE $${params.length - 2} OR
-        rc.name       ILIKE $${params.length - 1} OR
-        rcs.name      ILIKE $${params.length - 0}
-        s.host_mac::text ILIKE $${params.length - 1} OR
-        s.bmc_mac::text  ILIKE $${params.length - 0}
+        s.service_tag     ILIKE $${base} OR
+        s.issue           ILIKE $${base + 1} OR
+        l.name            ILIKE $${base + 2} OR
+        d.name            ILIKE $${base + 3} OR
+        d.config          ILIKE $${base + 4} OR
+        d.dell_customer   ILIKE $${base + 5} OR
+        s.ppid            ILIKE $${base + 6} OR
+        f.code            ILIKE $${base + 7} OR
+        rc.name           ILIKE $${base + 8} OR
+        rcs.name          ILIKE $${base + 9} OR
+        s.host_mac::text  ILIKE $${base + 10} OR
+        s.bmc_mac::text   ILIKE $${base + 11}
       )`;
     });
 
@@ -1273,15 +1411,19 @@ router.get("/snapshot", async (req, res) => {
       path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
       path.resolve(process.cwd(), "l10_logs"),
     ]);
-    const l11LogFoundByServiceTag = new Map();
+    const l11LogFoundByServiceTagAndRack = new Map();
     await Promise.all(
       rows.map(async (r) => {
         const st = String(r.service_tag || "")
           .trim()
           .toUpperCase();
-        if (!st || l11LogFoundByServiceTag.has(st)) return;
-        const found = await hasL11ArchiveForServiceTag(logsRoot, st);
-        l11LogFoundByServiceTag.set(st, found);
+        const rack = String(r.rack_id || "")
+          .trim()
+          .toUpperCase();
+        const key = `${st}::${rack}`;
+        if (!st || !rack || l11LogFoundByServiceTagAndRack.has(key)) return;
+        const found = await hasL11ArchiveForServiceTagAndRack(logsRoot, st, rack);
+        l11LogFoundByServiceTagAndRack.set(key, found);
       }),
     );
 
@@ -1359,10 +1501,12 @@ router.get("/snapshot", async (req, res) => {
         rootCauseText ?? "",
         unitPartsText ?? "",
         tagsText ?? "",
-        l11LogFoundByServiceTag.get(
-          String(r.service_tag || "")
+        l11LogFoundByServiceTagAndRack.get(
+          `${String(r.service_tag || "")
             .trim()
-            .toUpperCase(),
+            .toUpperCase()}::${String(r.rack_id || "")
+            .trim()
+            .toUpperCase()}`,
         )
           ? "yes"
           : "no",
@@ -2072,7 +2216,21 @@ router.get("/:service_tag", async (req, res) => {
       return res.status(404).json({ error: "System not found" });
     }
 
-    res.json(result.rows[0]);
+    const details = result.rows[0];
+    const logsRoot = await firstExistingDir([
+      process.env.L10_LOGS_ROOT,
+      path.resolve(process.cwd(), "../l10_logs"),
+      path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+      path.resolve(process.cwd(), "l10_logs"),
+    ]);
+    const stSegment = safeServiceTagSegment(details?.service_tag || service_tag);
+    const logsDir = logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+    const l10LogsTotalSizeBytes = await getDirectorySizeBytes(logsDir);
+
+    res.json({
+      ...details,
+      l10_logs_total_size_bytes: l10LogsTotalSizeBytes,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Failed to fetch system" });
@@ -2148,6 +2306,172 @@ router.patch("/:service_tag/bmc_mac", authenticateToken, async (req, res) => {
     return res.status(500).json({ error: "Failed to update bmc_mac" });
   }
 });
+
+router.get("/:service_tag/photos", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const serverZone = getServerTimeZone();
+    const formatLocal = (date) =>
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: serverZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      }).format(date);
+
+    const photosDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag, "photos");
+    let entries = [];
+    try {
+      entries = await fs.readdir(photosDir, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        return res.json({ data: [] });
+      }
+      throw err;
+    }
+
+    const files = await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            entry.isFile() && /\.(jpe?g|png|webp|heic|heif)$/i.test(entry.name),
+        )
+        .map(async (entry) => {
+          const fullPath = path.join(photosDir, entry.name);
+          const stat = await fs.stat(fullPath);
+          return {
+            name: entry.name,
+            modified_at: stat.mtime.toISOString(),
+            modified_at_local: formatLocal(stat.mtime),
+            relative_path: `/l10_logs/${serviceTag}/photos/${encodeURIComponent(entry.name)}`,
+          };
+        }),
+    );
+
+    files.sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+    return res.json({ data: files });
+  } catch (err) {
+    console.error("Failed to list photos:", err);
+    return res.status(500).json({ error: "Failed to list photos" });
+  }
+});
+
+router.get("/:service_tag/l11-logs-found", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      [serviceTag],
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const rackServiceTag = String(rows[0].rack_service_tag || "")
+      .trim()
+      .toUpperCase();
+    if (!rackServiceTag) {
+      return res.json({
+        service_tag: serviceTag,
+        rack_service_tag: "",
+        found: false,
+      });
+    }
+
+    const logsRoot = await firstExistingDir([
+      process.env.L10_LOGS_ROOT,
+      path.resolve(process.cwd(), "../l10_logs"),
+      path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+      path.resolve(process.cwd(), "l10_logs"),
+    ]);
+    const found = await hasL11ArchiveForServiceTagAndRack(
+      logsRoot,
+      serviceTag,
+      rackServiceTag,
+    );
+    return res.json({
+      service_tag: serviceTag,
+      rack_service_tag: rackServiceTag,
+      found,
+    });
+  } catch (err) {
+    console.error("Failed to evaluate l11-logs-found:", err);
+    return res.status(500).json({ error: "Failed to evaluate l11-logs-found" });
+  }
+});
+
+router.post(
+  "/:service_tag/photos",
+  authenticateToken,
+  (req, res, next) => {
+    photoUpload.single("photo")(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          error: `Photo exceeds ${Math.floor(MAX_PHOTO_BYTES / (1024 * 1024))}MB limit`,
+        });
+      }
+      return res.status(400).json({ error: err.message || "Invalid photo upload" });
+    });
+  },
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    const file = req.file;
+
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+    if (!file) {
+      return res.status(400).json({ error: "photo is required" });
+    }
+    if (!ALLOWED_PHOTO_MIME.has(file.mimetype)) {
+      return res.status(400).json({ error: "Unsupported photo type" });
+    }
+
+    try {
+      const { rows } = await db.query(
+        `SELECT 1 FROM system WHERE service_tag = $1 LIMIT 1`,
+        [serviceTag],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const photosDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag, "photos");
+      await fs.mkdir(photosDir, { recursive: true });
+
+      const ext =
+        extensionFromMime(file.mimetype) || path.extname(file.originalname || "");
+      const safeExt = ext && /^[.][a-zA-Z0-9]+$/.test(ext) ? ext.toLowerCase() : ".jpg";
+      const base = sanitizeBaseName(file.originalname);
+      const fileName = `${base}_${timestampSuffix()}${safeExt}`;
+      const fullPath = path.join(photosDir, fileName);
+      await fs.writeFile(fullPath, file.buffer);
+
+      return res.status(201).json({
+        message: "Photo uploaded",
+        service_tag: serviceTag,
+        file_name: fileName,
+        relative_path: `/l10_logs/${serviceTag}/photos/${fileName}`,
+      });
+    } catch (err) {
+      console.error("Photo upload failed:", err);
+      return res.status(500).json({ error: "Failed to upload photo" });
+    }
+  },
+);
 
 // PATCH /api/v1/systems/:service_tag/root-cause
 router.patch(
@@ -2249,8 +2573,9 @@ router.patch(
 router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
   const { service_tag } = req.params;
   const { to_location_id, note } = req.body;
+  const targetLocationId = Number(to_location_id);
 
-  if (!to_location_id || !note) {
+  if (!Number.isInteger(targetLocationId) || !note) {
     return res
       .status(400)
       .json({ error: "to_location_id and note are required" });
@@ -2293,6 +2618,47 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       rev,
     } = rows[0];
 
+    // Moving into a resolved location requires new logs since latest Received.
+    if (RESOLVED_LOCATION_IDS.includes(targetLocationId)) {
+      const latestReceived = await client.query(
+        `
+        SELECT changed_at
+        FROM system_location_history
+        WHERE system_id = $1
+          AND to_location_id = $2
+        ORDER BY changed_at DESC
+        LIMIT 1
+        `,
+        [system_id, RECEIVED_LOCATION_ID],
+      );
+
+      if (!latestReceived.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "Cannot move to resolved location: no Received timestamp found for this system.",
+        });
+      }
+
+      const receivedAt = latestReceived.rows[0].changed_at;
+      const logsRoot = await firstExistingDir([
+        process.env.L10_LOGS_ROOT,
+        path.resolve(process.cwd(), "../l10_logs"),
+        path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+        path.resolve(process.cwd(), "l10_logs"),
+      ]);
+      const stSegment = safeServiceTagSegment(service_tag);
+      const serviceTagDir = logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+      const hasNewFile = await hasAnyFileNewerThan(serviceTagDir, receivedAt);
+
+      if (!hasNewFile) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Add evidence (logs or photos) before resolving this unit.",
+        });
+      }
+    }
+
     //check if system is on a locked pallet
     const onLocked = await systemOnLockedPallet(client, system_id);
     if (onLocked) {
@@ -2304,7 +2670,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
     }
 
     // RMA validation
-    if (RMA_LOCATION_IDS.includes(to_location_id)) {
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
       const missingFields = [];
       if (!factory_id) missingFields.push("factory_id");
       if (!ppid) missingFields.push("ppid");
@@ -2314,7 +2680,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       if (!rev) missingFields.push("rev");
 
       if (missingFields.length) {
-        await client.query("ROLLBACK");
+      await client.query("ROLLBACK");
         return res.status(400).json({
           error: `Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
             ", ",
@@ -2335,14 +2701,14 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
           END
       WHERE id = $3
       `,
-      [to_location_id, from_location_id, system_id, RESOLVED_LOCATION_IDS],
+      [targetLocationId, from_location_id, system_id, RESOLVED_LOCATION_IDS],
     );
 
     // Default to original note
     let finalNote = note;
 
     // Handle RMA-specific logic
-    if (RMA_LOCATION_IDS.includes(to_location_id)) {
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
       const { pallet_number } = await assignSystemToPallet(
         system_id,
         client,
@@ -2365,14 +2731,14 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       `INSERT INTO system_location_history
        (system_id, from_location_id, to_location_id, note, moved_by)
        VALUES ($1, $2, $3, $4, $5)`,
-      [system_id, from_location_id, to_location_id, finalNote, req.user.userId],
+      [system_id, from_location_id, targetLocationId, finalNote, req.user.userId],
     );
 
     await client.query("COMMIT");
     // If we added to an RMA pallet, include it in the response
     return res.json({
       message: "Location updated",
-      ...(RMA_LOCATION_IDS.includes(to_location_id)
+      ...(RMA_LOCATION_IDS.includes(targetLocationId)
         ? { pallet_number: finalNote.split(" - added to ")[1] }
         : {}),
     });

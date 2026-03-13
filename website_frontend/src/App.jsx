@@ -1,4 +1,4 @@
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 
 import TrackingPage from "./pages/TrackingPage";
 import StationPage from "./pages/StationPage";
@@ -12,6 +12,7 @@ import ResetPassword from "./pages/ResetPassword";
 import HistoryPage from "./pages/HistoryPage";
 import AdminPage from "./pages/AdminPage";
 import PartsPage from "./pages/PartsPage";
+import PhotoUploadPage from "./pages/PhotoUploadPage";
 
 import ScrollToTop from "./helpers/ScrollToTop";
 
@@ -21,10 +22,17 @@ import ShippingPage from "./pages/ShippingPage";
 
 function App() {
   const LOCATION = import.meta.env.VITE_LOCATION;
+  const location = useLocation();
 
   useEffect(() => {
     document.title = `${LOCATION} Dashboard`;
   }, []);
+
+  useEffect(() => {
+    if (location.pathname === "/auth") return;
+    const fullPath = `${location.pathname}${location.search}${location.hash}`;
+    sessionStorage.setItem("postLoginRedirect", fullPath);
+  }, [location.pathname, location.search, location.hash]);
 
   return (
     <>
@@ -38,6 +46,7 @@ function App() {
           <Route path="/shipping" element={<ShippingPage />} />
           <Route path="/:serviceTag" element={<SystemPage />} />
           <Route path="/parts" element={<PartsPage />} />
+          <Route path="/photo-upload/:serviceTag" element={<PhotoUploadPage />} />
           <Route
             path="/user"
             element={

@@ -1,9 +1,10 @@
-import { useEffect, useState, useContext, useMemo } from "react";
+import { useEffect, useState, useContext, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Select, { components as SelectComponents } from "react-select";
 import { Link } from "react-router-dom";
 
 import { DateTime } from "luxon";
+import { QRCodeSVG } from "qrcode.react";
 
 import Flowchart from "../components/Flowchart";
 import { useParams } from "react-router-dom";
@@ -44,6 +45,62 @@ import {
   filterPartOption,
 } from "../utils/partSelectHelpers.js";
 
+async function parseDirectoryListing(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Directory fetch failed: ${res.status}`);
+  const text = await res.text();
+  const parser = new DOMParser();
+  const htmlDoc = parser.parseFromString(text, "text/html");
+  const links = htmlDoc.querySelectorAll("a[href]");
+  const skipNames = new Set([
+    "name",
+    "last modified",
+    "size",
+    "description",
+    "parent directory",
+  ]);
+  const seen = new Set();
+  const items = [];
+  links.forEach((a) => {
+    const href = (a.getAttribute("href") || "").trim();
+    const name = (a.textContent || "").trim().replace(/\/$/, "");
+    if (!href || !name) return;
+    if (href === "../" || href.startsWith("?") || href.startsWith("#")) return;
+    if (skipNames.has(name.toLowerCase())) return;
+
+    let rawDate = "";
+    const row = a.closest("tr");
+    if (row) {
+      const cols = row.querySelectorAll("td");
+      if (cols.length >= 3) rawDate = (cols[2]?.textContent || "").trim();
+    }
+
+    const absHref = new URL(href, url).href;
+    if (seen.has(absHref)) return;
+    seen.add(absHref);
+
+    items.push({
+      name,
+      href,
+      rawDate,
+      isDir: /\/$/.test(href),
+      absHref,
+    });
+  });
+  return items;
+}
+
+function formatListingDate(rawDate, serverZone) {
+  const modLux = DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm:ss", {
+    zone: "utc",
+  }).isValid
+    ? DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm:ss", { zone: "utc" })
+    : DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm", { zone: "utc" });
+  return modLux.isValid
+    ? formatDateHumanReadable(new Date(modLux.toISO()), serverZone)
+    : rawDate;
+}
+
 function SystemPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
 
@@ -66,7 +123,13 @@ function SystemPage() {
   const [selectedStation, setSelectedStation] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [downloads, setDownloads] = useState([]);
+  const [photos, setPhotos] = useState([]);
+  const [hasLogsTab, setHasLogsTab] = useState(false);
+  const [hasPhotosTab, setHasPhotosTab] = useState(false);
   const [hasL11RackLogs, setHasL11RackLogs] = useState(false);
+  const [showPhotoMenu, setShowPhotoMenu] = useState(false);
+  const [showPhoneQr, setShowPhoneQr] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [releasedPallets, setreleasedPallets] = useState([]);
 
   const [serverTimeZone, setServerTimeZone] = useState("UTC");
@@ -88,6 +151,9 @@ function SystemPage() {
 
   const [tab, setTab] = useState("history");
   const [logsDir, setLogsDir] = useState(""); // e.g. "2025-09-25/"
+  const [logsRefreshNonce, setLogsRefreshNonce] = useState(0);
+  const photoMenuRef = useRef(null);
+  const photoInputRef = useRef(null);
 
   const { confirmPrint, ConfirPrintmModal } = usePrintConfirm();
   const { confirmPrintPendingParts, ConfirPrintmModalPendingParts } =
@@ -146,6 +212,13 @@ function SystemPage() {
   );
 
   const { token } = useContext(AuthContext);
+  const canAddPhoto = !isResolved && !!token;
+  const qrPhotoUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/photo-upload/${encodeURIComponent(
+          serviceTag || "",
+        )}${token ? `?t=${encodeURIComponent(token)}` : ""}`
+      : "";
   const baseUrl =
     import.meta.env.MODE === "development"
       ? FRONTEND_URL // is "/l10_logs/" in development
@@ -177,6 +250,9 @@ function SystemPage() {
     getSystemTags,
     addSystemTag,
     removeSystemTag,
+    uploadSystemPhoto,
+    getSystemPhotos,
+    getSystemL11LogsFound,
   } = useApi();
 
   const { confirm, ConfirmDialog } = useConfirm();
@@ -1167,103 +1243,190 @@ function SystemPage() {
   ]);
 
   useEffect(() => {
-    // fetch downloads once
-    const fetchDownloads = async () => {
+    const loadServerTimeZone = async () => {
       try {
-        const { zone: serverZone = "UTC" } = await getServerTime();
-        setServerTimeZone(serverZone);
-        let foundL11RackArchive = false;
+        const { zone = "UTC" } = await getServerTime();
+        setServerTimeZone(zone);
+      } catch {
+        setServerTimeZone("UTC");
+      }
+    };
+    loadServerTimeZone();
+  }, [getServerTime]);
 
-        const dirPart = logsDir
-          ? logsDir.replace(/^\//, "").replace(/\/?$/, "/")
-          : "";
+  useEffect(() => {
+    const loadRootAndPhotos = async () => {
+      try {
         const root = `${baseUrl.replace(/\/$/, "")}/l10_logs/${serviceTag}/`;
-        const link = root + dirPart;
-        const res = await fetch(link);
-        const text = await res.text();
-        const parser = new DOMParser();
-        const htmlDoc = parser.parseFromString(text, "text/html");
-        const rows = htmlDoc.querySelectorAll("tr");
-        const entries = [];
-        rows.forEach((row, rowIndex) => {
-          if (rowIndex >= 3 && rowIndex < rows.length - 1) {
-            let rawDate = "";
-            let name = "";
-            let href = "";
-            const cols = row.querySelectorAll("td");
-            cols.forEach((col, colIndex) => {
-              // get folder name and href
-              if (colIndex == 1) {
-                name = Array.from(col.querySelectorAll("a"))[0]
-                  .textContent.trim()
-                  .replace(/\/$/, "");
-                href = Array.from(col.querySelectorAll("a"))[0].getAttribute(
-                  "href",
-                );
-                if (href === "../") return; // skip parent directory row
-              }
 
-              // get raw date data
-              if (colIndex == 2) {
-                rawDate = col.textContent.trim();
-              }
-            });
+        let rootItems = [];
+        try {
+          rootItems = await parseDirectoryListing(root);
+        } catch {
+          rootItems = [];
+        }
+        const rootLogEntries = rootItems.filter(
+          (i) => i.name.toLowerCase() !== "photos",
+        );
+        setHasLogsTab(rootLogEntries.length > 0);
 
-            const modLux = DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm:ss", {
-              zone: "utc",
-            }).isValid
-              ? DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm:ss", {
-                  zone: "utc",
-                })
-              : DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm", {
-                  zone: "utc",
-                });
+        let photoItems = [];
+        try {
+          const photoRes = await getSystemPhotos(serviceTag);
+          photoItems = Array.isArray(photoRes?.data) ? photoRes.data : [];
+        } catch {
+          photoItems = [];
+        }
+        setPhotos(
+          photoItems.map((i) => ({
+            name: i.name,
+            href: `${baseUrl.replace(/\/$/, "")}${i.relative_path}`,
+            name_title: "Photo",
+            date:
+              i.modified_at_local ||
+              (i.modified_at
+                ? formatDateHumanReadable(i.modified_at, serverTimeZone)
+                : ""),
+            date_title: "Date Modified",
+          })),
+        );
+        setHasPhotosTab(photoItems.length > 0);
 
-            const formattedDate = modLux.isValid
-              ? formatDateHumanReadable(new Date(modLux.toISO()), serverZone)
-              : rawDate; // fallback if parsing fails
-
-            const nameLux = DateTime.fromISO(name, { zone: "utc" });
-            const nameLocalCompact = nameLux.isValid
-              ? `${nameLux.setZone(serverZone).toFormat("MM/dd/yy hh:mm")}${nameLux
-                  .setZone(serverZone)
-                  .toFormat("a")
-                  .toUpperCase()}`
-              : name;
-            const l11RackArchiveMatch = name.match(
-              /^L11_logs_ST_[^_]+_RT_([^./]+)\.tgz$/i,
-            );
-            if (l11RackArchiveMatch) foundL11RackArchive = true;
-            const keepOriginalLabel =
-              !nameLux.isValid || /^L11/i.test(name) || /^L10\s+Test/i.test(name);
-            const displayName = l11RackArchiveMatch
-              ? `L11 Logs - Rack ${l11RackArchiveMatch[1]}`
-              : keepOriginalLabel
-                ? name
-                : `L10 Test ${nameLocalCompact}`;
-            //push entry
-            entries.push({
-              name: displayName,
-              href: new URL(href, link).href, // RESOLVE robustly (handles absolute or relative)
-              name_title: "File Name",
-              date: formattedDate,
-              date_title: "Date Modified",
-            });
-          }
-        });
-        setDownloads(entries);
-        setHasL11RackLogs(foundL11RackArchive);
+        try {
+          const l11 = await getSystemL11LogsFound(serviceTag);
+          setHasL11RackLogs(!!l11?.found);
+        } catch {
+          setHasL11RackLogs(false);
+        }
       } catch (err) {
-        console.error("Failed to fetch downloads:", err);
+        console.error("Failed to fetch root/photos:", err);
+        setPhotos([]);
+        setHasLogsTab(false);
+        setHasPhotosTab(false);
         setHasL11RackLogs(false);
       }
     };
-    fetchDownloads();
-  }, [baseUrl, serviceTag, logsDir]);
+    loadRootAndPhotos();
+  }, [
+    baseUrl,
+    serviceTag,
+    getSystemPhotos,
+    getSystemL11LogsFound,
+    logsRefreshNonce,
+    serverTimeZone,
+  ]);
+
+  useEffect(() => {
+    const loadDirectoryLogs = async () => {
+      try {
+        const root = `${baseUrl.replace(/\/$/, "")}/l10_logs/${serviceTag}/`;
+        const dirPart = logsDir
+          ? logsDir.replace(/^\//, "").replace(/\/?$/, "/")
+          : "";
+        const logsUrl = root + dirPart;
+
+        let logItems = [];
+        try {
+          logItems = await parseDirectoryListing(logsUrl);
+        } catch {
+          logItems = [];
+        }
+        const visibleLogItems = logItems.filter(
+          (i) => i.name.toLowerCase() !== "photos",
+        );
+
+        const entries = visibleLogItems.map((i) => {
+          const formattedDate = formatListingDate(i.rawDate, serverTimeZone);
+          const nameLux = DateTime.fromISO(i.name, { zone: "utc" });
+          const nameLocalCompact = nameLux.isValid
+            ? `${nameLux.setZone(serverTimeZone).toFormat("MM/dd/yy hh:mm")}${nameLux
+                .setZone(serverTimeZone)
+                .toFormat("a")
+                .toUpperCase()}`
+            : i.name;
+          const l11RackArchiveMatch = i.name.match(
+            /^L11_logs_ST_[^_]+_RT_([^./]+)\.tgz$/i,
+          );
+          const keepOriginalLabel =
+            !nameLux.isValid ||
+            /^L11/i.test(i.name) ||
+            /^L10\s+Test/i.test(i.name);
+          const displayName = l11RackArchiveMatch
+            ? `L11 Logs - Rack ${l11RackArchiveMatch[1]}`
+            : keepOriginalLabel
+              ? i.name
+              : `L10 Test ${nameLocalCompact}`;
+          return {
+            name: displayName,
+            href: i.absHref,
+            name_title: "File Name",
+            date: formattedDate,
+            date_title: "Date Modified",
+          };
+        });
+
+        setDownloads(entries);
+      } catch (err) {
+        console.error("Failed to fetch logs directory:", err);
+        setDownloads([]);
+      }
+    };
+    loadDirectoryLogs();
+  }, [baseUrl, serviceTag, logsDir, serverTimeZone, logsRefreshNonce]);
 
   useEffect(() => {
     fetchData();
   }, [serviceTag]);
+
+  useEffect(() => {
+    if (tab === "logs" && !hasLogsTab) {
+      setTab(hasPhotosTab ? "photos" : "history");
+    } else if (tab === "photos" && !hasPhotosTab) {
+      setTab(hasLogsTab ? "logs" : "history");
+    }
+  }, [tab, hasLogsTab, hasPhotosTab]);
+
+  useEffect(() => {
+    const onDocClick = (e) => {
+      if (!photoMenuRef.current) return;
+      if (!photoMenuRef.current.contains(e.target)) {
+        setShowPhotoMenu(false);
+        setShowPhoneQr(false);
+      }
+    };
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setShowPhotoMenu(false);
+        setShowPhoneQr(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+
+  const handleLocalPhotoPick = async (evt) => {
+    const file = evt?.target?.files?.[0];
+    evt.target.value = "";
+    if (!file) return;
+    if (!canAddPhoto) return;
+    setUploadingPhoto(true);
+    try {
+      await uploadSystemPhoto(serviceTag, file);
+      setShowPhotoMenu(false);
+      setShowPhoneQr(false);
+      showToast("Photo uploaded", "success", 2500, "bottom-right");
+      setLogsRefreshNonce((n) => n + 1);
+    } catch (e) {
+      const msg = e?.body?.error || e?.message || "Failed to upload photo";
+      showToast(msg, "error", 3000, "bottom-right");
+    } finally {
+      setUploadingPhoto(false);
+    }
+  };
 
   // Will the unit still contain any GOOD parts after this submit?
   const willHaveGoodAfterSubmit = useMemo(() => {
@@ -2505,6 +2668,16 @@ function SystemPage() {
       <ConfirPrintmModal />
       <ConfirPrintmModalPendingParts />
       <ConfirPrintmModalL11 />
+      {uploadingPhoto && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/35 backdrop-blur-sm">
+          <div className="bg-white rounded-xl shadow-lg border border-gray-200 px-6 py-5 flex items-center gap-3">
+            <div className="h-5 w-5 rounded-full border-2 border-blue-600 border-t-transparent animate-spin" />
+            <div className="text-sm text-gray-800 font-medium">
+              Uploading photo. Please do not leave this page.
+            </div>
+          </div>
+        </div>
+      )}
       {showAllTagsModal && (
         <AllTagsModal
           tags={systemTags}
@@ -4171,13 +4344,72 @@ function SystemPage() {
                   />
                 </div>
 
-                <button
-                  type="submit"
-                  disabled={submitting || isResolved}
-                  className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition"
-                >
-                  {submitting ? "Submitting…" : "Update Location"}
-                </button>
+                <div className="w-full sm:w-auto flex flex-wrap items-start gap-2">
+                  <button
+                    type="submit"
+                    disabled={submitting || isResolved}
+                    className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition"
+                  >
+                    {submitting ? "Submitting…" : "Update Location"}
+                  </button>
+
+                  <div className="relative" ref={photoMenuRef}>
+                    <button
+                      type="button"
+                      disabled={!canAddPhoto || uploadingPhoto}
+                      onClick={() => {
+                        setShowPhotoMenu((v) => {
+                          const next = !v;
+                          if (!next) setShowPhoneQr(false);
+                          return next;
+                        });
+                      }}
+                      className="w-full sm:w-auto bg-gray-600 hover:bg-gray-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition"
+                    >
+                      {uploadingPhoto ? "Uploading…" : "Add Support Photo"}
+                    </button>
+                    {showPhotoMenu && (
+                      <div className="absolute z-30 mt-2 w-80 max-w-[85vw] rounded-lg border border-gray-200 bg-white shadow-lg p-3 space-y-3">
+                        <button
+                          type="button"
+                          onClick={() => photoInputRef.current?.click()}
+                          className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800"
+                        >
+                          Upload from this device
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowPhoneQr((v) => !v)}
+                          className={`w-full text-left px-3 py-2 rounded text-sm font-medium ${
+                            showPhoneQr
+                              ? "bg-blue-600 text-white hover:bg-blue-700"
+                              : "bg-gray-100 text-gray-800 hover:bg-gray-200"
+                          }`}
+                        >
+                          Use Mobile Device
+                        </button>
+                        <input
+                          ref={photoInputRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                          className="hidden"
+                          onChange={handleLocalPhotoPick}
+                        />
+
+                        {showPhoneQr && (
+                          <div className="pt-1 border-t border-gray-200">
+                            <div className="text-xs font-medium text-gray-600 mb-2">
+                              Scan QR code with mobile device
+                            </div>
+                            <div className="flex justify-center">
+                              <QRCodeSVG value={qrPhotoUrl} size={152} />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
                 {isRMA ? (
                   isInPalletNumber ? (
@@ -4222,21 +4454,36 @@ function SystemPage() {
                 >
                   Location History
                 </button>
-                <button
-                  onClick={() => setTab("logs")}
-                  className={`px-4 py-2 -mb-px  border-b-2 text-3xl font-bold ${
-                    tab === "logs"
-                      ? "border-blue-600 text-blue-600 "
-                      : "border-transparent text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Logs
-                </button>
+                {hasLogsTab && (
+                  <button
+                    onClick={() => setTab("logs")}
+                    className={`px-4 py-2 -mb-px  border-b-2 text-3xl font-bold ${
+                      tab === "logs"
+                        ? "border-blue-600 text-blue-600 "
+                        : "border-transparent text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    Logs
+                  </button>
+                )}
+                {hasPhotosTab && (
+                  <button
+                    onClick={() => setTab("photos")}
+                    className={`px-4 py-2 -mb-px  border-b-2 text-3xl font-bold ${
+                      tab === "photos"
+                        ? "border-blue-600 text-blue-600 "
+                        : "border-transparent text-gray-500 hover:text-gray-700"
+                    }`}
+                  >
+                    Support Photos
+                  </button>
+                )}
               </div>
 
               {tab === "history" ? (
                 <>
                   <SearchContainer
+                    key="system-history-search"
                     data={history.map((entry) => ({
                       ...entry,
                       from_location_title: "From",
@@ -4335,9 +4582,10 @@ function SystemPage() {
                     }}
                   />
                 </>
-              ) : (
+              ) : tab === "logs" ? (
                 <>
                   <SearchContainer
+                    key="system-logs-search"
                     data={downloads}
                     displayOrder={["name", "date"]}
                     defaultSortBy={"date"}
@@ -4357,6 +4605,23 @@ function SystemPage() {
                     )}/l10_logs/${serviceTag}/`}
                     currentDir={logsDir}
                     onDirChange={setLogsDir}
+                  />
+                </>
+              ) : (
+                <>
+                  <SearchContainer
+                    key="system-photos-search"
+                    data={photos}
+                    displayOrder={["name", "date"]}
+                    defaultSortBy={"date"}
+                    defaultSortAsc={false}
+                    fieldStyles={{
+                      name: "text-blue-600 font-medium",
+                      date: "text-gray-500 text-sm",
+                    }}
+                    linkType="external"
+                    visibleFields={isMobile ? ["name", "date"] : ["name", "date"]}
+                    allowSearch={false}
                   />
                 </>
               )}

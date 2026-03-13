@@ -4,7 +4,7 @@ import { AuthContext } from "../context/AuthContext";
 const BASE_URL = import.meta.env.VITE_BACKEND_URL;
 
 function useApi() {
-  const { token } = useContext(AuthContext);
+  const { token, refreshToken } = useContext(AuthContext);
 
   function getServerUTCOffset(serverTimeString) {
     // Parse server time string
@@ -30,22 +30,37 @@ function useApi() {
   }
 
   async function fetchJSON(endpoint, options = {}) {
-    const headers = {
-      ...(options.headers || {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    const request = async (authToken) => {
+      const headers = {
+        ...(options.headers || {}),
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      };
+
+      const res = await fetch(`${BASE_URL}${endpoint}`, {
+        ...options,
+        headers,
+      });
+
+      let data = null;
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        data = await res.text();
+      }
+
+      return { res, data };
     };
 
-    const res = await fetch(`${BASE_URL}${endpoint}`, {
-      ...options,
-      headers,
-    });
+    let { res, data } = await request(token);
 
-    let data = null;
-    const contentType = res.headers.get("content-type");
-    if (contentType && contentType.includes("application/json")) {
-      data = await res.json();
-    } else {
-      data = await res.text();
+    if (res.status === 401 && token) {
+      try {
+        const freshToken = await refreshToken(true);
+        ({ res, data } = await request(freshToken));
+      } catch {
+        // refreshToken already handles logout
+      }
     }
 
     if (!res.ok) {
@@ -432,6 +447,53 @@ function useApi() {
       body: JSON.stringify({ bmc_mac }),
     });
 
+  const uploadSystemPhoto = async (
+    service_tag,
+    file,
+    authTokenOverride = null,
+  ) => {
+    if (!file) throw new Error("Photo file is required");
+    const form = new FormData();
+    form.append("photo", file);
+
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/photos`,
+      {
+        method: "POST",
+        headers: {
+          ...(authTokenOverride || token
+            ? { Authorization: `Bearer ${authTokenOverride || token}` }
+            : {}),
+        },
+        body: form,
+      },
+    );
+
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json()
+      : await res.text();
+
+    if (!res.ok) {
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/photos failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+    return data;
+  };
+
+  const getSystemPhotos = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/photos`);
+  const getSystemL11LogsFound = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-logs-found`);
+
   const getPallet = (pallet_number) =>
     fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
 
@@ -764,6 +826,9 @@ function useApi() {
     updateHostMac,
     updateBmcMac,
     updateRackServiceTag,
+    uploadSystemPhoto,
+    getSystemPhotos,
+    getSystemL11LogsFound,
   };
 }
 

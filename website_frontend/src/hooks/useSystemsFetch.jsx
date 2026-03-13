@@ -59,12 +59,47 @@ export function useSystemsFetch() {
       }
     } else {
       if (search) {
-        const orGroup = buildGroup("OR", [
-          buildLeaf("location", [search], "ILIKE"),
-          buildLeaf("service_tag", [search], "ILIKE"),
-          buildLeaf("issue", [search], "ILIKE"),
-        ]);
-        conditions.push(orGroup);
+        const rawSearch = String(search).trim();
+        const fieldMatch = rawSearch.match(/^([a-zA-Z_]+)\s*:\s*(.+)$/);
+
+        const normalizeValue = (v) => {
+          const trimmed = String(v || "").trim();
+          if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            return trimmed.slice(1, -1).trim();
+          }
+          return trimmed;
+        };
+
+        if (fieldMatch) {
+          const field = String(fieldMatch[1] || "").toLowerCase();
+          const value = normalizeValue(fieldMatch[2]);
+          const supportedFields = new Set(["ppid", "host_mac", "bmc_mac"]);
+
+          if (supportedFields.has(field) && value) {
+            conditions.push(buildLeaf(field, [value], "ILIKE"));
+          } else {
+            const orGroup = buildGroup("OR", [
+              buildLeaf("location", [rawSearch], "ILIKE"),
+              buildLeaf("service_tag", [rawSearch], "ILIKE"),
+              buildLeaf("issue", [rawSearch], "ILIKE"),
+              buildLeaf("ppid", [rawSearch], "ILIKE"),
+              buildLeaf("host_mac", [rawSearch], "ILIKE"),
+              buildLeaf("bmc_mac", [rawSearch], "ILIKE"),
+            ]);
+            conditions.push(orGroup);
+          }
+        } else {
+          const normalized = normalizeValue(rawSearch);
+          const orGroup = buildGroup("OR", [
+            buildLeaf("location", [normalized], "ILIKE"),
+            buildLeaf("service_tag", [normalized], "ILIKE"),
+            buildLeaf("issue", [normalized], "ILIKE"),
+            buildLeaf("ppid", [normalized], "ILIKE"),
+            buildLeaf("host_mac", [normalized], "ILIKE"),
+            buildLeaf("bmc_mac", [normalized], "ILIKE"),
+          ]);
+          conditions.push(orGroup);
+        }
       }
 
       const inactiveLocations = [6, 7, 8, 9];

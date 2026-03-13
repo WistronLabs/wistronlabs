@@ -2,13 +2,14 @@ import { useState, useContext, useEffect } from "react";
 import { Navigate } from "react-router-dom";
 
 import { AuthContext } from "../context/AuthContext";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { loginUser, registerUser, forgotPassword } from "../api/authApi";
 import { delay } from "../utils/delay";
 
 export default function Auth({ defaultMode = "login" }) {
   const { login, token } = useContext(AuthContext);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [mode, setMode] = useState(defaultMode);
   const [username, setUsername] = useState("");
@@ -41,7 +42,19 @@ export default function Auth({ defaultMode = "login" }) {
         const data = await loginUser(username, password);
         login(data.token);
         setHasJustLoggedIn(true);
-        navigate("/");
+        const stateFrom = location.state?.from;
+        const redirectFromState = stateFrom
+          ? `${stateFrom.pathname || ""}${stateFrom.search || ""}${stateFrom.hash || ""}`
+          : "";
+        const redirectFromSession =
+          sessionStorage.getItem("postLoginRedirect") || "";
+        const redirectTo =
+          redirectFromState && redirectFromState !== "/auth"
+            ? redirectFromState
+            : redirectFromSession && redirectFromSession !== "/auth"
+              ? redirectFromSession
+              : "/";
+        navigate(redirectTo, { replace: true });
       }
 
       if (mode === "register") {

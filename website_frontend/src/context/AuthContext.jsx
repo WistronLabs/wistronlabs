@@ -1,4 +1,4 @@
-import { createContext, useState, useEffect } from "react";
+import { createContext, useState, useEffect, useRef, useCallback } from "react";
 import { jwtDecode } from "jwt-decode";
 import { useNavigate } from "react-router-dom";
 import useToast from "../hooks/useToast";
@@ -9,14 +9,71 @@ export const AuthContext = createContext();
 export function AuthProvider({ children }) {
   const navigate = useNavigate();
   const { showToast, Toast } = useToast();
+  const refreshPromiseRef = useRef(null);
 
   const [token, setToken] = useState(localStorage.getItem("token"));
   const [user, setUser] = useState(null);
+
+  const login = useCallback((newToken) => {
+    localStorage.setItem("token", newToken);
+    setToken(newToken);
+  }, []);
+
+  const clearAuthState = useCallback(() => {
+    localStorage.removeItem("token");
+    setToken(null);
+    setUser(null);
+  }, []);
+
+  const logout = useCallback(
+    (redirectToAuth = true) => {
+      clearAuthState();
+      if (redirectToAuth) navigate("/auth");
+    },
+    [clearAuthState, navigate],
+  );
+
+  const refreshToken = useCallback(
+    async (silent = false) => {
+      if (refreshPromiseRef.current) return refreshPromiseRef.current;
+
+      refreshPromiseRef.current = (async () => {
+        try {
+          const res = await refreshAccessToken();
+          const nextToken = res.data.token;
+          login(nextToken);
+          return nextToken;
+        } catch (err) {
+          if (!silent) {
+            showToast(
+              "Your session expired. Please log in again.",
+              "error",
+              5000,
+              "bottom-right",
+            );
+          }
+          // Silent refresh failures should not force navigation away from public pages.
+          logout(!silent);
+          throw err;
+        } finally {
+          refreshPromiseRef.current = null;
+        }
+      })();
+
+      return refreshPromiseRef.current;
+    },
+    [login, logout, showToast],
+  );
 
   useEffect(() => {
     if (token) {
       try {
         const decoded = jwtDecode(token);
+        const isExpired = Date.now() >= decoded.exp * 1000;
+        if (isExpired) {
+          refreshToken(true).catch(() => {});
+          return;
+        }
         setUser({
           id: decoded.userId,
           username: decoded.username,
@@ -33,12 +90,12 @@ export function AuthProvider({ children }) {
         );
       } catch (err) {
         console.error("Invalid token:", err);
-        logout();
+        logout(false);
       }
     } else {
       setUser(null);
     }
-  }, [token]);
+  }, [token, logout, refreshToken]);
 
   // Auto-refresh check
   useEffect(() => {
@@ -54,54 +111,13 @@ export function AuthProvider({ children }) {
           // 5 minutes before expiry
 
           console.log("🔄 Token is close to expiry, refreshing…");
-          refreshToken();
+          refreshToken(true);
         }
       }
     }, 60_000);
 
     return () => clearInterval(interval);
-  }, [token, user]);
-
-  // Initial token check
-  useEffect(() => {
-    if (!token) {
-      refreshToken();
-    }
-  }, []);
-
-  const login = (newToken) => {
-    localStorage.setItem("token", newToken);
-    setToken(newToken);
-  };
-
-  const logout = () => {
-    localStorage.removeItem("token");
-    setToken(null);
-    setUser(null);
-    navigate("/auth");
-  };
-
-  const refreshToken = async () => {
-    console.log("🔄 Attempting to refresh access token…");
-
-    try {
-      const res = await refreshAccessToken();
-      const token = res.data.token;
-      console.log("✅ New access token received:", token);
-
-      login(token);
-      console.log("Access token refreshed");
-    } catch (err) {
-      console.error("Could not refresh token", err);
-      showToast(
-        "Your session expired. Please log in again.",
-        "error",
-        5000,
-        "bottom-right"
-      );
-      logout();
-    }
-  };
+  }, [token, user, refreshToken]);
 
   return (
     <AuthContext.Provider value={{ token, login, logout, user, refreshToken }}>

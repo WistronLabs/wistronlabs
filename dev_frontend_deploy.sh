@@ -131,4 +131,4 @@ grep -E '^(VITE_BACKEND_URL|VITE_URL|VITE_LOCATION)=' "$ENV_FILE" || true
 echo ""
 echo "Starting Vite dev server..."
 cd "$FRONTEND_DIR"
-npm run dev
+npm run dev -- --host 0.0.0.0

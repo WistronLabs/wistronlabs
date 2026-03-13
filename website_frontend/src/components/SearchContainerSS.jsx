@@ -80,13 +80,20 @@ export default function SearchContainerSS({
         tg.searchTags.some((st) => st.field !== "tags"),
     );
     const normalizedSearch = String(debouncedSearchTerm || "").trim();
+    const searchContainerSanitized = normalizedSearch.replace(
+      /^(ppid|host_mac|bmc_mac)\s*:\s*/i,
+      "",
+    );
     const includeSearchInFilters = normalizedSearch.length > 0;
 
     const searchOrConditions = includeSearchInFilters
       ? [
-          { field: "location", values: [normalizedSearch], op: "ILIKE" },
-          { field: "service_tag", values: [normalizedSearch], op: "ILIKE" },
-          { field: "issue", values: [normalizedSearch], op: "ILIKE" },
+          { field: "location", values: [searchContainerSanitized], op: "ILIKE" },
+          { field: "service_tag", values: [searchContainerSanitized], op: "ILIKE" },
+          { field: "issue", values: [searchContainerSanitized], op: "ILIKE" },
+          { field: "ppid", values: [searchContainerSanitized], op: "ILIKE" },
+          { field: "host_mac", values: [searchContainerSanitized], op: "ILIKE" },
+          { field: "bmc_mac", values: [searchContainerSanitized], op: "ILIKE" },
         ]
       : [];
 
@@ -95,7 +102,7 @@ export default function SearchContainerSS({
       page_size: pageSize,
       sort_by: sortBy,
       sort_order: sortAsc ? "asc" : "desc",
-      search: debouncedSearchTerm || undefined,
+      search: searchContainerSanitized || undefined,
       filters: hasNonTagGroupFilters
         ? {
             op: "AND",

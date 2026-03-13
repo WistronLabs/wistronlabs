@@ -123,6 +123,10 @@ async function fetchNotesOR(fetchHistory, groups, dateConds) {
 // ---------- utils ----------
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s);
 const upper = (s) => (s || "").toString().toUpperCase();
+const unwrapBrackets = (s) => {
+  const v = String(s || "").trim();
+  return v.startsWith("[") && v.endsWith("]") ? v.slice(1, -1).trim() : v;
+};
 
 const highlight = (s, needles) => {
   if (!s) return null;
@@ -141,6 +145,9 @@ function buildHaystack(row) {
   return upper(
     [
       row.service_tag,
+      row.ppid,
+      row.host_mac,
+      row.bmc_mac,
       row.issue,
       row.dpn,
       row.dell_customer,
@@ -232,12 +239,12 @@ function parseQuery(q) {
 
     const m = piece.match(/^([a-z_]+):(.*)$/i);
     if (!m) {
-      pushTerm(piece);
+      pushTerm(unwrapBrackets(piece));
       continue;
     }
 
     const key = m[1].toLowerCase();
-    let value = m[2].replace(/^"|"$/g, "");
+    let value = unwrapBrackets(m[2].replace(/^"|"$/g, ""));
     let op = value.includes("*") ? "ILIKE" : "=";
     value = value.replace(/\*/g, "");
     if (["before", "after", "on"].includes(key) && isDate(value)) {
@@ -264,6 +271,18 @@ function flatSystemLeavesFromTokens(tokens) {
     else if (key === "ppid")
       leaves.push({
         field: "ppid",
+        values: [OP === "ILIKE" ? like(value) : value],
+        op: OP,
+      });
+    else if (["host_mac", "hostmac", "host"].includes(key))
+      leaves.push({
+        field: "host_mac",
+        values: [OP === "ILIKE" ? like(value) : value],
+        op: OP,
+      });
+    else if (["bmc_mac", "bmcmac", "bmc"].includes(key))
+      leaves.push({
+        field: "bmc_mac",
         values: [OP === "ILIKE" ? like(value) : value],
         op: OP,
       });
@@ -353,6 +372,12 @@ function valuesCoveredByFieldTokens(tokens) {
     "service",
     "service_tag",
     "ppid",
+    "host_mac",
+    "hostmac",
+    "host",
+    "bmc_mac",
+    "bmcmac",
+    "bmc",
     "dpn",
     "config",
     "loc",
@@ -391,6 +416,9 @@ const difference = (a, needles) => {
     const hay = upper(
       [
         v.service_tag,
+        v.ppid,
+        v.host_mac,
+        v.bmc_mac,
         v.issue,
         v.dpn,
         v.dell_customer,
