@@ -2802,7 +2802,9 @@ function SystemPage() {
                 <button
                   type="button"
                   className="bg-gray-600 hover:bg-gray-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow"
-                  onClick={() => openDetails(system)}
+                  onClick={() =>
+                    openDetails(system, { canEditResolved: !!me?.isAdmin })
+                  }
                 >
                   Details
                 </button>

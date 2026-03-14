@@ -7,6 +7,7 @@ import useBodyScrollLock from "./useBodyScrollLock.jsx";
 export default function useDetailsModal(showToast, onUpdated) {
   const [isOpen, setIsOpen] = useState(false);
   const [details, setDetails] = useState(null);
+  const [canEditResolved, setCanEditResolved] = useState(false);
   const [ppidInput, setPpidInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [copiedKey, setCopiedKey] = useState(null);
@@ -49,8 +50,9 @@ export default function useDetailsModal(showToast, onUpdated) {
     return /^RMA\b/i.test(loc) || /^Sent to L11$/i.test(loc);
   }, [details?.location, details?.current_location]);
 
-  const openDetails = useCallback((data) => {
+  const openDetails = useCallback((data, options = {}) => {
     setDetails(data);
+    setCanEditResolved(!!options?.canEditResolved);
     setIsOpen(true);
     setIsEditing(false);
     setCopiedKey(null);
@@ -67,6 +69,7 @@ export default function useDetailsModal(showToast, onUpdated) {
   const closeDetails = useCallback(() => {
     setIsOpen(false);
     setDetails(null);
+    setCanEditResolved(false);
     setPpidInput("");
     setCopiedKey(null);
     setIsEditing(false);
@@ -446,7 +449,7 @@ export default function useDetailsModal(showToast, onUpdated) {
         )}
 
         <div className="mt-6 flex justify-end gap-2">
-          {!isResolvedLocation && (
+          {(!isResolvedLocation || canEditResolved) && (
             <button
               onClick={toggleEditOrCopy}
               type="button"
