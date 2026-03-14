@@ -4369,25 +4369,33 @@ function SystemPage() {
                       {uploadingPhoto ? "Uploading…" : "Add Support Photo"}
                     </button>
                     {showPhotoMenu && (
-                      <div className="absolute z-30 mt-2 w-80 max-w-[85vw] rounded-lg border border-gray-200 bg-white shadow-lg p-3 space-y-3">
+                      <div
+                        className={`absolute z-30 mt-2 w-80 max-w-[85vw] rounded-lg border border-gray-200 bg-white shadow-lg ${
+                          isMobile ? "p-2 space-y-0" : "p-3 space-y-3"
+                        }`}
+                      >
                         <button
                           type="button"
                           onClick={() => photoInputRef.current?.click()}
-                          className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800"
+                          className={`w-full m-0 flex items-center text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium leading-tight text-gray-800 ${
+                            !isMobile ? "mb-2" : ""
+                          }`}
                         >
                           Upload from this device
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowPhoneQr((v) => !v)}
-                          className={`w-full text-left px-3 py-2 rounded text-sm font-medium ${
-                            showPhoneQr
-                              ? "bg-blue-600 text-white hover:bg-blue-700"
-                              : "bg-gray-100 text-gray-800 hover:bg-gray-200"
-                          }`}
-                        >
-                          Use Mobile Device
-                        </button>
+                        {!isMobile && (
+                          <button
+                            type="button"
+                            onClick={() => setShowPhoneQr((v) => !v)}
+                            className={`w-full text-left px-3 py-2 rounded text-sm font-medium ${
+                              showPhoneQr
+                                ? "bg-blue-600 text-white hover:bg-blue-700"
+                                : "bg-gray-100 text-gray-800 hover:bg-gray-200"
+                            }`}
+                          >
+                            Use Mobile Device
+                          </button>
+                        )}
                         <input
                           ref={photoInputRef}
                           type="file"
@@ -4396,7 +4404,7 @@ function SystemPage() {
                           onChange={handleLocalPhotoPick}
                         />
 
-                        {showPhoneQr && (
+                        {!isMobile && showPhoneQr && (
                           <div className="pt-1 border-t border-gray-200">
                             <div className="text-xs font-medium text-gray-600 mb-2">
                               Scan QR code with mobile device

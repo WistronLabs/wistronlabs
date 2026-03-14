@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import useApi from "../hooks/useApi.jsx";
 import useToast from "../hooks/useToast.jsx";
 import { AuthContext } from "../context/AuthContext.jsx";
@@ -9,6 +9,7 @@ const MAX_PHOTO_BYTES = 12 * 1024 * 1024;
 
 export default function PhotoUploadPage() {
   const { serviceTag } = useParams();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { token } = useContext(AuthContext);
   const tokenFromQr = searchParams.get("t");
@@ -54,6 +55,7 @@ export default function PhotoUploadPage() {
       await uploadSystemPhoto(serviceTag, selectedFile, effectiveToken);
       showToast("Photo uploaded", "success", 2500, "bottom-right");
       setSelectedFile(null);
+      navigate(`/${encodeURIComponent(serviceTag)}`);
     } catch (e) {
       const msg = e?.body?.error || e?.message || "Failed to upload photo";
       showToast(msg, "error", 3000, "bottom-right");
