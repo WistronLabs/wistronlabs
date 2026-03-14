@@ -43,7 +43,9 @@ export default function useDetailsModal(showToast, onUpdated) {
   const canEditDellCustomer =
     isEditing &&
     editableKeys.includes("dell_customer") &&
-    dellCustomerOptions.length > 1;
+    (dellCustomerOptions.length > 1 ||
+      (!String(details?.dell_customer || "").trim() &&
+        dellCustomerOptions.length >= 1));
   const isResolvedLocation = useMemo(() => {
     const loc = String(details?.location || details?.current_location || "").trim();
     if (!loc) return false;
