@@ -60,6 +60,17 @@
   background: black;
 }
 
+/* Hide browser focus ring on Recharts interactive layers */
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-surface:focus,
+.recharts-surface:focus-visible,
+.recharts-legend-item:focus,
+.recharts-legend-item:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;

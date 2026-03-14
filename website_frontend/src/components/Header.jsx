@@ -6,6 +6,7 @@ import SmartSearchBar from "../components/SmartSearchBar.jsx";
 
 function Header() {
   const LOCATION = import.meta.env.VITE_LOCATION;
+  const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -53,7 +54,9 @@ function Header() {
           <h1 className="text-[1.5rem] md:text-[1.8rem] font-medium pt-1">
             {LOCATION} Dashboard{" "}
             {import.meta.env.DEV && (
-              <span className="text-sm text-red-400">(DEV)</span>
+              <span className="text-sm text-red-400">
+                (DEV, backendURL: {BACKEND_URL})
+              </span>
             )}
           </h1>
         </div>

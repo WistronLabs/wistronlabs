@@ -6,6 +6,10 @@ function Footer() {
   const { getServerTime } = useApi();
   const [serverZone, setServerZone] = useState(null);
   const [tick, setTick] = useState(0); // increments every second
+  const buildNumber =
+    import.meta.env.VITE_BUILD_NUMBER ||
+    import.meta.env.BUILD_NUMBER ||
+    "unknown";
 
   // 1) Get server timezone once
   useEffect(() => {
@@ -50,7 +54,20 @@ function Footer() {
         {": "}
         <span className="font-mono">{displayTime}</span>
       </div>
-      <div>&copy; {new Date().getFullYear()} Wistron</div>
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-xs">
+          Build:
+          <a
+            href={`https://github.com/WistronLabs/wistronlabs/tree/${buildNumber}`}
+            target="_blank"
+            rel="noreferrer"
+            className="underline hover:text-blue-200"
+          >
+            {buildNumber}
+          </a>
+        </span>
+        <span>&copy; {new Date().getFullYear()} Wistron</span>
+      </div>
     </footer>
   );
 }

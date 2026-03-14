@@ -1,4 +1,4 @@
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation, matchPath } from "react-router-dom";
 
 import TrackingPage from "./pages/TrackingPage";
 import StationPage from "./pages/StationPage";
@@ -25,8 +25,29 @@ function App() {
   const location = useLocation();
 
   useEffect(() => {
-    document.title = `${LOCATION} Dashboard`;
-  }, []);
+    const baseTitle = `${LOCATION} Dashboard`;
+    const pathname = location.pathname;
+
+    let pageTitle = "";
+    if (pathname === "/") pageTitle = "Tracking";
+    else if (pathname === "/stations") pageTitle = "Stations";
+    else if (pathname === "/shipping") pageTitle = "Shipping";
+    else if (pathname === "/parts") pageTitle = "Parts";
+    else if (pathname === "/admin") pageTitle = "Admin";
+    else if (pathname === "/user") pageTitle = "User";
+    else if (pathname === "/auth") pageTitle = "Login";
+    else if (pathname === "/reset-password") pageTitle = "Reset Password";
+    else if (matchPath("/locationHistory/:id", pathname)) pageTitle = "Location History";
+    else if (matchPath("/photo-upload/:serviceTag", pathname)) pageTitle = "Photo Upload";
+    else {
+      const systemMatch = matchPath("/:serviceTag", pathname);
+      if (systemMatch?.params?.serviceTag) {
+        pageTitle = String(systemMatch.params.serviceTag).toUpperCase();
+      }
+    }
+
+    document.title = pageTitle ? `${pageTitle} - ${baseTitle}` : baseTitle;
+  }, [LOCATION, location.pathname]);
 
   useEffect(() => {
     if (location.pathname === "/auth") return;

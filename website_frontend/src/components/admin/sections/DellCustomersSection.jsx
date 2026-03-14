@@ -2,82 +2,80 @@ import AdminActionBar from "../AdminActionBar";
 import AdminTableCard from "../AdminTableCard";
 import AdminToolbar from "../AdminToolbar";
 
-function PartCategoriesSection({
-  onPartCatSave,
-  addBlankPartCatRow,
-  partCatQ,
-  setPartCatQ,
-  partCatErr,
-  partCatLoading,
-  filteredPartCats,
-  partCatBaselineMap,
-  onPartCatCellChange,
-  handleDeletePartCategory,
-  deletingPartCatId,
-  partCatSaving,
-  onPartCatDiscard,
-  partCatHasChanges,
+function DellCustomersSection({
+  onSave,
+  addBlankRow,
+  query,
+  setQuery,
+  error,
+  loading,
+  rows,
+  baselineMap,
+  onCellChange,
+  onDelete,
+  deletingId,
+  saving,
+  onDiscard,
+  hasChanges,
 }) {
   return (
-    <form onSubmit={onPartCatSave} className="space-y-4">
+    <form onSubmit={onSave} className="space-y-4">
       <AdminToolbar
-        addLabel="+ Add Part Category"
-        onAdd={addBlankPartCatRow}
-        query={partCatQ}
-        onQueryChange={setPartCatQ}
-        placeholder="Search category name"
-        error={partCatErr}
+        addLabel="+ Add Dell Customer"
+        onAdd={addBlankRow}
+        query={query}
+        onQueryChange={setQuery}
+        placeholder="Search Dell customer"
+        error={error}
       />
 
       <AdminTableCard>
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-gray-600">
             <tr>
-              <th className="text-left font-medium px-3 py-2">Category Name</th>
+              <th className="text-left font-medium px-3 py-2">Dell Customer</th>
               <th className="text-right font-medium px-3 py-2 w-28">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {partCatLoading ? (
+            {loading ? (
               <tr>
                 <td colSpan={2} className="px-3 py-6 text-center text-gray-500">
-                  Loading…
+                  Loading...
                 </td>
               </tr>
-            ) : filteredPartCats.length === 0 ? (
+            ) : rows.length === 0 ? (
               <tr>
                 <td colSpan={2} className="px-3 py-6 text-center text-gray-500">
-                  No matching categories
+                  No matching Dell customers
                 </td>
               </tr>
             ) : (
-              filteredPartCats.map((c) => {
-                const isNew = typeof c.id !== "number";
-                const base = isNew ? null : partCatBaselineMap.get(c.id);
-                const changed = isNew || (base && base.name !== c.name);
-
+              rows.map((row) => {
+                const isNew = typeof row.id !== "number";
+                const base = isNew ? null : baselineMap.get(row.id);
+                const changed = isNew || (base && base.name !== row.name);
                 return (
-                  <tr key={c.id} className={changed ? "bg-amber-100/50" : ""}>
+                  <tr key={row.id} className={changed ? "bg-amber-100/50" : ""}>
                     <td className="px-3 py-2 align-middle">
                       <input
-                        value={c.name ?? ""}
-                        onChange={(e) => onPartCatCellChange(c.id, e.target.value)}
+                        value={row.name ?? ""}
+                        onChange={(e) => onCellChange(row.id, e.target.value)}
                         className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
                           changed ? "border-amber-400" : "border-gray-300"
                         }`}
-                        placeholder="e.g. FANS"
+                        placeholder="e.g. NVIDIA"
                       />
                     </td>
                     <td className="px-3 py-2 align-middle">
                       <div className="flex justify-end">
                         <button
                           type="button"
-                          onClick={() => handleDeletePartCategory(c)}
-                          disabled={deletingPartCatId === c.id || partCatSaving}
+                          onClick={() => onDelete(row)}
+                          disabled={deletingId === row.id || saving}
                           className="px-3 py-1.5 rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50"
-                          title="Delete Category"
                         >
-                          {deletingPartCatId === c.id ? "Deleting…" : "Delete"}
+                          {deletingId === row.id ? "Deleting..." : "Delete"}
                         </button>
                       </div>
                     </td>
@@ -90,13 +88,13 @@ function PartCategoriesSection({
       </AdminTableCard>
 
       <AdminActionBar
-        onDiscard={onPartCatDiscard}
-        saving={partCatSaving}
-        hasChanges={partCatHasChanges}
-        saveLabel="Save Categories"
+        onDiscard={onDiscard}
+        saving={saving}
+        hasChanges={hasChanges}
+        saveLabel="Save Dell Customers"
       />
     </form>
   );
 }
 
-export default PartCategoriesSection;
+export default DellCustomersSection;

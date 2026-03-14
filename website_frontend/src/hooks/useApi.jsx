@@ -447,6 +447,13 @@ function useApi() {
       body: JSON.stringify({ bmc_mac }),
     });
 
+  const updateSystemDellCustomer = (service_tag, dell_customer) =>
+    fetchJSON(`/systems/${service_tag}/dell-customer`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dell_customer }),
+    });
+
   const uploadSystemPhoto = async (
     service_tag,
     file,
@@ -514,13 +521,16 @@ function useApi() {
 
   const getDpns = () => fetchJSON(`/systems/dpn`);
 
-  const createDpn = ({ name, config }) =>
+  const createDpn = ({ name, config, dell_customer_ids }) =>
     fetchJSON(`/systems/dpn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: name.trim(),
         config: (config ?? "").trim() || null,
+        dell_customer_ids: Array.isArray(dell_customer_ids)
+          ? dell_customer_ids
+          : undefined,
       }),
     });
 
@@ -533,6 +543,28 @@ function useApi() {
 
   const deleteDpn = (id) =>
     fetchJSON(`/systems/dpn/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+  const getDellCustomers = ({ q } = {}) =>
+    fetchJSON(`/systems/dell-customers${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+  const createDellCustomer = ({ name }) =>
+    fetchJSON(`/systems/dell-customers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: String(name || "").trim() }),
+    });
+
+  const updateDellCustomer = (id, payload) =>
+    fetchJSON(`/systems/dell-customers/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  const deleteDellCustomer = (id) =>
+    fetchJSON(`/systems/dell-customers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
 
   // Factory API
   const getFactories = () => fetchJSON(`/systems/factory`);
@@ -825,6 +857,11 @@ function useApi() {
     removeSystemTag,
     updateHostMac,
     updateBmcMac,
+    updateSystemDellCustomer,
+    getDellCustomers,
+    createDellCustomer,
+    updateDellCustomer,
+    deleteDellCustomer,
     updateRackServiceTag,
     uploadSystemPhoto,
     getSystemPhotos,

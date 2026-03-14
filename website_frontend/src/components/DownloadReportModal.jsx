@@ -2,6 +2,7 @@
 import ReactDatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
 import { useEffect } from "react";
+import useBodyScrollLock from "../hooks/useBodyScrollLock.jsx";
 
 function parseLocalDateString(yyyyMmDd) {
   const [year, month, day] = yyyyMmDd.split("-").map(Number);
@@ -18,6 +19,7 @@ export default function DownloadReportModal({
   idiotProof,
   setIdiotProof,
 }) {
+  useBodyScrollLock(true);
   // ⬇️ Close on Esc
   useEffect(() => {
     const onKeyDown = (e) => {

@@ -1,6 +1,8 @@
 import { useEffect } from "react";
+import useBodyScrollLock from "../../hooks/useBodyScrollLock.jsx";
 
 function AllTagsModal({ tags, onClose }) {
+  useBodyScrollLock(true);
   useEffect(() => {
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
