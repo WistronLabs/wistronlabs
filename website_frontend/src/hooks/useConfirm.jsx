@@ -1,9 +1,12 @@
 import { useState, useEffect } from "react";
+import useBodyScrollLock from "./useBodyScrollLock.jsx";
 
 export default function useConfirm() {
   const [isOpen, setIsOpen] = useState(false);
   const [config, setConfig] = useState({});
   const [resolveFn, setResolveFn] = useState(() => () => {});
+
+  useBodyScrollLock(isOpen);
 
   const confirm = ({
     message,
@@ -62,12 +65,14 @@ export default function useConfirm() {
           <p className="text-gray-700 text-sm sm:text-base">{config.message}</p>
           <div className="flex flex-wrap justify-end gap-2">
             <button
+              type="button"
               onClick={handleCancel}
               className={`px-3 py-1.5 text-sm rounded ${config.cancelClass}`}
             >
               {config.cancelText}
             </button>
             <button
+              type="button"
               onClick={handleConfirm}
               className={`px-3 py-1.5 text-sm rounded ${config.confirmClass}`}
             >

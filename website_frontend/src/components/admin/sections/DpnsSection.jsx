@@ -1,3 +1,4 @@
+import { useState } from "react";
 import AdminActionBar from "../AdminActionBar";
 import AdminTableCard from "../AdminTableCard";
 import AdminToolbar from "../AdminToolbar";
@@ -12,16 +13,23 @@ function DpnsSection({
   filteredDpns,
   dpnBaselineMap,
   onCellChange,
+  onToggleDellCustomer,
+  dellCustomers,
   handleDeleteDpn,
   deletingId,
   dpnSaving,
   onDpnDiscard,
   dpnHasChanges,
 }) {
+  const [customerQueryByRow, setCustomerQueryByRow] = useState({});
+  const getRowQuery = (rowId) => customerQueryByRow[rowId] || "";
+  const setRowQuery = (rowId, value) =>
+    setCustomerQueryByRow((prev) => ({ ...prev, [rowId]: value }));
+
   return (
     <form onSubmit={onDpnSave} className="space-y-4">
       <AdminToolbar
-        addLabel="+ Add row"
+        addLabel="+ Add DPN"
         onAdd={addBlankRow}
         query={dpnQ}
         onQueryChange={setDpnQ}
@@ -35,7 +43,7 @@ function DpnsSection({
             <tr>
               <th className="text-left font-medium px-3 py-2">DPN</th>
               <th className="text-left font-medium px-3 py-2">Config</th>
-              <th className="text-left font-medium px-3 py-2">Dell Customer</th>
+              <th className="text-left font-medium px-3 py-2">Allowed Dell Customers</th>
               <th className="text-right font-medium px-3 py-2 w-28">Actions</th>
             </tr>
           </thead>
@@ -61,16 +69,23 @@ function DpnsSection({
                   (base &&
                     (base.name !== d.name ||
                       (base.config ?? "") !== (d.config ?? "") ||
-                      (base.dell_customer ?? "") !== (d.dell_customer ?? "")));
+                      JSON.stringify(base.dell_customer_ids || []) !==
+                        JSON.stringify(
+                          (Array.isArray(d.dell_customer_ids)
+                            ? d.dell_customer_ids
+                            : []
+                          ).slice().sort((a, b) => a - b),
+                        )));
 
                 return (
-                  <tr key={d.id} className={changed ? "bg-amber-50/40" : ""}>
+                  <tr key={d.id} className={changed ? "bg-amber-100/50" : ""}>
                     <td className="px-3 py-2 align-middle">
                       <input
                         value={d.name ?? ""}
                         onChange={(e) => onCellChange(d.id, "name", e.target.value)}
-                        className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                          changed ? "border-amber-300" : "border-gray-300"
+                        maxLength={5}
+                        className={`w-[8ch] rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                          changed ? "border-amber-400" : "border-gray-300"
                         }`}
                         placeholder="e.g. 7RC0V"
                       />
@@ -79,23 +94,119 @@ function DpnsSection({
                       <input
                         value={d.config ?? ""}
                         onChange={(e) => onCellChange(d.id, "config", e.target.value)}
-                        className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                          changed ? "border-amber-300" : "border-gray-300"
+                        className={`w-24 rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                          changed ? "border-amber-400" : "border-gray-300"
                         }`}
                         placeholder="e.g. B1"
                       />
                     </td>
                     <td className="px-3 py-2 align-middle">
-                      <input
-                        value={d.dell_customer ?? ""}
-                        onChange={(e) =>
-                          onCellChange(d.id, "dell_customer", e.target.value)
-                        }
-                        className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                          changed ? "border-amber-300" : "border-gray-300"
-                        }`}
-                        placeholder="e.g. META / NVIDIA"
-                      />
+                      <div className="border border-gray-200 rounded-xl p-2 bg-gray-50 space-y-2">
+                        {(dellCustomers || []).length === 0 ? (
+                          <div className="text-xs text-gray-500 px-1 py-1">
+                            No Dell customers available
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-1.5 min-h-[2.25rem] rounded-lg border border-gray-200 bg-white px-2 py-1.5">
+                              {(dellCustomers || [])
+                                .filter((c) =>
+                                  Array.isArray(d.dell_customer_ids)
+                                    ? d.dell_customer_ids.includes(c.id)
+                                    : false,
+                                )
+                                .map((c) => (
+                                  <span
+                                    key={`${d.id}-selected-${c.id}`}
+                                    className="inline-flex items-center gap-1 rounded-full bg-blue-100 text-blue-800 text-xs font-medium pl-2 pr-1 py-1"
+                                  >
+                                    <span className="max-w-[150px] truncate" title={c.name}>
+                                      {c.name}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => onToggleDellCustomer(d.id, c.id)}
+                                      className="rounded-full w-4 h-4 leading-none text-[10px] bg-blue-200 hover:bg-blue-300 text-blue-900"
+                                      aria-label={`Remove ${c.name}`}
+                                      title={`Remove ${c.name}`}
+                                    >
+                                      x
+                                    </button>
+                                  </span>
+                                ))}
+                              <input
+                                type="text"
+                                value={getRowQuery(d.id)}
+                                onChange={(e) => setRowQuery(d.id, e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key !== "Enter") return;
+                                  e.preventDefault();
+                                  const q = getRowQuery(d.id).trim().toLowerCase();
+                                  if (!q) return;
+                                  const candidate = (dellCustomers || []).find(
+                                    (c) =>
+                                      String(c?.name || "").toLowerCase().includes(q) &&
+                                      !(Array.isArray(d.dell_customer_ids)
+                                        ? d.dell_customer_ids.includes(c.id)
+                                        : false),
+                                  );
+                                  if (candidate) {
+                                    onToggleDellCustomer(d.id, candidate.id);
+                                    setRowQuery(d.id, "");
+                                  }
+                                }}
+                                className="flex-1 min-w-[110px] text-xs bg-transparent border-0 focus:ring-0 focus:outline-none text-gray-700 placeholder:text-gray-400"
+                                placeholder="Type to add..."
+                              />
+                            </div>
+
+                            <div className="max-h-24 overflow-y-auto rounded-lg border border-gray-200 bg-white p-1.5">
+                              <div className="flex flex-wrap gap-1.5">
+                                {(dellCustomers || [])
+                                  .filter((c) =>
+                                    Array.isArray(d.dell_customer_ids)
+                                      ? !d.dell_customer_ids.includes(c.id)
+                                      : true,
+                                  )
+                                  .filter((c) => {
+                                    const q = getRowQuery(d.id).trim().toLowerCase();
+                                    if (!q) return true;
+                                    return String(c?.name || "").toLowerCase().includes(q);
+                                  })
+                                  .map((c) => (
+                                    <button
+                                      key={`${d.id}-available-${c.id}`}
+                                      type="button"
+                                      onClick={() => {
+                                        onToggleDellCustomer(d.id, c.id);
+                                        setRowQuery(d.id, "");
+                                      }}
+                                      className="inline-flex items-center rounded-full border border-gray-200 bg-gray-50 hover:bg-blue-50 hover:border-blue-200 text-gray-700 text-xs px-2 py-1"
+                                      title={`Add ${c.name}`}
+                                    >
+                                      <span className="max-w-[170px] truncate">{c.name}</span>
+                                    </button>
+                                  ))}
+                                {(dellCustomers || [])
+                                  .filter((c) =>
+                                    Array.isArray(d.dell_customer_ids)
+                                      ? !d.dell_customer_ids.includes(c.id)
+                                      : true,
+                                  )
+                                  .filter((c) => {
+                                    const q = getRowQuery(d.id).trim().toLowerCase();
+                                    if (!q) return true;
+                                    return String(c?.name || "").toLowerCase().includes(q);
+                                  }).length === 0 && (
+                                  <span className="text-[11px] text-gray-400 px-1 py-0.5">
+                                    No matches
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="px-3 py-2 align-middle">
                       <div className="flex justify-end">

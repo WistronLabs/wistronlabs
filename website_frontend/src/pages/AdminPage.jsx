@@ -9,6 +9,7 @@ import DpnsSection from "../components/admin/sections/DpnsSection";
 import FactoriesSection from "../components/admin/sections/FactoriesSection";
 import PartsSection from "../components/admin/sections/PartsSection";
 import PartCategoriesSection from "../components/admin/sections/PartCategoriesSection";
+import DellCustomersSection from "../components/admin/sections/DellCustomersSection";
 
 function AdminPage() {
   const [tab, setTab] = useState("users");
@@ -22,6 +23,10 @@ function AdminPage() {
     createDpn,
     updateDpn,
     deleteDpn,
+    getDellCustomers,
+    createDellCustomer,
+    updateDellCustomer,
+    deleteDellCustomer,
     getFactories,
     createFactory,
     updateFactory,
@@ -53,6 +58,13 @@ function AdminPage() {
   const [dpnErr, setDpnErr] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const { confirm, ConfirmDialog } = useConfirm();
+  const [dellCustomers, setDellCustomers] = useState([]);
+  const [baselineDellCustomers, setBaselineDellCustomers] = useState([]);
+  const [dellCustomerLoading, setDellCustomerLoading] = useState(false);
+  const [dellCustomerSaving, setDellCustomerSaving] = useState(false);
+  const [dellCustomerErr, setDellCustomerErr] = useState(null);
+  const [dellCustomerQ, setDellCustomerQ] = useState("");
+  const [deletingDellCustomerId, setDeletingDellCustomerId] = useState(null);
 
   const [factories, setFactories] = useState([]);
   const [baselineFactories, setBaselineFactories] = useState([]);
@@ -81,6 +93,14 @@ function AdminPage() {
   const [partCatErr, setPartCatErr] = useState(null);
   const [partCatQ, setPartCatQ] = useState("");
   const [deletingPartCatId, setDeletingPartCatId] = useState(null);
+
+  const normalizeDpns = (list = []) =>
+    (list || []).map((d) => ({
+      ...d,
+      dell_customer_ids: Array.isArray(d?.dell_customers)
+        ? d.dell_customers.map((c) => c.id)
+        : [],
+    }));
 
   // username -> original isAdmin
   const baselineMap = useMemo(() => {
@@ -208,8 +228,9 @@ function AdminPage() {
         setDpnLoading(true);
         const list = await getDpns(); // expect array of { id, name, config }
         if (!alive) return;
-        setDpns(list || []);
-        setBaselineDpns(list || []);
+        const normalized = normalizeDpns(list || []);
+        setDpns(normalized);
+        setBaselineDpns(normalized);
       } catch (e) {
         if (!alive) return;
         setDpnErr(e.message || "Failed to load DPNs");
@@ -222,6 +243,33 @@ function AdminPage() {
       alive = false;
     };
   }, [tab]); // run when switching to DPNs
+
+  useEffect(() => {
+    let alive = true;
+    const shouldLoad =
+      tab === "dell-customers" || tab === "dpns";
+    const haveBaseline = baselineDellCustomers.length > 0;
+    if (!shouldLoad || dellCustomerLoading || haveBaseline) return;
+
+    (async () => {
+      try {
+        setDellCustomerLoading(true);
+        const list = await getDellCustomers();
+        if (!alive) return;
+        setDellCustomers(list || []);
+        setBaselineDellCustomers(list || []);
+      } catch (e) {
+        if (!alive) return;
+        setDellCustomerErr(e.message || "Failed to load Dell customers");
+      } finally {
+        if (alive) setDellCustomerLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [tab]);
 
   const partCatBaselineMap = useMemo(() => {
     const m = new Map();
@@ -249,7 +297,11 @@ function AdminPage() {
       m.set(d.id, {
         name: d.name,
         config: d.config ?? "",
-        dell_customer: d.dell_customer ?? "",
+        dell_customer:
+          (Array.isArray(d.dell_customers) && d.dell_customers[0]?.name) || "",
+        dell_customer_ids: Array.isArray(d.dell_customers)
+          ? d.dell_customers.map((c) => c.id).sort((a, b) => a - b)
+          : [],
       })
     );
     return m;
@@ -262,21 +314,32 @@ function AdminPage() {
       (d) =>
         (d.name || "").toLowerCase().includes(q) ||
         (d.config || "").toLowerCase().includes(q) ||
-        (d.dell_customer || "").toLowerCase().includes(q)
+        (Array.isArray(d.dell_customers)
+          ? d.dell_customers.some((c) =>
+              String(c?.name || "").toLowerCase().includes(q),
+            )
+          : false)
     );
   }, [dpns, dpnQ]);
 
   const dpnHasChanges = useMemo(() => {
     return dpns.some((d) => {
       if (typeof d.id !== "number") {
-        return d.name?.trim() || d.config?.trim() || d.dell_customer?.trim();
+        return (
+          d.name?.trim() ||
+          d.config?.trim() ||
+          (Array.isArray(d.dell_customer_ids) && d.dell_customer_ids.length > 0)
+        );
       }
       const base = dpnBaselineMap.get(d.id);
       return (
         base &&
         (base.name !== d.name ||
           (base.config ?? "") !== (d.config ?? "") ||
-          (base.dell_customer ?? "") !== (d.dell_customer ?? ""))
+          JSON.stringify(base.dell_customer_ids || []) !==
+            JSON.stringify(
+              (Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : []).slice().sort((a, b) => a - b),
+            ))
       );
     });
   }, [dpns, dpnBaselineMap]);
@@ -614,6 +677,10 @@ function AdminPage() {
   const sanitizeName = (s) => ((s ?? "") + "").trim().toUpperCase();
   const sanitizeConfig = (s) => ((s ?? "") + "").trim().toUpperCase();
   const sanitizeCustomer = (s) => ((s ?? "") + "").trim();
+  const getCustomerNameById = (id) =>
+    sanitizeCustomer(
+      (dellCustomers || []).find((c) => Number(c.id) === Number(id))?.name || "",
+    );
 
   const validateRow = (row) => {
     const name = sanitizeName(row.name);
@@ -627,14 +694,29 @@ function AdminPage() {
       .toString(36)
       .slice(2, 6)}`;
     setDpns((cur) => [
-      { id: newId, name: "", config: "", dell_customer: "" },
+      { id: newId, name: "", config: "", dell_customer_ids: [] },
       ...cur,
     ]);
   };
 
   const onCellChange = (id, field, value) => {
     setDpns((cur) =>
-      cur.map((d) => (d.id === id ? { ...d, [field]: value } : d))
+      cur.map((d) => {
+        if (d.id !== id) return d;
+        return { ...d, [field]: value };
+      }),
+    );
+  };
+
+  const onToggleDpnDellCustomer = (dpnId, customerId) => {
+    setDpns((cur) =>
+      cur.map((d) => {
+        if (d.id !== dpnId) return d;
+        const ids = new Set(Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : []);
+        if (ids.has(customerId)) ids.delete(customerId);
+        else ids.add(customerId);
+        return { ...d, dell_customer_ids: [...ids] };
+      }),
     );
   };
 
@@ -661,7 +743,10 @@ function AdminPage() {
           base &&
           (base.name !== d.name ||
             (base.config ?? "") !== (d.config ?? "") ||
-            (base.dell_customer ?? "") !== (d.dell_customer ?? ""))
+            JSON.stringify(base.dell_customer_ids || []) !==
+              JSON.stringify(
+                (Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : []).slice().sort((a, b) => a - b),
+              ))
         );
       });
 
@@ -669,10 +754,20 @@ function AdminPage() {
       for (const row of newRows) {
         const name = sanitizeName(row.name);
         const config = sanitizeConfig(row.config);
-        const dell_customer = sanitizeCustomer(row.dell_customer);
+        const dell_customer_ids = (Array.isArray(row.dell_customer_ids)
+          ? row.dell_customer_ids
+          : [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0);
+        const dell_customer = getCustomerNameById(dell_customer_ids[0]);
         const errMsg = validateRow({ name, config });
         if (errMsg) throw new Error(`Row "${row.name || "(new)"}": ${errMsg}`);
-        await createDpn({ name, config, dell_customer });
+        if (!dell_customer_ids.length || !dell_customer) {
+          throw new Error(
+            `Row "${row.name || "(new)"}": Select at least one allowed Dell customer`,
+          );
+        }
+        await createDpn({ name, config, dell_customer_ids });
       }
 
       // CHANGED rows
@@ -681,12 +776,22 @@ function AdminPage() {
         const payload = {};
         const nameSan = sanitizeName(row.name);
         const configSan = sanitizeConfig(row.config);
-        const customerSan = sanitizeCustomer(row.dell_customer);
+        const idsSan = (Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : [])
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0);
+        const customerSan = getCustomerNameById(idsSan[0]);
+        if (!idsSan.length || !customerSan) {
+          throw new Error(`Row "${row.name}": Select at least one allowed Dell customer`);
+        }
         if (nameSan !== base.name) payload.name = nameSan;
         if ((configSan ?? "") !== (base.config ?? ""))
           payload.config = configSan;
-        if ((customerSan ?? "") !== (base.dell_customer ?? ""))
-          payload.dell_customer = customerSan;
+        if (
+          JSON.stringify((idsSan || []).slice().sort((a, b) => a - b)) !==
+          JSON.stringify((base.dell_customer_ids || []).slice().sort((a, b) => a - b))
+        ) {
+          payload.dell_customer_ids = idsSan;
+        }
         if (Object.keys(payload).length > 0) {
           await updateDpn(row.id, payload);
         }
@@ -694,8 +799,9 @@ function AdminPage() {
 
       // Refresh list to get authoritative data (and new ids)
       const fresh = await getDpns();
-      setDpns(fresh || []);
-      setBaselineDpns(fresh || []);
+      const normalized = normalizeDpns(fresh || []);
+      setDpns(normalized);
+      setBaselineDpns(normalized);
       showToast("DPNs saved", "success", 2500, "bottom-right");
     } catch (e2) {
       console.error("Saving DPNs failed:", e2);
@@ -941,6 +1047,117 @@ function AdminPage() {
     }
   };
 
+  const dellCustomerBaselineMap = useMemo(() => {
+    const m = new Map();
+    baselineDellCustomers.forEach((c) => m.set(c.id, { name: c.name }));
+    return m;
+  }, [baselineDellCustomers]);
+
+  const filteredDellCustomers = useMemo(() => {
+    const q = dellCustomerQ.trim().toLowerCase();
+    if (!q) return dellCustomers;
+    return dellCustomers.filter((c) =>
+      String(c?.name || "").toLowerCase().includes(q),
+    );
+  }, [dellCustomers, dellCustomerQ]);
+
+  const dellCustomerHasChanges = useMemo(() => {
+    return dellCustomers.some((c) => {
+      if (typeof c.id !== "number") return !!String(c.name || "").trim();
+      const base = dellCustomerBaselineMap.get(c.id);
+      return base && base.name !== c.name;
+    });
+  }, [dellCustomers, dellCustomerBaselineMap]);
+
+  const addBlankDellCustomerRow = () => {
+    const newId = `new-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    setDellCustomers((cur) => [{ id: newId, name: "" }, ...cur]);
+  };
+
+  const onDellCustomerCellChange = (id, value) => {
+    setDellCustomers((cur) =>
+      cur.map((c) => (c.id === id ? { ...c, name: value } : c)),
+    );
+  };
+
+  const onDellCustomerDiscard = () => {
+    setDellCustomers(baselineDellCustomers);
+    setDellCustomerErr(null);
+  };
+
+  const onDellCustomerSave = async (e) => {
+    e.preventDefault();
+    setDellCustomerErr(null);
+    if (!dellCustomerHasChanges) return;
+
+    setDellCustomerSaving(true);
+    try {
+      const newRows = dellCustomers.filter(
+        (c) => typeof c.id !== "number" && String(c.name || "").trim(),
+      );
+      const changedRows = dellCustomers.filter((c) => {
+        if (typeof c.id !== "number") return false;
+        const base = dellCustomerBaselineMap.get(c.id);
+        return base && base.name !== c.name;
+      });
+
+      for (const row of newRows) {
+        const name = String(row.name || "").trim();
+        if (!name) throw new Error("Dell customer name is required");
+        await createDellCustomer({ name });
+      }
+      for (const row of changedRows) {
+        const name = String(row.name || "").trim();
+        if (!name) throw new Error("Dell customer name is required");
+        await updateDellCustomer(row.id, { name });
+      }
+
+      const fresh = await getDellCustomers();
+      setDellCustomers(fresh || []);
+      setBaselineDellCustomers(fresh || []);
+      showToast("Dell customers saved", "success", 2200, "bottom-right");
+    } catch (e2) {
+      console.error("Saving Dell customers failed:", e2);
+      setDellCustomerErr(e2?.body?.error || e2.message || "Failed to save Dell customers");
+      showToast("Failed to save Dell customers", "error", 3000, "bottom-right");
+    } finally {
+      setDellCustomerSaving(false);
+    }
+  };
+
+  const handleDeleteDellCustomer = async (row) => {
+    if (typeof row.id !== "number") {
+      setDellCustomers((cur) => cur.filter((c) => c.id !== row.id));
+      return;
+    }
+    const confirmed = await confirm({
+      title: "Confirm Deletion",
+      message: `Delete Dell customer "${row.name}"?`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      confirmClass: "bg-red-600 text-white hover:bg-red-700",
+      cancelClass: "bg-gray-200 text-gray-700 hover:bg-gray-300",
+    });
+    if (!confirmed) {
+      showToast("Deletion cancelled", "info", 3000, "bottom-right");
+      return;
+    }
+    try {
+      setDeletingDellCustomerId(row.id);
+      await deleteDellCustomer(row.id);
+      setDellCustomers((cur) => cur.filter((c) => c.id !== row.id));
+      setBaselineDellCustomers((cur) => cur.filter((c) => c.id !== row.id));
+      showToast(`Deleted ${row.name}`, "success", 2200, "bottom-right");
+    } catch (e) {
+      const msg = e?.body?.error || e?.message || "Failed to delete Dell customer";
+      showToast(msg, "error", 3500, "bottom-right");
+    } finally {
+      setDeletingDellCustomerId(null);
+    }
+  };
+
   return (
     <>
       <Toast />
@@ -956,6 +1173,7 @@ function AdminPage() {
             err={err}
             loading={loading}
             users={users}
+            baselineMap={baselineMap}
             me={me}
             showToast={showToast}
             handleLocalToggle={handleLocalToggle}
@@ -963,6 +1181,24 @@ function AdminPage() {
             handleSave={handleSave}
             hasChanges={hasChanges}
             saving={saving}
+          />
+        )}
+        {tab === "dell-customers" && (
+          <DellCustomersSection
+            onSave={onDellCustomerSave}
+            addBlankRow={addBlankDellCustomerRow}
+            query={dellCustomerQ}
+            setQuery={setDellCustomerQ}
+            error={dellCustomerErr}
+            loading={dellCustomerLoading}
+            rows={filteredDellCustomers}
+            baselineMap={dellCustomerBaselineMap}
+            onCellChange={onDellCustomerCellChange}
+            onDelete={handleDeleteDellCustomer}
+            deletingId={deletingDellCustomerId}
+            saving={dellCustomerSaving}
+            onDiscard={onDellCustomerDiscard}
+            hasChanges={dellCustomerHasChanges}
           />
         )}
 
@@ -977,6 +1213,8 @@ function AdminPage() {
             filteredDpns={filteredDpns}
             dpnBaselineMap={dpnBaselineMap}
             onCellChange={onCellChange}
+            onToggleDellCustomer={onToggleDpnDellCustomer}
+            dellCustomers={dellCustomers}
             handleDeleteDpn={handleDeleteDpn}
             deletingId={deletingId}
             dpnSaving={dpnSaving}

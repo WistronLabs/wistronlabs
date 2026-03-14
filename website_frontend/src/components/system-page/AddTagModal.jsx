@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Select, { components as SelectComponents } from "react-select";
+import useBodyScrollLock from "../../hooks/useBodyScrollLock.jsx";
 
 const ADD_TAG_VALUE = "__ADD_TAG__";
 
@@ -13,6 +14,7 @@ function AddTagModal({
   showToast,
   selectStyles,
 }) {
+  useBodyScrollLock(true);
   const [q, setQ] = useState("");
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(false);

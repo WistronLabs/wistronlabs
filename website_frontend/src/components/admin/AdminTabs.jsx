@@ -1,6 +1,7 @@
 function AdminTabs({ tab, setTab }) {
   const tabs = [
     { key: "users", label: "Users" },
+    { key: "dell-customers", label: "Dell Customers" },
     { key: "dpns", label: "DPNs" },
     { key: "factories", label: "Factories" },
     { key: "parts", label: "Parts" },

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import useBodyScrollLock from "./useBodyScrollLock.jsx";
 
 export default function usePrintConfirmL11() {
   const [isOpen, setIsOpen] = useState(false);
   const resolveRef = useRef(null);
   const resolvedRef = useRef(false);
+  useBodyScrollLock(isOpen);
 
   const confirmPrintL11 = () =>
     new Promise((resolve) => {

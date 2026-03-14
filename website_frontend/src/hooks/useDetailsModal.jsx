@@ -1,6 +1,8 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { DateTime } from "luxon";
+import Select from "react-select";
 import useApi from "./useApi";
+import useBodyScrollLock from "./useBodyScrollLock.jsx";
 
 export default function useDetailsModal(showToast, onUpdated) {
   const [isOpen, setIsOpen] = useState(false);
@@ -13,18 +15,34 @@ export default function useDetailsModal(showToast, onUpdated) {
   const [detailsFormError, setDetailsFormError] = useState(null);
   const [draft, setDraft] = useState({}); // { ppid, host_mac, bmc_mac, rack_id, ... }
 
+  useBodyScrollLock(isOpen);
+
   const {
     updateSystemPPID,
     updateHostMac,
     updateBmcMac,
     updateRackServiceTag, // rename to match your API hook
+    updateSystemDellCustomer,
   } = useApi();
 
   // choose which fields are editable
   const editableKeys = useMemo(
-    () => ["ppid", "host_mac", "bmc_mac", "rack_id"],
+    () => ["ppid", "host_mac", "bmc_mac", "rack_id", "dell_customer"],
     [],
   );
+  const dellCustomerOptions = useMemo(
+    () =>
+      Array.isArray(details?.dell_customer_options)
+        ? details.dell_customer_options
+            .map((x) => String(x?.name || "").trim())
+            .filter(Boolean)
+        : [],
+    [details?.dell_customer_options],
+  );
+  const canEditDellCustomer =
+    isEditing &&
+    editableKeys.includes("dell_customer") &&
+    dellCustomerOptions.length > 1;
   const isResolvedLocation = useMemo(() => {
     const loc = String(details?.location || details?.current_location || "").trim();
     if (!loc) return false;
@@ -42,6 +60,7 @@ export default function useDetailsModal(showToast, onUpdated) {
       host_mac: data?.host_mac ?? "",
       bmc_mac: data?.bmc_mac ?? "",
       rack_id: data?.rack_id ?? "",
+      dell_customer: data?.dell_customer ?? "",
     });
   }, []);
 
@@ -173,6 +192,19 @@ export default function useDetailsModal(showToast, onUpdated) {
         await updateRackServiceTag(st, next);
       }
 
+      if (key === "dell_customer") {
+        const next = String(draft.dell_customer ?? "").trim();
+        if (!next) throw new Error("Dell Customer is required");
+        const allowed = new Set(dellCustomerOptions.map((v) => v.toLowerCase()));
+        if (allowed.size > 0 && !allowed.has(next.toLowerCase())) {
+          throw new Error("Invalid Dell Customer for this DPN");
+        }
+        await updateSystemDellCustomer(st, next);
+        setDetails((prev) =>
+          prev ? { ...prev, dell_customer: next } : prev,
+        );
+      }
+
       showToast?.("Saved", "success", 1500, "bottom-right");
       if (onUpdated) await onUpdated();
     } catch (err) {
@@ -193,6 +225,7 @@ export default function useDetailsModal(showToast, onUpdated) {
         host_mac: details?.host_mac ?? "",
         bmc_mac: details?.bmc_mac ?? "",
         rack_id: details?.rack_id ?? "",
+        dell_customer: details?.dell_customer ?? "",
       });
       setIsEditing(true);
       return;
@@ -207,6 +240,7 @@ export default function useDetailsModal(showToast, onUpdated) {
       host_mac: details?.host_mac ?? "",
       bmc_mac: details?.bmc_mac ?? "",
       rack_id: details?.rack_id ?? "",
+      dell_customer: details?.dell_customer ?? "",
     });
   };
 
@@ -284,6 +318,71 @@ export default function useDetailsModal(showToast, onUpdated) {
                 }
                 loading={loading}
               />
+
+              {canEditDellCustomer ? (
+                <div className="flex items-center justify-between gap-3">
+                  <div className="relative w-full">
+                    <span className="absolute -top-2 left-2 bg-white px-2 text-[10px] font-semibold text-gray-600 border border-gray-200 rounded z-10">
+                      Dell Customer
+                    </span>
+                    <Select
+                      value={
+                        String(draft?.dell_customer || "").trim()
+                          ? {
+                              value: draft.dell_customer,
+                              label: draft.dell_customer,
+                            }
+                          : null
+                      }
+                      onChange={(option) =>
+                        setDraftValue("dell_customer", option?.value || "")
+                      }
+                      options={dellCustomerOptions.map((v) => ({
+                        value: v,
+                        label: v,
+                      }))}
+                      isSearchable={false}
+                      classNamePrefix="details-dell-select"
+                      styles={{
+                        control: (base, state) => ({
+                          ...base,
+                          minHeight: 40,
+                          borderRadius: 10,
+                          borderColor: state.isFocused ? "#3b82f6" : "#e5e7eb",
+                          boxShadow: state.isFocused
+                            ? "0 0 0 2px rgba(59,130,246,0.2)"
+                            : base.boxShadow,
+                        }),
+                        menu: (base) => ({ ...base, zIndex: 60 }),
+                      }}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => saveField("dell_customer")}
+                    disabled={loading || !String(draft?.dell_customer || "").trim()}
+                    className={`shrink-0 px-3 py-2 rounded-lg text-sm font-medium shadow ${
+                      loading || !String(draft?.dell_customer || "").trim()
+                        ? "bg-gray-200 text-gray-500 cursor-not-allowed"
+                        : "bg-blue-600 text-white hover:bg-blue-700"
+                    }`}
+                  >
+                    {loading ? "Saving..." : "Save"}
+                  </button>
+                </div>
+              ) : (
+                <CopyBar
+                  label="Dell Customer"
+                  value={isEditing ? draft.dell_customer : details?.dell_customer}
+                  isEditing={isEditing}
+                  editable={false}
+                  copied={copiedKey === "dell_customer"}
+                  onAction={() =>
+                    isEditing ? null : handleCopy("dell_customer")
+                  }
+                  loading={loading}
+                />
+              )}
             </div>
 
             {detailsFormError && (

@@ -83,6 +83,7 @@ DEV_NAME="$cmd"
 
 SITE="${SOURCE_PROD[$DEV_NAME]:-}"
 [[ -n "$SITE" ]] || die "Config missing source_prod for '$DEV_NAME' (need TSS/FRK/etc)"
+BUILD_NUMBER="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)"
 
 PROD_FRONTEND_URL="${FRONTEND[$SITE]:-}"
 [[ -n "$PROD_FRONTEND_URL" ]] || die "Could not resolve prod frontend_url for '$SITE' from conf"
@@ -99,6 +100,7 @@ echo "  Write .env in      : $ENV_FILE"
 echo "  VITE_BACKEND_URL   : $DEV_BACKEND_URL"
 echo "  VITE_URL           : $PROD_FRONTEND_URL"
 echo "  VITE_LOCATION      : $SITE"
+echo "  BUILD_NUMBER       : $BUILD_NUMBER"
 echo "============================================================"
 
 mkdir -p "$FRONTEND_DIR"
@@ -123,10 +125,12 @@ touch "$ENV_FILE"
 set_env_kv "VITE_BACKEND_URL" "$DEV_BACKEND_URL" "$ENV_FILE"
 set_env_kv "VITE_URL" "$PROD_FRONTEND_URL" "$ENV_FILE"
 set_env_kv "VITE_LOCATION" "$SITE" "$ENV_FILE"
+set_env_kv "BUILD_NUMBER" "$BUILD_NUMBER" "$ENV_FILE"
+set_env_kv "VITE_BUILD_NUMBER" "$BUILD_NUMBER" "$ENV_FILE"
 
 echo ""
 echo "Wrote:"
-grep -E '^(VITE_BACKEND_URL|VITE_URL|VITE_LOCATION)=' "$ENV_FILE" || true
+grep -E '^(VITE_BACKEND_URL|VITE_URL|VITE_LOCATION|BUILD_NUMBER|VITE_BUILD_NUMBER)=' "$ENV_FILE" || true
 
 echo ""
 echo "Starting Vite dev server..."

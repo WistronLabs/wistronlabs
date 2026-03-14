@@ -7,6 +7,7 @@ import SystemRMALabel from "../components/SystemRMALabel.jsx";
 import { enrichPalletWithBarcodes } from "../utils/enrichPalletWithBarcodes";
 import PalletPaper from "../components/PalletPaper";
 import useApi from "../hooks/useApi";
+import useBodyScrollLock from "../hooks/useBodyScrollLock.jsx";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
 import { Link } from "react-router-dom";
 import {
@@ -464,6 +465,7 @@ export default function ShippingPage() {
   const [uploadDOACSV, setUploadDOACSV] = useState("");
   const [selectedDOAEditor, setSelectedDOAEditor] = useState(null);
   const [pendingDOAValue, setPendingDOAValue] = useState("");
+  useBodyScrollLock(showUploadDOAModal || showCreateModal || showReportModal);
   const [savingDOA, setSavingDOA] = useState(false);
   const [releaseErrors, setReleaseErrors] = useState({});
   const [missingDOAByPallet, setMissingDOAByPallet] = useState({});

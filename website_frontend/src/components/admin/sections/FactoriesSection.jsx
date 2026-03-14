@@ -21,7 +21,7 @@ function FactoriesSection({
   return (
     <form onSubmit={onFactorySave} className="space-y-4">
       <AdminToolbar
-        addLabel="+ Add row"
+        addLabel="+ Add Factory"
         onAdd={addBlankFactoryRow}
         query={factoryQ}
         onQueryChange={setFactoryQ}
@@ -64,7 +64,7 @@ function FactoriesSection({
                       (base.ppid_code ?? "") !== (f.ppid_code ?? "")));
 
                 return (
-                  <tr key={f.id} className={changed ? "bg-amber-50/40" : ""}>
+                  <tr key={f.id} className={changed ? "bg-amber-100/50" : ""}>
                     {["name", "code", "ppid_code"].map((field) => (
                       <td key={field} className="px-3 py-2 align-middle">
                         <input
@@ -73,7 +73,7 @@ function FactoriesSection({
                             onFactoryCellChange(f.id, field, e.target.value)
                           }
                           className={`w-full rounded-md border px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                            changed ? "border-amber-300" : "border-gray-300"
+                            changed ? "border-amber-400" : "border-gray-300"
                           }`}
                           placeholder={`e.g. ${
                             field === "name"

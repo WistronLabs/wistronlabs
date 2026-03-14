@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { DateTime } from "luxon";
 import {
   ResponsiveContainer,
@@ -19,8 +19,22 @@ function computeInOutCountsPerDay(
   activeLocationNames,
   timezone,
   locationID1Name,
-  rmaLocationNames = [] // <-- NEW
+  rmaLocationNames = [], // <-- NEW
+  chartDays = 7,
+  serverTime = null,
 ) {
+  const parsedServerNow = DateTime.fromFormat(
+    String(serverTime?.localtime || ""),
+    "MM/dd/yyyy, hh:mm:ss a",
+    { zone: timezone },
+  );
+  const today = (
+    parsedServerNow.isValid ? parsedServerNow : DateTime.now().setZone(timezone)
+  ).startOf("day");
+  const startDay = today.minus({ days: Math.max(1, Number(chartDays) || 7) - 1 });
+  const startKey = startDay.toISODate();
+  const endKey = today.toISODate();
+
   const dayMap = new Map();
   const rmaSet = new Set(rmaLocationNames);
 
@@ -40,20 +54,13 @@ function computeInOutCountsPerDay(
     if (!dt.isValid) return;
 
     const dayKey = dt.startOf("day").toISODate();
+    if (dayKey < startKey || dayKey > endKey) return;
     if (!dayMap.has(dayKey)) dayMap.set(dayKey, []);
     dayMap.get(dayKey).push(entry);
   });
 
-  const allDays = Array.from(dayMap.keys()).sort();
-  if (allDays.length === 0) return [];
-
-  const firstDay = DateTime.fromISO(allDays[0], { zone: timezone }).startOf(
-    "day"
-  );
-  const today = DateTime.now().setZone(timezone).startOf("day");
-
   const results = [];
-  let day = firstDay;
+  let day = startDay;
 
   while (day <= today) {
     const dayKey = day.toISODate();
@@ -101,8 +108,10 @@ function SystemInOutChart({
   locations,
   activeLocationIDs,
   serverTime,
+  chartDays = 7,
   printFriendly = false, // <-- NEW
 }) {
+  const [hiddenSeries, setHiddenSeries] = useState({});
   const activeLocationNames = locations
     .filter((loc) => activeLocationIDs.includes(loc.id))
     .map((loc) => loc.name);
@@ -121,23 +130,26 @@ function SystemInOutChart({
   );
 
   const inOutCounts = useMemo(() => {
-    if (!history.length) return null;
     return computeInOutCountsPerDay(
       history,
       activeLocationNames,
       serverTime.zone,
       locationID1Name,
-      rmaLocationNames // <-- NEW
+      rmaLocationNames, // <-- NEW
+      chartDays,
+      serverTime,
     );
   }, [
     history,
     activeLocationNames,
     serverTime.zone,
+    serverTime.localtime,
     locationID1Name,
     rmaLocationNames,
+    chartDays,
   ]);
 
-  if (!inOutCounts) return <div>No data</div>;
+  if (!inOutCounts || inOutCounts.length === 0) return <div>No data</div>;
 
   // get all unique inactive locations from results
   const allInactiveLocations = new Set();
@@ -179,8 +191,27 @@ function SystemInOutChart({
     ? { top: 8, right: 12, left: 0, bottom: 4 }
     : { top: 16, right: 12, left: 0, bottom: 4 };
 
+  const handleLegendClick = useCallback((entry) => {
+    const key = entry?.dataKey;
+    if (!key) return;
+    setHiddenSeries((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const legendFormatter = useCallback(
+    (value, entry) => {
+      const key = entry?.dataKey;
+      const hidden = key ? !!hiddenSeries[key] : false;
+      return (
+        <span className={hidden ? "text-gray-400 line-through" : "text-gray-700"}>
+          {value}
+        </span>
+      );
+    },
+    [hiddenSeries],
+  );
+
   return (
-    <div className="bg-white shadow rounded p-4">
+    <div className="bg-white p-4">
       <h2 className="text-xl font-semibold mb-4">Daily Movements</h2>
       <ResponsiveContainer width="100%" height={250}>
         <AreaChart data={chartData} margin={chartMargin}>
@@ -196,6 +227,8 @@ function SystemInOutChart({
               iconType="circle"
               height={36} // space between legend and plot
               wrapperStyle={{ fontSize: 11, lineHeight: "12px" }}
+              onClick={handleLegendClick}
+              formatter={legendFormatter}
             />
           )}
 
@@ -210,6 +243,7 @@ function SystemInOutChart({
               fill={INACTIVE_COLORS[idx % INACTIVE_COLORS.length]}
               stackId="1"
               isAnimationActive={false}
+              hide={!!hiddenSeries[loc]}
             />
           ))}
 
@@ -222,6 +256,7 @@ function SystemInOutChart({
             strokeWidth={2}
             dot={{ r: 2 }}
             isAnimationActive={false}
+            hide={!!hiddenSeries.location1Firsts}
           >
             {printFriendly && (
               <LabelList
@@ -248,6 +283,7 @@ function SystemInOutChart({
             strokeWidth={2}
             dot={{ r: 2 }}
             isAnimationActive={false}
+            hide={!!hiddenSeries.TotalResolved}
           >
             {printFriendly && (
               <LabelList

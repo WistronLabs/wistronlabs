@@ -4,6 +4,7 @@ import useApi from "../hooks/useApi";
 import useToast from "../hooks/useToast";
 import SearchContainer from "../components/SearchContainer";
 import { AuthContext } from "../context/AuthContext.jsx";
+import useBodyScrollLock from "../hooks/useBodyScrollLock.jsx";
 
 // ─────────────────────────────────────────────────────────────
 // Helpers: grouped react-select options by category
@@ -79,6 +80,7 @@ const select40Styles = {
 // Modal: Add Inventory (single or bulk CSV)
 // ─────────────────────────────────────────────────────────────
 function AddInventoryModal({ onClose, parts, onAdd, busy }) {
+  useBodyScrollLock(true);
   const [bulkMode, setBulkMode] = useState(false);
   const [ppid, setPpid] = useState("");
   const [partId, setPartId] = useState(null);
@@ -101,6 +103,17 @@ function AddInventoryModal({ onClose, parts, onAdd, busy }) {
     parts.forEach((p) => m.set(p.name.trim().toLowerCase(), p.id));
     return m;
   }, [parts]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose?.();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   const parseCsv = (text) => {
     // Accepts: "part_name,ppid" (or tab-delimited)

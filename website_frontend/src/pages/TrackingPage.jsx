@@ -44,11 +44,19 @@ function TrackingPage() {
   const [showInactive, setShowInactive] = useState(false);
   const [addSystemFormError, setAddSystemFormError] = useState(null);
   const [idiotProof, setIdiotProof] = useState(false);
-  const [printFriendly, setPrintFriendly] = useState(true);
+  const printFriendly = true;
   const [dellCustomers, setDellCustomers] = useState([]);
+  const [dpnCatalog, setDpnCatalog] = useState([]);
   const [factories, setFactories] = useState([]);
   const [configs, setConfigs] = useState([]);
   const [customTags, setCustomTags] = useState([]);
+  const [showBulkReenterModal, setShowBulkReenterModal] = useState(false);
+  const [bulkInactiveCandidates, setBulkInactiveCandidates] = useState([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+  const [bulkStoppedTag, setBulkStoppedTag] = useState(null);
+  const [bulkRetryWarning, setBulkRetryWarning] = useState(null);
+  const [chartDays, setChartDays] = useState(7);
+  const [chartDaysInput, setChartDaysInput] = useState("7");
 
   const [serverTime, setServerTime] = useState([]);
 
@@ -59,7 +67,6 @@ function TrackingPage() {
   const fetchSystems = useSystemsFetch();
   const fetchHistory = useHistoryFetch();
 
-  const chartDays = 7;
   const activeLocationIDs = [1, 2, 3, 4, 5];
   const systemLocationChartIDs = [1, 2, 4, 5];
   const inactiveLocationIDs = [6, 7, 8, 9];
@@ -78,6 +85,7 @@ function TrackingPage() {
     getTags,
     updateHostMac,
     updateBmcMac,
+    updateSystemDellCustomer,
   } = useApi();
 
   const fetchData = async () => {
@@ -169,9 +177,14 @@ function TrackingPage() {
       setSnapshot(activeLocationSnapshotFirstDay);
       setDellCustomers(
         dpnsData
-          .map((d) => d.dell_customer)
+          .flatMap((d) =>
+            Array.isArray(d?.dell_customers)
+              ? d.dell_customers.map((c) => String(c?.name || "").trim())
+              : [],
+          )
           .filter((d, i, self) => d && i === self.indexOf(d)),
       );
+      setDpnCatalog(dpnsData || []);
       setFactories(factoriesData.map((f) => f.code));
       setConfigs([...new Set(dpnsData.map(x => x.config))].filter(x => x).sort());
       setCustomTags(tagsData.map((t) => t.code));
@@ -185,11 +198,77 @@ function TrackingPage() {
 
   useEffect(() => {
     fetchData();
-  }, [idiotProof]);
+  }, [idiotProof, chartDays]);
+
+  useEffect(() => {
+    setChartDaysInput(String(chartDays));
+  }, [chartDays]);
 
   const { confirm, ConfirmDialog } = useConfirm();
   const { showToast, Toast } = useToast();
   const isMobile = useIsMobile();
+
+  const getDpnFromPpid = (ppidRaw) =>
+    String(ppidRaw || "")
+      .trim()
+      .toUpperCase()
+      .slice(3, 8);
+
+  const getAllowedDellCustomersForDpn = (dpnName) => {
+    const dpnEntry = (dpnCatalog || []).find(
+      (d) => String(d?.name || "").trim().toUpperCase() === String(dpnName || "").trim().toUpperCase(),
+    );
+    if (!dpnEntry) return null;
+    const mapped = Array.isArray(dpnEntry.dell_customers)
+      ? dpnEntry.dell_customers
+          .map((c) => String(c?.name || "").trim())
+          .filter(Boolean)
+      : [];
+    return [...new Set(mapped)];
+  };
+
+  const buildReviewRows = (parsedRows, activeByTag, inactiveByTag) =>
+    parsedRows.map((row) => {
+      const serviceTag = String(row.rawTag || "").trim().toUpperCase();
+      const dpnName = getDpnFromPpid(row.ppid);
+      const options = getAllowedDellCustomersForDpn(dpnName);
+
+      let rowType = activeByTag.has(serviceTag)
+        ? "active"
+        : inactiveByTag.has(serviceTag)
+          ? "inactive"
+          : "new";
+      let skipReason = "";
+      if (rowType !== "active") {
+        if (!options) {
+          rowType = "skip";
+          skipReason = "No DPN match - skipped";
+        } else if (options.length === 0) {
+          rowType = "skip";
+          skipReason = "No Dell customer configured - skipped";
+        }
+      }
+
+      const activeSystem = activeByTag.get(serviceTag);
+      const activeCustomer = String(activeSystem?.dell_customer || "").trim();
+      const selectedCustomer = rowType === "active"
+        ? activeCustomer
+        : options && options.length === 1
+          ? options[0]
+          : "";
+
+      return {
+        ...row,
+        service_tag: serviceTag,
+        ppid: String(row.ppid || "").trim().toUpperCase(),
+        row_type: rowType,
+        skip_reason: skipReason,
+        confirmed: false,
+        dpn: dpnName,
+        dell_customer_options: options || [],
+        selected_dell_customer: selectedCustomer,
+      };
+    });
 
   async function addOrUpdateSystem(
     service_tag,
@@ -198,16 +277,24 @@ function TrackingPage() {
     rack_service_tag,
     host_mac,
     bmc_mac,
+    dell_customer,
+    options = {},
   ) {
-    const { data: inactiveSystems } = await fetchSystems({
-      page_size: 150,
-      inactive: true,
-      active: false,
-      sort_by: "location",
-      sort_order: "desc",
-      all: true,
-      serverZone: serverTime.zone,
-    });
+    const { inactiveByTag = null, askConfirmInactive = true } = options;
+
+    let inactiveSystems = [];
+    if (!inactiveByTag) {
+      const response = await fetchSystems({
+        page_size: 150,
+        inactive: true,
+        active: false,
+        sort_by: "location",
+        sort_order: "desc",
+        all: true,
+        serverZone: serverTime.zone,
+      });
+      inactiveSystems = response?.data || [];
+    }
 
     const payload = {
       service_tag,
@@ -217,25 +304,30 @@ function TrackingPage() {
       rack_service_tag,
       host_mac,
       bmc_mac,
+      dell_customer,
     };
 
-    const inactive = inactiveSystems.find(
-      (sys) =>
-        sys.service_tag.trim().toUpperCase() ===
-        service_tag.trim().toUpperCase(),
-    );
+    const normalizedTag = String(service_tag || "").trim().toUpperCase();
+    const inactive = inactiveByTag
+      ? !!inactiveByTag.get(normalizedTag)
+      : inactiveSystems.some(
+          (sys) =>
+            String(sys.service_tag || "").trim().toUpperCase() === normalizedTag,
+        );
 
     try {
       if (inactive) {
-        const confirmed = await confirm({
-          title: "Re-enter System?",
-          message: `${service_tag} exists as inactive. Move it back to Received?`,
-          confirmText: "Confirm",
-          cancelText: "Cancel",
-        });
-        if (!confirmed) {
-          showToast(`Skipped ${service_tag}`, "error", 3000, "top-right");
-          return null;
+        if (askConfirmInactive) {
+          const confirmed = await confirm({
+            title: "Re-enter System?",
+            message: `${service_tag} exists as inactive. Move it back to Received?`,
+            confirmText: "Confirm",
+            cancelText: "Cancel",
+          });
+          if (!confirmed) {
+            showToast(`Skipped ${service_tag}`, "error", 3000, "top-right");
+            return null;
+          }
         }
 
         await moveSystemToReceived(service_tag, issue, rack_service_tag);
@@ -243,6 +335,7 @@ function TrackingPage() {
         // if the system already exists, set/refresh MACs here so you don't rely on old/missing values
         await updateHostMac(service_tag, host_mac);
         await updateBmcMac(service_tag, bmc_mac);
+        await updateSystemDellCustomer(service_tag, dell_customer);
 
         showToast(
           `${service_tag} moved back to received`,
@@ -263,13 +356,201 @@ function TrackingPage() {
         config: sysFull?.config ?? "",
         dell_customer: sysFull?.dell_customer ?? "",
         url: `${FRONTEND_URL}${service_tag}`,
+        _operation: inactive ? "rereceived" : "added",
       };
     } catch (err) {
       console.error(err);
 
-      const msg = err?.body?.error || err?.message || "Unknown error";
+      const rawMsg = err?.body?.error || err?.message || "Unknown error";
+      const msg = String(rawMsg)
+        .replace(/\s*\(this unit is already in the system\)\s*/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 
       return msg;
+    }
+  }
+
+  function resetBulkReviewState() {
+    setShowBulkReenterModal(false);
+    setBulkInactiveCandidates([]);
+    setBulkStoppedTag(null);
+    setBulkRetryWarning(null);
+    setBulkProcessing(false);
+  }
+
+  function closeAddSystemModal() {
+    setShowModal(false);
+    setAddSystemFormError(null);
+    resetBulkReviewState();
+  }
+
+  function toggleBulkReviewTag(serviceTag) {
+    setBulkInactiveCandidates((prev) =>
+      prev.map((row) =>
+        row.service_tag === serviceTag && row.row_type === "inactive"
+          ? { ...row, confirmed: !row.confirmed }
+          : row,
+      ),
+    );
+  }
+
+  function toggleBulkReviewAllInactive() {
+    setBulkInactiveCandidates((prev) => {
+      const inactiveRows = prev.filter((r) => r.row_type === "inactive");
+      const allConfirmed =
+        inactiveRows.length > 0 && inactiveRows.every((r) => r.confirmed);
+      return prev.map((row) =>
+        row.row_type === "inactive"
+          ? { ...row, confirmed: !allConfirmed }
+          : row,
+      );
+    });
+  }
+
+  function setBulkReviewDellCustomer(serviceTag, customerName) {
+    setBulkInactiveCandidates((prev) =>
+      prev.map((row) =>
+        row.service_tag === serviceTag
+          ? { ...row, selected_dell_customer: customerName }
+          : row,
+      ),
+    );
+  }
+
+  async function handleBulkReviewReceive() {
+    if (bulkStoppedTag) {
+      closeAddSystemModal();
+      return;
+    }
+    if (bulkProcessing || bulkInactiveCandidates.length === 0) return;
+
+    setBulkProcessing(true);
+    setBulkStoppedTag(null);
+    setAddSystemFormError(null);
+
+    let addOrUpdateSystemError = false;
+    const systemsPDF = [];
+    let addedCount = 0;
+    let rereceivedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+    const failedRows = [];
+    const inactiveByTag = new Map(
+      bulkInactiveCandidates
+        .filter((row) => row.row_type === "inactive")
+        .map((row) => [row.service_tag, true]),
+    );
+    const activeTagSet = new Set(
+      bulkInactiveCandidates
+        .filter((row) => row.row_type === "active")
+        .map((row) => row.service_tag),
+    );
+    const confirmedInactiveTags = new Set(
+      bulkInactiveCandidates
+        .filter((row) => row.row_type === "inactive" && row.confirmed)
+        .map((row) => row.service_tag),
+    );
+
+    try {
+      for (const row of bulkInactiveCandidates) {
+        const tag = row.service_tag;
+
+        if (activeTagSet.has(tag)) {
+          skippedCount += 1;
+          continue;
+        }
+        if (row.row_type === "skip") {
+          skippedCount += 1;
+          continue;
+        }
+        if (row.row_type === "inactive" && !confirmedInactiveTags.has(tag)) {
+          skippedCount += 1;
+          continue;
+        }
+        if (
+          Array.isArray(row.dell_customer_options) &&
+          row.dell_customer_options.length > 1 &&
+          !String(row.selected_dell_customer || "").trim()
+        ) {
+          skippedCount += 1;
+          continue;
+        }
+
+        let printable = null;
+        try {
+          printable = await addOrUpdateSystem(
+            tag,
+            row.issue,
+            row.ppid,
+            row.rackServiceTag,
+            row.host12,
+            row.bmc12,
+            row.selected_dell_customer,
+            { inactiveByTag, askConfirmInactive: false },
+          );
+        } catch (err) {
+          console.error("Error processing line:", tag, err);
+          failedCount += 1;
+          failedRows.push(`${tag}: ${err?.message || "Unknown error"}`);
+          continue;
+        }
+
+        if (printable?.service_tag) {
+          systemsPDF.push(printable);
+          if (printable?._operation === "rereceived") rereceivedCount += 1;
+          else addedCount += 1;
+        } else if (printable) {
+          failedCount += 1;
+          failedRows.push(`${tag}: ${printable}`);
+          setBulkStoppedTag(tag);
+          setAddSystemFormError(`Stopped processing at ${tag}: ${printable}`);
+          setBulkRetryWarning(
+            `Previous run stopped at ${tag}.`,
+          );
+          addOrUpdateSystemError = true;
+          break;
+        } else {
+          skippedCount += 1;
+        }
+      }
+
+      if (systemsPDF.length > 0) {
+        await delay(500);
+        try {
+          const blob = await pdf(
+            <SystemPDFLabel systems={systemsPDF} />,
+          ).toBlob();
+          const url = URL.createObjectURL(blob);
+          window.open(url, "_blank");
+        } catch (err) {
+          console.error("Failed to generate PDF", err);
+        }
+      }
+
+      await fetchData();
+      const successCount = addedCount + rereceivedCount;
+      const summary = `Added ${addedCount}, Re-received ${rereceivedCount}, Skipped ${skippedCount}, Failed ${failedCount}`;
+
+      if (successCount === 0) {
+        showToast(`No units were added. ${summary}`, "error", 4500, "top-right");
+      } else if (failedCount > 0) {
+        const failPreview = failedRows.slice(0, 2).join(" | ");
+        showToast(
+          `${summary}${failPreview ? ` — ${failPreview}` : ""}`,
+          "error",
+          5000,
+          "top-right",
+        );
+      } else {
+        showToast(summary, "success", 3500, "top-right");
+      }
+
+      if (!addOrUpdateSystemError) {
+        closeAddSystemModal();
+      }
+    } finally {
+      setBulkProcessing(false);
     }
   }
 
@@ -304,6 +585,10 @@ function TrackingPage() {
         setAddSystemFormError("All fields are required.");
         return;
       }
+      if (service_tag.length !== 7) {
+        setAddSystemFormError("Service Tag must be exactly 7 characters.");
+        return;
+      }
 
       if (!isMac12Hex(host_mac)) {
         setAddSystemFormError(
@@ -326,17 +611,77 @@ function TrackingPage() {
       }
 
       setAddSystemFormError(null);
+      const [inactiveResp, activeResp] = await Promise.all([
+        fetchSystems({
+          page_size: 150,
+          inactive: true,
+          active: false,
+          sort_by: "location",
+          sort_order: "desc",
+          all: true,
+          serverZone: serverTime.zone,
+        }),
+        fetchSystems({
+          page_size: 150,
+          inactive: false,
+          active: true,
+          sort_by: "location",
+          sort_order: "desc",
+          all: true,
+          serverZone: serverTime.zone,
+        }),
+      ]);
+      const inactiveByTag = new Map(
+        (inactiveResp?.data || []).map((sys) => [
+          String(sys.service_tag || "").trim().toUpperCase(),
+          true,
+        ]),
+      );
+      const activeByTag = new Map(
+        (activeResp?.data || []).map((sys) => [
+          String(sys.service_tag || "").trim().toUpperCase(),
+          sys,
+        ]),
+      );
 
-      let printable = null;
+      const singleRows = buildReviewRows(
+        [
+          {
+            rawTag: service_tag,
+            issue,
+            ppid,
+            rackServiceTag: rack_service_tag,
+            host12: host_mac,
+            bmc12: bmc_mac,
+          },
+        ],
+        activeByTag,
+        inactiveByTag,
+      );
+      const singleRow = singleRows[0];
 
-      // UPDATED: pass macs
-      printable = await addOrUpdateSystem(
+      const needsReview =
+        singleRow.row_type === "inactive" ||
+        singleRow.row_type === "active" ||
+        singleRow.row_type === "skip" ||
+        singleRow.dell_customer_options.length > 1;
+
+      if (needsReview) {
+        setBulkStoppedTag(null);
+        setBulkInactiveCandidates(singleRows);
+        setShowBulkReenterModal(true);
+        return;
+      }
+
+      const printable = await addOrUpdateSystem(
         service_tag,
         issue,
         ppid,
         rack_service_tag,
         host_mac,
         bmc_mac,
+        singleRow.selected_dell_customer,
+        { inactiveByTag, askConfirmInactive: false },
       );
 
       // ---------- PDF for single ----------
@@ -362,7 +707,7 @@ function TrackingPage() {
         console.log("TEST");
         return;
       }
-      setShowModal(false);
+      closeAddSystemModal();
       await fetchData();
     } else {
       // ---------- BULK ADD ----------
@@ -371,6 +716,7 @@ function TrackingPage() {
         setAddSystemFormError("Please provide CSV data for bulk import.");
         return;
       }
+      setBulkRetryWarning(null);
       setAddSystemFormError(null);
 
       // Pre-validate
@@ -380,6 +726,7 @@ function TrackingPage() {
       const longIssues = [];
       const badLines = [];
       const badMacLines = [];
+      const badServiceTagLines = [];
 
       const parsed = lines.map((line, idx) => {
         const parts = line.split(/\t|,/).map((s) => (s ?? "").trim());
@@ -398,6 +745,9 @@ function TrackingPage() {
           bmcMac;
 
         if (!ok) badLines.push(idx + 1);
+        if (rawTag && String(rawTag).trim().toUpperCase().length !== 7) {
+          badServiceTagLines.push(idx + 1);
+        }
 
         if (issue?.length > 50) longIssues.push(idx + 1);
 
@@ -433,69 +783,52 @@ function TrackingPage() {
         );
         return;
       }
-
-      // 2) Process lines now that we know all are valid
-
-      let addOrUpdateSysrtemError = false;
-      const systemsPDF = [];
-      for (const {
-        rawTag,
-        issue,
-        ppid,
-        rackServiceTag,
-        host12,
-        bmc12,
-      } of parsed) {
-        let printable = null;
-        try {
-          printable = await addOrUpdateSystem(
-            rawTag.toUpperCase(),
-            issue, // required & non-empty from validation
-            ppid.toUpperCase(),
-            rackServiceTag,
-            host12,
-            bmc12,
-          );
-        } catch (err) {
-          console.error("Error processing line:", rawTag, err);
-          continue; // skip to next line on error
-        }
-
-        if (printable.service_tag) {
-          systemsPDF.push(printable);
-        } else {
-          setAddSystemFormError(
-            `Stopped processing at ${rawTag}: ${printable}`,
-          );
-          addOrUpdateSysrtemError = true;
-          break; // stop processing on error message
-        }
+      if (badServiceTagLines.length > 0) {
+        setAddSystemFormError(
+          `Service Tag error: must be exactly 7 characters on lines → ${badServiceTagLines.join(", ")}`,
+        );
+        return;
       }
 
-      // 3) Generate one PDF containing all labels
-      if (systemsPDF.length > 0) {
-        await delay(500);
-        try {
-          const blob = await pdf(
-            <SystemPDFLabel systems={systemsPDF} />,
-          ).toBlob();
-          const url = URL.createObjectURL(blob);
-          window.open(url, "_blank");
-        } catch (err) {
-          console.error("Failed to generate PDF", err);
-        }
-      }
+      const [inactiveResp, activeResp] = await Promise.all([
+        fetchSystems({
+          page_size: 150,
+          inactive: true,
+          active: false,
+          sort_by: "location",
+          sort_order: "desc",
+          all: true,
+          serverZone: serverTime.zone,
+        }),
+        fetchSystems({
+          page_size: 150,
+          inactive: false,
+          active: true,
+          sort_by: "location",
+          sort_order: "desc",
+          all: true,
+          serverZone: serverTime.zone,
+        }),
+      ]);
 
-      if (!addOrUpdateSysrtemError) {
-        setShowModal(false);
-      }
-
-      await fetchData();
-      setTimeout(
-        () =>
-          showToast("Successfully added units", "success", 3000, "top-right"),
-        3000,
+      const inactiveByTag = new Map(
+        (inactiveResp?.data || []).map((sys) => [
+          String(sys.service_tag || "").trim().toUpperCase(),
+          true,
+        ]),
       );
+      const activeByTag = new Map(
+        (activeResp?.data || []).map((sys) => [
+          String(sys.service_tag || "").trim().toUpperCase(),
+          sys,
+        ]),
+      );
+
+      const reviewRows = buildReviewRows(parsed, activeByTag, inactiveByTag);
+
+      setBulkStoppedTag(null);
+      setBulkInactiveCandidates(reviewRows);
+      setShowBulkReenterModal(true);
     }
   }
 
@@ -593,6 +926,7 @@ function TrackingPage() {
             {token && (
               <button
                 onClick={() => {
+                  resetBulkReviewState();
                   setAddSystemFormError(null);
                   setShowModal(true);
                 }}
@@ -618,6 +952,7 @@ function TrackingPage() {
               locations={locations}
               activeLocationIDs={systemLocationChartIDs}
               serverTime={serverTime}
+              chartDays={chartDays}
               printFriendly={printFriendly}
             />
             <SystemInOutChart
@@ -625,18 +960,55 @@ function TrackingPage() {
               locations={locations}
               activeLocationIDs={activeLocationIDs}
               serverTime={serverTime}
+              chartDays={chartDays}
               printFriendly={printFriendly}
             />
 
-            <div className="flex justify-end mt-2">
+            <div className="flex flex-wrap justify-end items-center gap-4 mt-2">
               <label className="inline-flex items-center gap-2 text-xs text-gray-500">
+                Days
                 <input
-                  type="checkbox"
-                  checked={!printFriendly}
-                  onChange={(e) => setPrintFriendly(!e.target.checked)}
-                  className="h-3 w-3 accent-blue-600"
+                  type="number"
+                  min={1}
+                  max={60}
+                  step={1}
+                  value={chartDaysInput}
+                  onChange={(e) => {
+                    const raw = e.target.value.replace(/[^\d]/g, "");
+                    setChartDaysInput(raw);
+                  }}
+                  onBlur={() => {
+                    const raw = String(chartDaysInput || "").trim();
+                    if (!raw) {
+                      setChartDaysInput(String(chartDays));
+                      return;
+                    }
+                    const parsed = Number.parseInt(raw, 10);
+                    if (!Number.isFinite(parsed)) {
+                      setChartDaysInput(String(chartDays));
+                      return;
+                    }
+                    const next = Math.min(60, Math.max(1, parsed));
+                    setChartDays(next);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Enter") return;
+                    e.preventDefault();
+                    const raw = String(chartDaysInput || "").trim();
+                    if (!raw) {
+                      setChartDaysInput(String(chartDays));
+                      return;
+                    }
+                    const parsed = Number.parseInt(raw, 10);
+                    if (!Number.isFinite(parsed)) {
+                      setChartDaysInput(String(chartDays));
+                      return;
+                    }
+                    const next = Math.min(60, Math.max(1, parsed));
+                    setChartDays(next);
+                  }}
+                  className="w-16 border border-gray-300 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
-                Sleeker Graph (hide legend & values)
               </label>
             </div>
 
@@ -733,11 +1105,25 @@ function TrackingPage() {
         )}
         {showModal && (
           <AddSystemModal
-            onClose={() => setShowModal(false)}
+            onClose={closeAddSystemModal}
             bulkMode={bulkMode}
             setBulkMode={setBulkMode}
             onSubmit={handleAddSystemSubmit}
             addSystemFormError={addSystemFormError}
+            hidden={false}
+            showBulkReview={showBulkReenterModal}
+            bulkReviewRows={bulkInactiveCandidates}
+            bulkReviewStoppedTag={bulkStoppedTag}
+            bulkReviewProcessing={bulkProcessing}
+            bulkRetryWarning={bulkRetryWarning}
+            onBulkReviewToggleTag={toggleBulkReviewTag}
+            onBulkReviewToggleAll={toggleBulkReviewAllInactive}
+            onBulkReviewCustomerChange={setBulkReviewDellCustomer}
+            onBulkReviewBack={() => {
+              setShowBulkReenterModal(false);
+              setAddSystemFormError(null);
+            }}
+            onBulkReviewSubmit={handleBulkReviewReceive}
           />
         )}
         {isModalOpen && (

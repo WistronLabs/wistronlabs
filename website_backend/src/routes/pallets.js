@@ -80,7 +80,7 @@ router.get("/", async (req, res) => {
           p.shape,    
           d.name AS dpn,
           d.config AS config,
-          d.dell_customer AS dell_customer,
+          NULL::text AS dell_customer,
           f.code AS factory_code,
 
           -- Open-pallet live members
@@ -91,7 +91,7 @@ router.get("/", async (req, res) => {
                 'service_tag', s.service_tag,
                 'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                 'dpn', sd.name,
-                'dell_customer', sd.dell_customer,
+                'dell_customer', s.dell_customer,
                 'added_at', ps.added_at,
                 'removed_at', ps.removed_at
               )
@@ -108,7 +108,7 @@ router.get("/", async (req, res) => {
                 'service_tag', s.service_tag,
                 'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                 'dpn', sd.name,
-                'dell_customer', sd.dell_customer,
+                'dell_customer', s.dell_customer,
                 'added_at', ps.added_at,
                 'removed_at', ps.removed_at
               )
@@ -131,7 +131,7 @@ router.get("/", async (req, res) => {
                     'service_tag', s.service_tag,
                     'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                     'dpn', sd.name,
-                    'dell_customer', sd.dell_customer,
+                    'dell_customer', s.dell_customer,
                     'added_at', ps.added_at,
                     'removed_at', ps.removed_at
                   )
@@ -144,7 +144,7 @@ router.get("/", async (req, res) => {
                   'service_tag', s.service_tag,
                   'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                   'dpn', sd.name,
-                  'dell_customer', sd.dell_customer,
+                  'dell_customer', s.dell_customer,
                   'added_at', ps.added_at,
                   'removed_at', ps.removed_at
                 )
@@ -177,7 +177,7 @@ router.get("/", async (req, res) => {
         ${whereSQL}
        GROUP BY p.id, p.doa_number, p.released_at, p.created_at,
          p.locked, p.locked_at, p.locked_by, p.shape,
-         d.name, d.config, d.dell_customer,
+         d.name, d.config,
          f.code
         ORDER BY ${orderColumn} ${orderDirection}
         ${limitOffsetSQL}
@@ -298,7 +298,7 @@ router.get("/:pallet_number", async (req, res) => {
         p.shape, 
         d.name AS dpn,
         d.config AS config,
-        d.dell_customer AS dell_customer,
+        NULL::text AS dell_customer,
         f.code AS factory_code,
                
 
@@ -310,7 +310,7 @@ router.get("/:pallet_number", async (req, res) => {
               'service_tag', s.service_tag,
               'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
               'dpn', sd.name,
-              'dell_customer', sd.dell_customer,
+              'dell_customer', s.dell_customer,
               'added_at', ps.added_at,
               'removed_at', ps.removed_at
             )
@@ -327,7 +327,7 @@ router.get("/:pallet_number", async (req, res) => {
               'service_tag', s.service_tag,
               'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
               'dpn', sd.name,
-              'dell_customer', sd.dell_customer,
+              'dell_customer', s.dell_customer,
               'added_at', ps.added_at,
               'removed_at', ps.removed_at
             )
@@ -350,7 +350,7 @@ router.get("/:pallet_number", async (req, res) => {
                   'service_tag', s.service_tag,
                   'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                   'dpn', sd.name,
-                  'dell_customer', sd.dell_customer,
+                  'dell_customer', s.dell_customer,
                   'added_at', ps.added_at,
                   'removed_at', ps.removed_at
                 )
@@ -363,7 +363,7 @@ router.get("/:pallet_number", async (req, res) => {
                   'service_tag', s.service_tag,
                   'doa_number', COALESCE(NULLIF(BTRIM(s.doa_number), ''), NULLIF(BTRIM(p.doa_number), '')),
                   'dpn', sd.name,
-                  'dell_customer', sd.dell_customer,
+                  'dell_customer', s.dell_customer,
                   'added_at', ps.added_at,
                   'removed_at', ps.removed_at
                 )
@@ -397,7 +397,7 @@ router.get("/:pallet_number", async (req, res) => {
       GROUP BY
         p.id, p.doa_number, p.released_at, p.created_at,
         p.locked, p.locked_at, p.locked_by, p.shape,
-        d.name, d.config, d.dell_customer,
+        d.name, d.config,
         f.code
 
       `,

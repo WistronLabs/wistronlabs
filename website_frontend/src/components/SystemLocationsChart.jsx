@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 
 import { DateTime } from "luxon";
 
@@ -18,7 +18,9 @@ function computeActiveLocationsPerDay(
   snapshot,
   history,
   activeLocationNames,
-  timezone
+  timezone,
+  serverTime,
+  chartDays = 7,
 ) {
   function normalize(entry) {
     return {
@@ -28,9 +30,19 @@ function computeActiveLocationsPerDay(
     };
   }
 
+  const parsedServerNow = DateTime.fromFormat(
+    String(serverTime?.localtime || ""),
+    "MM/dd/yyyy, hh:mm:ss a",
+    { zone: timezone },
+  );
+  const today = (
+    parsedServerNow.isValid ? parsedServerNow : DateTime.now().setZone(timezone)
+  ).startOf("day");
+  const startDay = today.minus({ days: Math.max(1, Number(chartDays) || 7) - 1 });
+  const startKey = startDay.toISODate();
+  const endKey = today.toISODate();
+
   const historyByDay = new Map();
-  let minDay = null;
-  let maxDay = null;
 
   history.forEach((rawEntry) => {
     const { tag, loc, ts } = normalize(rawEntry);
@@ -40,9 +52,7 @@ function computeActiveLocationsPerDay(
     if (!dt.isValid) return;
 
     const dayKey = dt.startOf("day").toISODate();
-
-    if (!minDay || dayKey < minDay) minDay = dayKey;
-    if (!maxDay || dayKey > maxDay) maxDay = dayKey;
+    if (dayKey < startKey || dayKey > endKey) return;
 
     if (!historyByDay.has(dayKey)) historyByDay.set(dayKey, new Map());
     const tagMap = historyByDay.get(dayKey);
@@ -52,27 +62,6 @@ function computeActiveLocationsPerDay(
     }
     tagMap.get(tag).push({ tag, loc, ts });
   });
-
-  if (!minDay || !maxDay) {
-    throw new Error("No valid history dates found");
-  }
-
-  const snapshotDay = DateTime.fromISO(minDay, { zone: timezone }).minus({
-    days: 1,
-  });
-  const today = DateTime.now().setZone(timezone).startOf("day");
-
-  if (maxDay > today.toISODate()) {
-    console.warn(
-      `⚠️ maxDay (${maxDay}) is ahead of today (${today.toISODate()}), clamping`
-    );
-    maxDay = today.toISODate();
-  }
-
-  let endDay = DateTime.fromISO(maxDay, { zone: timezone });
-  if (endDay < today) {
-    endDay = today;
-  }
 
   const results = [];
 
@@ -87,17 +76,32 @@ function computeActiveLocationsPerDay(
     });
 
     results.push({
-      date: snapshotDay.toISODate(),
+      date: startKey,
+      counts: countState(currentState, activeLocationNames),
+    });
+  } else {
+    const startDayChanges = historyByDay.get(startKey);
+    if (startDayChanges) {
+      for (const events of startDayChanges.values()) {
+        events.sort((a, b) => DateTime.fromISO(a.ts) - DateTime.fromISO(b.ts));
+        for (const { tag, loc } of events) {
+          if (!activeLocationNames.includes(loc)) {
+            currentState.delete(tag);
+          } else {
+            currentState.set(tag, loc);
+          }
+        }
+      }
+    }
+    results.push({
+      date: startKey,
       counts: countState(currentState, activeLocationNames),
     });
   }
 
-  let day =
-    snapshot.length > 0
-      ? snapshotDay.plus({ days: 1 })
-      : DateTime.fromISO(minDay, { zone: timezone });
+  let day = startDay.plus({ days: 1 });
 
-  while (day <= endDay) {
+  while (day <= today) {
     const dayKey = day.toISODate();
 
     if (historyByDay.has(dayKey)) {
@@ -144,23 +148,26 @@ function SystemLocationsChart({
   locations,
   activeLocationIDs,
   serverTime,
+  chartDays = 7,
   printFriendly = false,
 }) {
+  const [hiddenSeries, setHiddenSeries] = useState({});
   const activeLocationNames = locations
     .filter((loc) => activeLocationIDs.includes(loc.id))
     .map((loc) => loc.name);
 
   const historyByDay = useMemo(() => {
-    if (!history.length) return null;
     return computeActiveLocationsPerDay(
       snapshot,
       history,
       activeLocationNames,
-      serverTime.zone
+      serverTime.zone,
+      serverTime,
+      chartDays,
     );
-  }, [snapshot, history, activeLocationNames, serverTime.zone]);
+  }, [snapshot, history, activeLocationNames, serverTime.zone, serverTime.localtime, chartDays]);
 
-  if (!historyByDay) return <div>No data</div>;
+  if (!historyByDay || historyByDay.length === 0) return <div>No data</div>;
 
   const chartData = historyByDay.map((day) => {
     const row = { date: DateTime.fromISO(day.date).toFormat("MM/dd/yy") };
@@ -176,8 +183,27 @@ function SystemLocationsChart({
     ? { top: 28, right: 12, left: 0, bottom: 4 }
     : { top: 16, right: 12, left: 0, bottom: 4 };
 
+  const handleLegendClick = useCallback((entry) => {
+    const key = entry?.dataKey;
+    if (!key) return;
+    setHiddenSeries((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+
+  const legendFormatter = useCallback(
+    (value, entry) => {
+      const key = entry?.dataKey;
+      const hidden = key ? !!hiddenSeries[key] : false;
+      return (
+        <span className={hidden ? "text-gray-400 line-through" : "text-gray-700"}>
+          {value}
+        </span>
+      );
+    },
+    [hiddenSeries],
+  );
+
   return (
-    <div className="bg-white shadow rounded p-4">
+    <div className="bg-white p-4">
       <h2 className="text-xl font-semibold mb-4">Active Locations Per Day</h2>
       <ResponsiveContainer width="100%" height={250}>
         <LineChart data={chartData} margin={chartMargin}>
@@ -194,6 +220,8 @@ function SystemLocationsChart({
               iconType="circle"
               wrapperStyle={{ fontSize: 11, lineHeight: "12px" }}
               height={36} // <-- this reserves space (add padding)
+              onClick={handleLegendClick}
+              formatter={legendFormatter}
             />
           )}
 
@@ -207,6 +235,7 @@ function SystemLocationsChart({
               dot={{ r: 2 }}
               stroke={CHART_COLORS[idx % CHART_COLORS.length]}
               isAnimationActive={false}
+              hide={!!hiddenSeries[loc]}
             >
               {printFriendly && (
                 <LabelList

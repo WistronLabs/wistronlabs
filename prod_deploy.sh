@@ -67,6 +67,7 @@ die(){ err "$*"; exit 1; }
 
 GIT_EMAIL="$(git -C "$SCRIPT_DIR" config user.email || true)"
 [[ -n "${GIT_EMAIL:-}" ]] || die "git user.email not set in this repo. Set it: git config user.email you@company.com"
+BUILD_NUMBER="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)"
 
 usage() {
   cat <<EOF
@@ -390,16 +391,19 @@ frontend_build_for_site() {
   echo "  VITE_BACKEND   : $backend_url"
   echo "  VITE_URL       : $vite_url"
   echo "  VITE_LOCATION  : $site"
+  echo "  BUILD_NUMBER   : $BUILD_NUMBER"
   echo "============================================================"
 
   touch "$FRONTEND_ENV_FILE"
   set_env_kv "VITE_BACKEND_URL" "$backend_url" "$FRONTEND_ENV_FILE"
   set_env_kv "VITE_URL" "$vite_url" "$FRONTEND_ENV_FILE"
   set_env_kv "VITE_LOCATION" "$site" "$FRONTEND_ENV_FILE"
+  set_env_kv "BUILD_NUMBER" "$BUILD_NUMBER" "$FRONTEND_ENV_FILE"
+  set_env_kv "VITE_BUILD_NUMBER" "$BUILD_NUMBER" "$FRONTEND_ENV_FILE"
 
   echo ""
   echo "Wrote:"
-  grep -E '^(VITE_BACKEND_URL|VITE_URL|VITE_LOCATION)=' "$FRONTEND_ENV_FILE" || true
+  grep -E '^(VITE_BACKEND_URL|VITE_URL|VITE_LOCATION|BUILD_NUMBER|VITE_BUILD_NUMBER)=' "$FRONTEND_ENV_FILE" || true
 
   echo ""
   echo "Installing deps + building..."
