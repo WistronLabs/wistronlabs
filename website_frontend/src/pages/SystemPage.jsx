@@ -1310,8 +1310,6 @@ function SystemPage() {
   }, [
     baseUrl,
     serviceTag,
-    getSystemPhotos,
-    getSystemL11LogsFound,
     logsRefreshNonce,
     serverTimeZone,
   ]);
