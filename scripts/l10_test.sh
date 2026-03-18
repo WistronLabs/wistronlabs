@@ -15,12 +15,16 @@ Usage:
 Options:
   -m                                  Skip backend MAC pull; prompt for MACs manually
   -o                                  Open interactive module picker
+  -f                                  FRU only mode; skip diag upload and L10 validation run
+  -p                                  Keep the unit powered on after the script ends
   -h                                  Show this help and exit
 
 Examples:
   ./l10_test.sh
   ./l10_test.sh -m
   ./l10_test.sh -o
+  ./l10_test.sh -f
+  ./l10_test.sh -p
 EOF
 }
 
@@ -55,12 +59,16 @@ fi
 
 SKIP_BACKEND_MAC_PULL=0
 RUN_OPTION_PICKER=0
+FRU_ONLY_MODE=0
+KEEP_POWER_ON=0
 SERVICE_TAG=""
 
-while getopts ":mo" opt; do
+while getopts ":mofp" opt; do
   case "$opt" in
     m | M) SKIP_BACKEND_MAC_PULL=1 ;;
     o | O) RUN_OPTION_PICKER=1 ;;
+    f | F) FRU_ONLY_MODE=1 ;;
+    p | P) KEEP_POWER_ON=1 ;;
     \?) err "Unknown option: -$OPTARG"; print_help; exit 1 ;;
   esac
 done
@@ -862,70 +870,78 @@ if ! ssh -o BatchMode=yes -o ConnectTimeout=5 nvidia@"$HOST_IP" "exit" 2>/dev/nu
     exit 1
 fi
 
-echo ""
-echo "INFO - Uploading diag bundle to DUT (nvidia@$HOST_IP)..."
-echo ""
-scp "/var/www/html/l10_diags/$DIAG_FILE" nvidia@"$HOST_IP":~/ >/dev/null
-
-
-echo ""
-echo "INFO - Extracting diag bundle on DUT and cleaning up archive..."
-echo ""
-ssh nvidia@"$HOST_IP" "tar -xzf ~/$DIAG_FILE && rm ~/$DIAG_FILE"
-
-DIAG_FOLDER="/home/nvidia/$(basename "$DIAG_FILE" .tgz)/"
-echo ""
-echo "INFO - Using diag folder on DUT: $DIAG_FOLDER"
-echo ""
-
 echo "INFO - Recording FRU Data"
 ipmi fru print
 echo ""
 
-log_off
-# Runs the L10 validation test by SSHing into the remote system and attaching to a tmux session.
-# The tmux session runs partnerdiag + log copy and exits when finished.
+if [[ "$FRU_ONLY_MODE" -eq 1 ]]; then
+    echo "INFO - FRU only mode enabled; skipping L10 Validation Test"
+else
+    echo ""
+    echo "INFO - Uploading diag bundle to DUT (nvidia@$HOST_IP)..."
+    echo ""
+    scp "/var/www/html/l10_diags/$DIAG_FILE" nvidia@"$HOST_IP":~/ >/dev/null
 
-echo "Running config $CONFIG L10 Validation Tests"
-ssh -t nvidia@"$HOST_IP" 'tmux new-session -As '"$SERVICE_TAG"' "
+    echo ""
+    echo "INFO - Extracting diag bundle on DUT and cleaning up archive..."
+    echo ""
+    ssh nvidia@"$HOST_IP" "tar -xzf ~/$DIAG_FILE && rm ~/$DIAG_FILE"
+
+    DIAG_FOLDER="/home/nvidia/$(basename "$DIAG_FILE" .tgz)/"
+    echo ""
+    echo "INFO - Using diag folder on DUT: $DIAG_FOLDER"
+    echo ""
+
+    log_off
+    # Runs the L10 validation test by SSHing into the remote system and attaching to a tmux session.
+    # The tmux session runs partnerdiag + log copy and exits when finished.
+    echo "Running config $CONFIG L10 Validation Tests"
+    ssh -t nvidia@"$HOST_IP" 'tmux new-session -As '"$SERVICE_TAG"' "
+        sleep 1
+        cd '"$DIAG_FOLDER"'
+        sudo ./partnerdiag --mfg \
+            --run_spec=spec_config'"$CONFIG"'.json \
+            --run_on_error --no_bmc \
+            --skip_tests='"$SKIPPED_MODULES_FORMATTED$ADDED_SKIPPED_MODULES_FORMATTED"' \
+            2>&1 | tee /home/nvidia/output.log
+        ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts 2>/dev/null || true
+        sleep 2
+        cd logs
+        LATEST=\$(ls -1 logs-*.tgz | sort | tail -n1)
+        ssh falab@'"$SERVER_LOCATION"'.wistronlabs.com mkdir -p '"$LOG_DIR"'
+        scp -r '"$DIAG_FOLDER"'/logs/\$LATEST falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/\$LATEST
+        scp /home/nvidia/output.log falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/diag_output.log
+        sleep 8
+    "'
+
     sleep 1
-    cd '"$DIAG_FOLDER"'
-    sudo ./partnerdiag --mfg \
-        --run_spec=spec_config'"$CONFIG"'.json \
-        --run_on_error --no_bmc \
-        --skip_tests='"$SKIPPED_MODULES_FORMATTED$ADDED_SKIPPED_MODULES_FORMATTED"' \
-        2>&1 | tee /home/nvidia/output.log
-    ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts 2>/dev/null || true
-    sleep 2
-    cd logs
-    LATEST=\$(ls -1 logs-*.tgz | sort | tail -n1)
-    ssh falab@'"$SERVER_LOCATION"'.wistronlabs.com mkdir -p '"$LOG_DIR"'
-    scp -r '"$DIAG_FOLDER"'/logs/\$LATEST falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/\$LATEST
-    scp /home/nvidia/output.log falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/diag_output.log
-    sleep 8
-"'
+    log_on
 
-sleep 1
-log_on
-
-cat "$LOG_DIR/diag_output.log"
+    if [[ -f "$LOG_DIR/diag_output.log" ]]; then
+        cat "$LOG_DIR/diag_output.log"
+    fi
+fi
  
 echo ""
 
-echo "INFO - Powering off system"
-if [[ "${CONFIG:-}" == "7" ]]; then
-    sshpass -p changeme ssh -tt \
-    -o StrictHostKeyChecking=no \
-    -o UserKnownHostsFile=/dev/null \
-    -o ConnectTimeout=5 \
-    -o LogLevel=ERROR \
-    root@"$BMC_IP" 'stop -script /SYS'
+if [[ "$KEEP_POWER_ON" -eq 1 ]]; then
+    echo "INFO - Keep power on mode enabled; leaving system powered on"
 else
-  ipmi chassis power off
+    echo "INFO - Powering off system"
+    if [[ "${CONFIG:-}" == "7" ]]; then
+        sshpass -p changeme ssh -tt \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o ConnectTimeout=5 \
+        -o LogLevel=ERROR \
+        root@"$BMC_IP" 'stop -script /SYS'
+    else
+      ipmi chassis power off
+    fi
 fi
 
 
 log_off
-rm "$LOG_DIR/diag_output.log"
+rm -f -- "$LOG_DIR/diag_output.log"
 rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
