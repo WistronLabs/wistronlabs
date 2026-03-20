@@ -2182,6 +2182,16 @@ router.delete(
         system_id,
       ]);
 
+      // Any transition to a resolved location clears all unit tags.
+      if (
+        rollbackLocation &&
+        RESOLVED_LOCATION_IDS.includes(rollbackLocation)
+      ) {
+        await client.query("DELETE FROM system_tag WHERE system_id = $1", [
+          system_id,
+        ]);
+      }
+
       // If latest deleted history moved from resolved -> unresolved, clear per-unit DOA.
       if (
         deletedToLocationId &&
@@ -3100,6 +3110,13 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       `,
       [targetLocationId, from_location_id, system_id, RESOLVED_LOCATION_IDS],
     );
+
+    // Any transition to a resolved location clears all unit tags.
+    if (RESOLVED_LOCATION_IDS.includes(targetLocationId)) {
+      await client.query("DELETE FROM system_tag WHERE system_id = $1", [
+        system_id,
+      ]);
+    }
 
     // Default to original note
     let finalNote = note;
