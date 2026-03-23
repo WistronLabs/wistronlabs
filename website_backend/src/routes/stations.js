@@ -7,7 +7,7 @@ const router = express.Router();
 router.get("/", async (req, res) => {
   try {
     const { rows } = await db.query(`
-      SELECT s.id, s.station_name, s.status, s.message,
+      SELECT s.id, s.station_name, s.status, s.message, s.details::json AS details,
              s.system_id,
              s.last_updated,
              sys.service_tag AS system_service_tag
@@ -28,7 +28,7 @@ router.get("/:station_name", async (req, res) => {
   try {
     const { rows } = await db.query(
       `
-      SELECT s.id, s.station_name, s.status, s.message,
+      SELECT s.id, s.station_name, s.status, s.message, s.details::json AS details,
              s.system_id,
              s.last_updated,
              sys.service_tag AS system_service_tag
@@ -53,7 +53,7 @@ router.get("/:station_name", async (req, res) => {
 router.patch("/:station_name", async (req, res) => {
   const station_name = req.params.station_name;
   // Only these fields affect last_updated
-  const { system_id, status, message } = req.body;
+  const { system_id, status, message, details } = req.body;
 
   try {
     // 1) Load current values
@@ -80,6 +80,7 @@ router.patch("/:station_name", async (req, res) => {
       req.body,
       "message"
     );
+    const wantDetails = Object.prototype.hasOwnProperty.call(req.body, "details");
 
     if (wantSystem && system_id !== current.system_id) {
       updates.push(`system_id = $${i++}`);
@@ -92,6 +93,8 @@ router.patch("/:station_name", async (req, res) => {
     if (wantMessage && (message ?? "") !== (current.message ?? "")) {
       updates.push(`message = $${i++}`);
       values.push(message ?? "");
+      updates.push(`details = $${i++}`);
+      values.push(wantDetails ? details : "");
     }
 
     // Nothing really changed → return current state without bumping last_updated
@@ -110,7 +113,7 @@ router.patch("/:station_name", async (req, res) => {
       UPDATE station
          SET ${updates.join(", ")}
        WHERE station_name = $${i}
-       RETURNING station_name, system_id, status, message, last_updated
+       RETURNING station_name, system_id, status, message, details, last_updated
     `;
 
     const updRes = await db.query(sql, values);

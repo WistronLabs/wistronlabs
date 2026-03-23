@@ -30,7 +30,8 @@ if [ -z "$BASH_PID" ]; then
   printf '  "status": %d,\n'    "3"
   # escape any quotes in the message
   escaped_msg=${MESSAGE//\"/\\\"}
-  printf '  "message": "%s"\n'  "No existing tmux session for $NORMALIZED_NAME."
+  printf '  "message": "%s",\n'  "No existing tmux session for $NORMALIZED_NAME."
+  printf '  "details": null\n'
   printf '}\n'
   exit 1
 fi
@@ -50,7 +51,7 @@ fi
 
 
 
-
+DETAILS="null"
 NEWEST_CHILD=$(pgrep -P "$BASH_PID" -afn)
 if [ -z "$NEWEST_CHILD" ]; then
   
@@ -122,21 +123,39 @@ if [[ $(echo $pane | grep -c "logs are located at ") -gt 0 ]]; then
   fi
 fi
 
-if [ "$CODE" == "0" ]; then
-  ok=0
-  failed=0
-elif [ "$CODE" == "1" ]; then
-  ok=$(echo "$pane" | grep -c "Testing.*OK \[")
-  failed=$(echo "$pane" | grep -c "Testing.*FAILED \[")
+if [ "$CODE" == "1" ]; then
+  finished_tests=$(echo "$pane" | grep -P "(Testing|Dumping).*\[ [0-9]+\:[0-9]{2}s \]" | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ \[ [0-9]+\:[0-9]{2}s \]$//g")
+  test_current=$(echo "$pane" | grep -P "(Testing|Dumping)" | tail -n1 | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ .*$//g")
+  if [[ -n $test_current ]]; then
+    MESSAGE="$MESSAGE ($test_current)"
+    test_ok=$(echo "$finished_tests" | grep " OK$" | sed -E "s/ OK$//g")
+    test_fail=$(echo "$finished_tests" | grep " FAILED$" | sed -E "s/ FAILED$//g")
+    test_skip=$(echo "$finished_tests" | grep " SKIPPED$" | sed -E "s/ SKIPPED$//g")
+    test_timeout=$(echo "$finished_tests" | grep " TIMEOUT$" | sed -E "s/ TIMEOUT$//g")
+    details_json=()
+    details_json+=("\"CURRENT TEST\": \"$test_current\"")
+    if [[ -n $test_ok ]]; then
+      details_json+=("\"OK\": $(echo "$test_ok" | jq -R . | jq -s .)")
+    fi
+    if [[ -n $test_fail ]]; then
+      details_json+=("\"FAILED\": $(echo "$test_fail" | jq -R . | jq -s .)")
+    fi
+    if [[ -n $test_timeout ]]; then
+      details_json+=("\"TIMEOUT\": $(echo "$test_timeout" | jq -R . | jq -s .)")
+    fi
+    if [[ -n $test_skip ]]; then
+      details_json+=("\"SKIPPED\": $(echo "$test_skip" | jq -R . | jq -s .)")
+    fi
+    DETAILS=$(echo {$(IFS=", "; echo "${details_json[*]}")})
+  fi
 fi
 
 # emit JSON
 printf '{\n'
 printf '  "station": "%s",\n' "$NORMALIZED_NAME"
 printf '  "status": %d,\n'    "$CODE"
-printf '  "ok": %d,\n'        "$ok"
-printf '  "failed": %d, \n'   "$failed"
 # escape any quotes in the message
 escaped_msg=${MESSAGE//\"/\\\"}
-printf '  "message": "%s"\n'  "$escaped_msg"
+printf '  "message": "%s",\n'  "$escaped_msg"
+printf '  "details": %s\n'   "$DETAILS"
 printf '}\n'

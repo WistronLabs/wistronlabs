@@ -31,11 +31,12 @@ for st in "${stations[@]}"; do
     # parse fields
     status=$(echo "$output" | jq -r '.status')
     message=$(echo "$output" | jq -r '.message')
+    details=$(echo "$output" | jq -r '.details')
 
-    echo "  status=$status, message=\"$message\""
+    echo "  status=$status, message=\"$message\", details=$details"
 
-    payload=$(jq -nc --argjson status "$status" --arg message "$message" \
-      '{status: $status, message: $message}')
+    payload=$(jq -nc --argjson status "$status" --arg message "$message" --argjson details "$details"\
+      '{status: $status, message: $message, details: $details}')
 
     # PATCH to API
     curl -s -X PATCH "$API_URL/$st" \
