@@ -34,11 +34,41 @@ function Station({
     return now.diff(then, "minutes").minutes; // float
   }, [now, then]);
 
+  const details = stationInfo.details;
+  let details_text = "";
+
+  if (details) {
+    for (let key in details) {
+      if (key === "CURRENT TEST") {
+        details_text+=key+": "+details[key]+"\n\n";
+        continue;
+      }
+      details_text+=key+"\n";
+      details_text+=details[key].reduce((acc, e) => acc+e+"\n", "");
+      details_text+="\n";
+    }
+  }
+
   // Map elapsed minutes to a 0-100% progress, clamped
   const progressPct = useMemo(() => {
-    const pct = (minutesSince / progressWindowMin) * 100;
+    let passed = 0;
+    let total = 0;
+    if (details) {
+      if ("OK" in details) {
+        total += details.OK.length;
+        passed = details.OK.length;
+      }
+      if ("FAILED" in details) {
+        total += details.FAILED.length;
+      }
+      if ("TIMEOUT" in details) {
+        total += details.TIMEOUT.length;
+      }
+    }
+
+    const pct = total > 0? (passed / total) * 100 : (minutesSince / progressWindowMin) * 100;
     return Math.max(0, Math.min(100, pct));
-  }, [minutesSince, progressWindowMin]);
+  }, [minutesSince]);
 
   const humanAgo = useMemo(() => {
     if (!diff) return "";
@@ -50,10 +80,10 @@ function Station({
     if (m > 0) return `${m} minute${m > 1 ? "s" : ""} ago`;
     return "just now";
   }, [diff]);
-
+  
   const tooltip =
     stationInfo.status === 1 && then
-      ? `${progressPct.toFixed(1)}% • updated ${humanAgo}`
+      ? `${details_text}• updated ${humanAgo} •`
       : undefined;
 
   const renderStatus = (status, message) => {
@@ -93,6 +123,14 @@ function Station({
             className="absolute left-0 top-0 h-full bg-green-300/70"
             style={{
               width: `${progressPct}%`,
+              transition: "width 0.6s linear",
+            }}
+            aria-hidden="true"
+          />
+          <span
+            className="absolute right-0 top-0 h-full bg-red-300/70"
+            style={{
+              width: `${100 - progressPct}%`,
               transition: "width 0.6s linear",
             }}
             aria-hidden="true"
