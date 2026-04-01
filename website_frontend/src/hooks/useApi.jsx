@@ -498,8 +498,106 @@ function useApi() {
 
   const getSystemPhotos = (service_tag) =>
     fetchJSON(`/systems/${encodeURIComponent(service_tag)}/photos`);
+  const getSystemLogs = (service_tag, dir = "") =>
+    fetchJSON(
+      `/systems/${encodeURIComponent(service_tag)}/logs${buildQueryString(
+        dir ? { dir } : {},
+      )}`,
+    );
   const getSystemL11LogsFound = (service_tag) =>
     fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-logs-found`);
+  const uploadSystemL11LogArchive = async (service_tag, files = []) => {
+    const chosenFiles = Array.isArray(files)
+      ? files.filter(Boolean)
+      : Array.from(files || []).filter(Boolean);
+    if (!chosenFiles.length) throw new Error("At least one file is required");
+
+    const form = new FormData();
+    chosenFiles.forEach((file) => {
+      form.append("files", file);
+    });
+
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/l11-log-archive`,
+      {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: form,
+      },
+    );
+
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json()
+      : await res.text();
+
+    if (!res.ok) {
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/l11-log-archive failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+
+    return data;
+  };
+
+  const startSystemL11Scan = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-scan`, {
+      method: "POST",
+    });
+
+  const getSystemL11ScanStatus = (service_tag, job_id) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-scan/${encodeURIComponent(job_id)}`);
+
+  const exportSystemUnitData = async (service_tag) => {
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/export-unit-data`,
+      {
+        method: "GET",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    if (!res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json")
+        ? await res.json()
+        : await res.text();
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/export-unit-data failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+
+    const disposition = res.headers.get("content-disposition") || "";
+    const filenameMatch =
+      disposition.match(/filename\*=UTF-8''([^;]+)/i) ||
+      disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = filenameMatch?.[1]
+      ? decodeURIComponent(filenameMatch[1])
+      : `system_folder_${service_tag}.tgz`;
+
+    return {
+      blob: await res.blob(),
+      filename,
+    };
+  };
 
   const getPallet = (pallet_number) =>
     fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
@@ -864,8 +962,13 @@ function useApi() {
     deleteDellCustomer,
     updateRackServiceTag,
     uploadSystemPhoto,
+    getSystemLogs,
     getSystemPhotos,
     getSystemL11LogsFound,
+    uploadSystemL11LogArchive,
+    startSystemL11Scan,
+    getSystemL11ScanStatus,
+    exportSystemUnitData,
   };
 }
 

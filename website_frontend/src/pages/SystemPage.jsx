@@ -45,60 +45,67 @@ import {
   filterPartOption,
 } from "../utils/partSelectHelpers.js";
 
-async function parseDirectoryListing(url) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Directory fetch failed: ${res.status}`);
-  const text = await res.text();
-  const parser = new DOMParser();
-  const htmlDoc = parser.parseFromString(text, "text/html");
-  const links = htmlDoc.querySelectorAll("a[href]");
-  const skipNames = new Set([
-    "name",
-    "last modified",
-    "size",
-    "description",
-    "parent directory",
-  ]);
-  const seen = new Set();
-  const items = [];
-  links.forEach((a) => {
-    const href = (a.getAttribute("href") || "").trim();
-    const name = (a.textContent || "").trim().replace(/\/$/, "");
-    if (!href || !name) return;
-    if (href === "../" || href.startsWith("?") || href.startsWith("#")) return;
-    if (skipNames.has(name.toLowerCase())) return;
-
-    let rawDate = "";
-    const row = a.closest("tr");
-    if (row) {
-      const cols = row.querySelectorAll("td");
-      if (cols.length >= 3) rawDate = (cols[2]?.textContent || "").trim();
-    }
-
-    const absHref = new URL(href, url).href;
-    if (seen.has(absHref)) return;
-    seen.add(absHref);
-
-    items.push({
-      name,
-      href,
-      rawDate,
-      isDir: /\/$/.test(href),
-      absHref,
-    });
-  });
-  return items;
+function summarizeRunnerText(text, maxLines = 4) {
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return "";
+  const lines = cleaned.split(/\r?\n/).filter(Boolean);
+  const clipped = lines.slice(-maxLines);
+  const suffix = lines.length > maxLines ? "\n..." : "";
+  return `${clipped.join("\n")}${suffix}`;
 }
 
-function formatListingDate(rawDate, serverZone) {
-  const modLux = DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm:ss", {
-    zone: "utc",
-  }).isValid
-    ? DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm:ss", { zone: "utc" })
-    : DateTime.fromFormat(rawDate, "yyyy-LL-dd HH:mm", { zone: "utc" });
-  return modLux.isValid
-    ? formatDateHumanReadable(new Date(modLux.toISO()), serverZone)
-    : rawDate;
+function getL11ScanDisplayStatus(status, stdout = "") {
+  const rawStatus = String(status || "").toLowerCase();
+  const output = String(stdout || "").toLowerCase();
+
+  if (rawStatus === "queued") return "Starting";
+  if (rawStatus === "running") return "Running";
+  if (rawStatus === "failed") return "Failed";
+  if (rawStatus === "succeeded") {
+    if (
+      output.includes("nothing to collect") ||
+      output.includes("nothing to do") ||
+      output.includes("no extracted folder tree contains")
+    ) {
+      return "Complete";
+    }
+    return "Complete";
+  }
+  return "Unknown";
+}
+
+function getL11ScanSummary(stdout = "") {
+  const output = String(stdout || "");
+  const normalized = output.toLowerCase();
+
+  if (!output.trim()) return "";
+  if (
+    normalized.includes("nothing to collect") ||
+    normalized.includes("nothing to do") ||
+    normalized.includes("no extracted folder tree contains")
+  ) {
+    return "No matching L11 fail logs were found for this unit.";
+  }
+  if (
+    normalized.includes("moving tar to") ||
+    normalized.includes("[hook] done.") ||
+    normalized.includes("creating tar")
+  ) {
+    return "L11 logs were found and processed.";
+  }
+  return summarizeRunnerText(output);
+}
+
+function formatL11ScanToastMessage({
+  status,
+  stdout = "",
+}) {
+  const lines = [
+    "L11 Log Scan",
+    `Status: ${getL11ScanDisplayStatus(status, stdout)}`,
+  ];
+  const output = getL11ScanSummary(stdout);
+  return output ? `${lines.join("\n")}\n\n${output}` : lines.join("\n");
 }
 
 function SystemPage() {
@@ -128,8 +135,12 @@ function SystemPage() {
   const [hasPhotosTab, setHasPhotosTab] = useState(false);
   const [hasL11RackLogs, setHasL11RackLogs] = useState(false);
   const [showPhotoMenu, setShowPhotoMenu] = useState(false);
+  const [showL11Menu, setShowL11Menu] = useState(false);
   const [showPhoneQr, setShowPhoneQr] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [uploadingL11Logs, setUploadingL11Logs] = useState(false);
+  const [runningL11Scan, setRunningL11Scan] = useState(false);
+  const [exportingUnitData, setExportingUnitData] = useState(false);
   const [releasedPallets, setreleasedPallets] = useState([]);
 
   const [serverTimeZone, setServerTimeZone] = useState("UTC");
@@ -153,7 +164,10 @@ function SystemPage() {
   const [logsDir, setLogsDir] = useState(""); // e.g. "2025-09-25/"
   const [logsRefreshNonce, setLogsRefreshNonce] = useState(0);
   const photoMenuRef = useRef(null);
+  const l11MenuRef = useRef(null);
   const photoInputRef = useRef(null);
+  const l11LogsInputRef = useRef(null);
+  const l11ScanPollTimeoutRef = useRef(null);
 
   const { confirmPrint, ConfirPrintmModal } = usePrintConfirm();
   const { confirmPrintPendingParts, ConfirPrintmModalPendingParts } =
@@ -213,6 +227,14 @@ function SystemPage() {
 
   const { token } = useContext(AuthContext);
   const canAddPhoto = !isResolved && !!token;
+  const canUploadL11Logs =
+    !!token &&
+    !isResolved &&
+    !hasL11RackLogs &&
+    !!String(system?.rack_id || "").trim();
+  const canRunL11Scan =
+    !!token && !hasL11RackLogs && !!String(system?.rack_id || "").trim();
+  const canExportUnitData = !!serviceTag;
   const qrPhotoUrl =
     typeof window !== "undefined"
       ? `${window.location.origin}/photo-upload/${encodeURIComponent(
@@ -251,8 +273,13 @@ function SystemPage() {
     addSystemTag,
     removeSystemTag,
     uploadSystemPhoto,
+    getSystemLogs,
     getSystemPhotos,
     getSystemL11LogsFound,
+    uploadSystemL11LogArchive,
+    startSystemL11Scan,
+    getSystemL11ScanStatus,
+    exportSystemUnitData,
   } = useApi();
 
   const { confirm, ConfirmDialog } = useConfirm();
@@ -1257,17 +1284,13 @@ function SystemPage() {
   useEffect(() => {
     const loadRootAndPhotos = async () => {
       try {
-        const root = `${baseUrl.replace(/\/$/, "")}/l10_logs/${serviceTag}/`;
-
-        let rootItems = [];
+        let rootLogEntries = [];
         try {
-          rootItems = await parseDirectoryListing(root);
+          const logsRes = await getSystemLogs(serviceTag);
+          rootLogEntries = Array.isArray(logsRes?.data) ? logsRes.data : [];
         } catch {
-          rootItems = [];
+          rootLogEntries = [];
         }
-        const rootLogEntries = rootItems.filter(
-          (i) => i.name.toLowerCase() !== "photos",
-        );
         setHasLogsTab(rootLogEntries.length > 0);
 
         let photoItems = [];
@@ -1280,7 +1303,9 @@ function SystemPage() {
         setPhotos(
           photoItems.map((i) => ({
             name: i.name,
-            href: `${baseUrl.replace(/\/$/, "")}${i.relative_path}`,
+            href: `${import.meta.env.VITE_BACKEND_URL}/systems/${encodeURIComponent(
+              serviceTag,
+            )}/photos/file?name=${encodeURIComponent(i.name)}`,
             name_title: "Photo",
             date:
               i.modified_at_local ||
@@ -1317,24 +1342,15 @@ function SystemPage() {
   useEffect(() => {
     const loadDirectoryLogs = async () => {
       try {
-        const root = `${baseUrl.replace(/\/$/, "")}/l10_logs/${serviceTag}/`;
-        const dirPart = logsDir
-          ? logsDir.replace(/^\//, "").replace(/\/?$/, "/")
-          : "";
-        const logsUrl = root + dirPart;
-
-        let logItems = [];
-        try {
-          logItems = await parseDirectoryListing(logsUrl);
-        } catch {
-          logItems = [];
-        }
-        const visibleLogItems = logItems.filter(
-          (i) => i.name.toLowerCase() !== "photos",
-        );
+        const logsRes = await getSystemLogs(serviceTag, logsDir);
+        const visibleLogItems = Array.isArray(logsRes?.data) ? logsRes.data : [];
 
         const entries = visibleLogItems.map((i) => {
-          const formattedDate = formatListingDate(i.rawDate, serverTimeZone);
+          const formattedDate =
+            i.modified_at_local ||
+            (i.modified_at
+              ? formatDateHumanReadable(i.modified_at, serverTimeZone)
+              : "");
           const nameLux = DateTime.fromISO(i.name, { zone: "utc" });
           const nameLocalCompact = nameLux.isValid
             ? `${nameLux.setZone(serverTimeZone).toFormat("MM/dd/yy hh:mm")}${nameLux
@@ -1356,7 +1372,14 @@ function SystemPage() {
               : `L10 Test ${nameLocalCompact}`;
           return {
             name: displayName,
-            href: i.absHref,
+            href: i.is_dir
+              ? `${baseUrl.replace(/\/$/, "")}${i.href}`
+              : `${import.meta.env.VITE_BACKEND_URL}/systems/${encodeURIComponent(
+                  serviceTag,
+                )}/logs/download?path=${encodeURIComponent(
+                  `${logsDir || ""}${i.name}`,
+                )}`,
+            dir_path: i.dir_path || null,
             name_title: "File Name",
             date: formattedDate,
             date_title: "Date Modified",
@@ -1386,16 +1409,19 @@ function SystemPage() {
 
   useEffect(() => {
     const onDocClick = (e) => {
-      if (!photoMenuRef.current) return;
-      if (!photoMenuRef.current.contains(e.target)) {
+      if (photoMenuRef.current && !photoMenuRef.current.contains(e.target)) {
         setShowPhotoMenu(false);
         setShowPhoneQr(false);
+      }
+      if (l11MenuRef.current && !l11MenuRef.current.contains(e.target)) {
+        setShowL11Menu(false);
       }
     };
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
         setShowPhotoMenu(false);
         setShowPhoneQr(false);
+        setShowL11Menu(false);
       }
     };
     document.addEventListener("mousedown", onDocClick);
@@ -1405,6 +1431,15 @@ function SystemPage() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, []);
+
+  useEffect(
+    () => () => {
+      if (l11ScanPollTimeoutRef.current) {
+        window.clearTimeout(l11ScanPollTimeoutRef.current);
+      }
+    },
+    [],
+  );
 
   const handleLocalPhotoPick = async (evt) => {
     const file = evt?.target?.files?.[0];
@@ -1423,6 +1458,119 @@ function SystemPage() {
       showToast(msg, "error", 3000, "bottom-right");
     } finally {
       setUploadingPhoto(false);
+    }
+  };
+
+  const handleL11LogsPick = async (evt) => {
+    const files = Array.from(evt?.target?.files || []);
+    evt.target.value = "";
+    if (!files.length) return;
+    if (!canUploadL11Logs) return;
+
+    setUploadingL11Logs(true);
+    try {
+      await uploadSystemL11LogArchive(serviceTag, files);
+      setShowL11Menu(false);
+      showToast("L11 logs archived", "success", 2500, "bottom-right");
+      setLogsRefreshNonce((n) => n + 1);
+    } catch (e) {
+      const msg = e?.body?.error || e?.message || "Failed to archive L11 logs";
+      showToast(msg, "error", 3500, "bottom-right");
+    } finally {
+      setUploadingL11Logs(false);
+    }
+  };
+
+  const handleRunL11Scan = async () => {
+    if (!canRunL11Scan || runningL11Scan) return;
+
+    if (l11ScanPollTimeoutRef.current) {
+      window.clearTimeout(l11ScanPollTimeoutRef.current);
+      l11ScanPollTimeoutRef.current = null;
+    }
+
+    setRunningL11Scan(true);
+    try {
+      const started = await startSystemL11Scan(serviceTag);
+      setShowL11Menu(false);
+      const jobId = started?.job_id;
+      if (!jobId) throw new Error("L11 scan started but no job id was returned");
+
+      const renderProgress = (job) => {
+        showToast(
+          formatL11ScanToastMessage({
+            status: job?.status || "queued",
+            stdout: job?.stdout || "",
+          }),
+          "info",
+          0,
+          "bottom-right",
+        );
+      };
+
+      renderProgress({ status: started?.status || "queued" });
+
+      const poll = async () => {
+        try {
+          const job = await getSystemL11ScanStatus(serviceTag, jobId);
+          renderProgress(job);
+
+          if (job?.status === "queued" || job?.status === "running") {
+            l11ScanPollTimeoutRef.current = window.setTimeout(poll, 2000);
+            return;
+          }
+
+          l11ScanPollTimeoutRef.current = null;
+          setRunningL11Scan(false);
+          setLogsRefreshNonce((n) => n + 1);
+
+          const finalType = job?.status === "succeeded" ? "success" : "error";
+          showToast(
+            formatL11ScanToastMessage({
+              status: job?.status || "unknown",
+              stdout: job?.stdout || "",
+            }),
+            finalType,
+            12000,
+            "bottom-right",
+          );
+        } catch (e) {
+          l11ScanPollTimeoutRef.current = null;
+          setRunningL11Scan(false);
+          const msg =
+            e?.body?.error || e?.message || "Failed to fetch L11 scan status";
+          showToast(`L11 Log Scan\nStatus: FAILED\n\n${msg}`, "error", 8000, "bottom-right");
+        }
+      };
+
+      l11ScanPollTimeoutRef.current = window.setTimeout(poll, 1500);
+    } catch (e) {
+      setRunningL11Scan(false);
+      const msg = e?.body?.error || e?.message || "Failed to start L11 scan";
+      showToast(`L11 Log Scan\nStatus: FAILED\n\n${msg}`, "error", 8000, "bottom-right");
+    }
+  };
+
+  const handleExportUnitData = async () => {
+    if (!canExportUnitData) return;
+
+    setExportingUnitData(true);
+    try {
+      const { blob, filename } = await exportSystemUnitData(serviceTag);
+      const objectUrl = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = filename || `system_folder_${serviceTag}.tgz`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => window.URL.revokeObjectURL(objectUrl), 1000);
+      showToast("System folder exported", "success", 2500, "bottom-right");
+    } catch (e) {
+      const msg = e?.body?.error || e?.message || "Failed to export system folder";
+      showToast(msg, "error", 3500, "bottom-right");
+    } finally {
+      setExportingUnitData(false);
     }
   };
 
@@ -2785,8 +2933,8 @@ function SystemPage() {
                 </div>
               </div>
 
-              <div className="flex flex-col sm:flex-row sm:items-start gap-2">
-                {!isRMA || (isRMA && isInPalletNumber) ? (
+	              <div className="flex flex-col sm:flex-row sm:items-start gap-2">
+	                {!isRMA || (isRMA && isInPalletNumber) ? (
                   <button
                     type="button"
                     className="bg-green-600 hover:bg-green-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow"
@@ -2797,17 +2945,25 @@ function SystemPage() {
                 ) : (
                   <></>
                 )}
-                <button
-                  type="button"
-                  className="bg-gray-600 hover:bg-gray-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow"
-                  onClick={() =>
-                    openDetails(system, { canEditResolved: !!me?.isAdmin })
-                  }
-                >
-                  Details
-                </button>
-                {me?.isAdmin && (
-                  <button
+	                <button
+	                  type="button"
+	                  className="bg-gray-600 hover:bg-gray-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow"
+	                  onClick={() =>
+	                    openDetails(system, { canEditResolved: !!me?.isAdmin })
+	                  }
+	                >
+	                  Details
+	                </button>
+	                <button
+	                  type="button"
+	                  disabled={!canExportUnitData || exportingUnitData}
+	                  onClick={handleExportUnitData}
+	                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow disabled:opacity-50 transition"
+	                >
+	                  {exportingUnitData ? "Exporting…" : "Export Files"}
+	                </button>
+	                {me?.isAdmin && (
+	                  <button
                     type="button"
                     onClick={handleDelete}
                     className={`bg-red-600 hover:bg-red-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow ${
@@ -4417,6 +4573,80 @@ function SystemPage() {
                       </div>
                     )}
                   </div>
+
+                  <div className="relative" ref={l11MenuRef}>
+                    <button
+                      type="button"
+                      disabled={
+                        uploadingL11Logs ||
+                        runningL11Scan ||
+                        (!canUploadL11Logs && !canRunL11Scan)
+                      }
+                      onClick={() => setShowL11Menu((v) => !v)}
+                      title={
+                        hasL11RackLogs
+                          ? "L11 logs already exist for this unit"
+                          : !String(system?.rack_id || "").trim()
+                            ? "Rack service tag is required before using L11 log actions"
+                            : !token
+                              ? "Login required to use L11 log actions"
+                              : undefined
+                      }
+                      className="w-full sm:w-auto bg-sky-600 hover:bg-sky-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition"
+                    >
+                      {uploadingL11Logs
+                        ? "Archiving…"
+                        : runningL11Scan
+                          ? "Scanning…"
+                          : "L11 Logs"}
+                    </button>
+                    {showL11Menu && (
+                      <div className="absolute z-30 mt-2 w-64 max-w-[85vw] rounded-lg border border-gray-200 bg-white shadow-lg p-2 space-y-2">
+                        <button
+                          type="button"
+                          disabled={!canUploadL11Logs || uploadingL11Logs}
+                          onClick={() => l11LogsInputRef.current?.click()}
+                          className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 disabled:opacity-50"
+                          title={
+                            hasL11RackLogs
+                              ? "L11 logs already exist for this unit"
+                              : isResolved
+                                ? "Resolved units cannot upload L11 logs"
+                                : !String(system?.rack_id || "").trim()
+                                  ? "Rack service tag is required before uploading L11 logs"
+                                  : undefined
+                          }
+                        >
+                          Upload L11 Logs
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!canRunL11Scan || runningL11Scan}
+                          onClick={handleRunL11Scan}
+                          className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 disabled:opacity-50"
+                          title={
+                            hasL11RackLogs
+                              ? "L11 logs already exist for this unit"
+                              : !String(system?.rack_id || "").trim()
+                                ? "Rack service tag is required before scanning L11 logs"
+                                : !token
+                                  ? "Login required to scan for L11 logs"
+                                  : undefined
+                          }
+                        >
+                          Scan L11 Logs
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <input
+                    ref={l11LogsInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleL11LogsPick}
+                  />
                 </div>
 
                 {isRMA ? (

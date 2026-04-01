@@ -34,6 +34,8 @@
 const express = require("express");
 const fs = require("fs/promises");
 const path = require("path");
+const os = require("os");
+const { spawn } = require("child_process");
 const multer = require("multer");
 const db = require("../db");
 const { authenticateToken } = require("./auth");
@@ -189,6 +191,8 @@ const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
 const RECEIVED_LOCATION_ID = 1;
 const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
 const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
+const MAX_L11_LOG_BYTES = 250 * 1024 * 1024; // 250MB per file
+const MAX_L11_LOG_FILES = 50;
 const ALLOWED_PHOTO_MIME = new Set([
   "image/jpeg",
   "image/png",
@@ -205,6 +209,14 @@ const photoUpload = multer({
       return cb(new Error("Unsupported photo type"));
     }
     cb(null, true);
+  },
+});
+
+const l11LogUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_L11_LOG_BYTES,
+    files: MAX_L11_LOG_FILES,
   },
 });
 
@@ -263,6 +275,249 @@ function timestampSuffix(d = new Date()) {
     `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
     `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
   );
+}
+
+function sanitizeUploadFileName(name, fallbackBase = "file") {
+  const parsed = path.parse(String(name || ""));
+  const safeBase = sanitizeBaseName(parsed.name || fallbackBase);
+  const safeExt =
+    parsed.ext && /^[.][a-zA-Z0-9]+$/.test(parsed.ext)
+      ? parsed.ext.toLowerCase()
+      : "";
+  return `${safeBase}${safeExt}` || fallbackBase;
+}
+
+function normalizeRelativeLogsDir(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const normalized = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+  const resolved = path.posix.normalize(normalized);
+  if (
+    resolved === ".." ||
+    resolved.startsWith("../") ||
+    path.posix.isAbsolute(resolved)
+  ) {
+    throw new Error("Invalid logs directory");
+  }
+
+  return resolved === "." ? "" : resolved.replace(/\/?$/, "/");
+}
+
+function uniqueFileName(desiredName, usedNames) {
+  const parsed = path.parse(desiredName);
+  const base = parsed.name || "file";
+  const ext = parsed.ext || "";
+  let candidate = `${base}${ext}`;
+  let counter = 2;
+
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${base}_${counter}${ext}`;
+    counter += 1;
+  }
+
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+async function runTar(args = [], options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn("tar", args, options);
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) return resolve();
+      return reject(new Error(stderr.trim() || `tar exited with code ${code}`));
+    });
+  });
+}
+
+const HOST_RUNNER_URL = process.env.HOST_RUNNER_URL || "http://172.17.0.1:9000";
+
+async function submitL11ScanJob(unitTag, rackTag, { wait = "ack", timeout = 0 } = {}) {
+  const controller = new AbortController();
+  const timeoutMs =
+    wait === "ack" || !timeout ? 5000 : Math.max(1000, Math.round(timeout * 1000));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(`${HOST_RUNNER_URL}/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Auth-Token": process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+      },
+      body: JSON.stringify({
+        script: "/opt/hooks/on-system-created.sh",
+        args: [unitTag, rackTag],
+        wait,
+        ...(timeout ? { timeout } : {}),
+      }),
+      signal: controller.signal,
+    });
+
+    const text = await resp.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    if (!resp.ok) {
+      const error = new Error(
+        `host-runner returned ${resp.status}: ${
+          typeof data === "string" ? data : JSON.stringify(data)
+        }`,
+      );
+      error.status = resp.status;
+      error.body = data;
+      throw error;
+    }
+
+    return data;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutError = new Error(
+        `host-runner request timed out after ${timeoutMs}ms`,
+      );
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getHostRunnerJob(jobId) {
+  const resp = await fetch(`${HOST_RUNNER_URL}/jobs/${encodeURIComponent(jobId)}`, {
+    headers: {
+      "X-Auth-Token": process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+    },
+  });
+
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!resp.ok) {
+    const error = new Error(
+      `host-runner returned ${resp.status}: ${
+        typeof data === "string" ? data : JSON.stringify(data)
+      }`,
+    );
+    error.status = resp.status;
+    error.body = data;
+    throw error;
+  }
+
+  return data;
+}
+
+function summarizeUpstreamError(err, fallbackMessage) {
+  const rawBody =
+    typeof err?.body === "string"
+      ? err.body
+      : err?.body && typeof err.body === "object"
+        ? err.body.description ||
+          err.body.error ||
+          err.body.message ||
+          JSON.stringify(err.body)
+        : "";
+
+  const details = rawBody || err?.message || fallbackMessage;
+  const upstreamStatus = Number.isInteger(err?.status) ? err.status : null;
+  const status =
+    upstreamStatus && upstreamStatus >= 400 && upstreamStatus < 500 ? 502 : upstreamStatus || 500;
+
+  return {
+    status,
+    details: upstreamStatus
+      ? `Upstream host-runner error (${upstreamStatus}): ${details}`
+      : details,
+  };
+}
+
+async function listLogsEntries(serviceTag, relativeDir = "") {
+  const cleanDir = normalizeRelativeLogsDir(relativeDir);
+  const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+  const targetDir = cleanDir
+    ? path.join(serviceDir, ...cleanDir.split("/").filter(Boolean))
+    : serviceDir;
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(targetDir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return { entries: [], currentDir: cleanDir };
+    }
+    throw err;
+  }
+
+  const serverZone = getServerTimeZone();
+  const formatLocal = (date) =>
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: serverZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    }).format(date);
+
+  const data = await Promise.all(
+    entries
+      .filter((entry) => entry.name.toLowerCase() !== "photos")
+      .map(async (entry) => {
+        const childRelativeDir = cleanDir
+          ? `${cleanDir.replace(/\/$/, "")}/${entry.name}`
+          : entry.name;
+        const href = entry.isDirectory()
+          ? `/l10_logs/${serviceTag}/${encodeURIComponent(childRelativeDir).replace(/%2F/g, "/")}/`
+          : `/l10_logs/${serviceTag}/${encodeURIComponent(childRelativeDir).replace(/%2F/g, "/")}`;
+
+        let modifiedAt = null;
+        try {
+          const stat = await fs.stat(path.join(targetDir, entry.name));
+          modifiedAt = stat.mtime;
+        } catch {
+          modifiedAt = null;
+        }
+
+        return {
+          name: entry.name,
+          href,
+          is_dir: entry.isDirectory(),
+          dir_path: entry.isDirectory()
+            ? normalizeRelativeLogsDir(childRelativeDir)
+            : null,
+          modified_at: modifiedAt ? modifiedAt.toISOString() : null,
+          modified_at_local: modifiedAt ? formatLocal(modifiedAt) : "",
+        };
+      }),
+  );
+
+  data.sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    const aTime = a.modified_at ? Date.parse(a.modified_at) : 0;
+    const bTime = b.modified_at ? Date.parse(b.modified_at) : 0;
+    if (aTime !== bTime) return bTime - aTime;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  return { entries: data, currentDir: cleanDir };
 }
 
 function parseAndValidatePPID(ppidRaw) {
@@ -2448,30 +2703,8 @@ router.post("/", authenticateToken, async (req, res) => {
 
     // fire-and-forget webhook AFTER response
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000); // 5s for ACK
-
-      const resp = await fetch("http://172.17.0.1:9000/", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Auth-Token": process.env.WEBHOOK_TOKEN || "",
-        },
-        body: JSON.stringify({
-          script: "/opt/hooks/on-system-created.sh",
-          args: [stUpper, rackUpper],
-          wait: "ack",
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-
-      const text = await resp.text();
-      if (!resp.ok) {
-        console.warn(`host-runner ack failed: ${resp.status} ${text}`);
-      } else {
-        console.log(`host-runner ack: ${text}`);
-      }
+      const ack = await submitL11ScanJob(stUpper, rackUpper, { wait: "ack" });
+      console.log(`host-runner ack: ${JSON.stringify(ack)}`);
     } catch (e) {
       console.error("host-runner call failed:", e);
     }
@@ -2771,6 +3004,104 @@ router.get("/:service_tag/photos", async (req, res) => {
   }
 });
 
+router.get("/:service_tag/photos/file", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  const fileName = path.basename(String(req.query.name || ""));
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+  if (!fileName) {
+    return res.status(400).json({ error: "Photo name is required" });
+  }
+
+  try {
+    const fullPath = path.join(PHOTO_UPLOAD_ROOT, serviceTag, "photos", fileName);
+    const stat = await fs.stat(fullPath);
+    if (!stat.isFile()) {
+      return res.status(400).json({ error: "Requested photo path is not a file" });
+    }
+
+    return res.sendFile(path.resolve(fullPath));
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ error: "Photo not found" });
+    }
+    console.error("Failed to serve photo:", err);
+    return res.status(500).json({ error: "Failed to serve photo" });
+  }
+});
+
+router.get("/:service_tag/logs", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const requestedDir = normalizeRelativeLogsDir(req.query.dir || "");
+    const { entries, currentDir } = await listLogsEntries(serviceTag, requestedDir);
+    return res.json({
+      service_tag: serviceTag,
+      current_dir: currentDir,
+      data: entries,
+      has_logs: entries.length > 0,
+    });
+  } catch (err) {
+    if (err?.message === "Invalid logs directory") {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error("Failed to list logs:", err);
+    return res.status(500).json({ error: "Failed to list logs" });
+  }
+});
+
+router.get("/:service_tag/logs/download", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const relativePath = normalizeRelativeLogsDir(req.query.path || "").replace(
+      /\/$/,
+      "",
+    );
+    if (!relativePath) {
+      return res.status(400).json({ error: "Log file path is required" });
+    }
+
+    const fullPath = path.join(
+      PHOTO_UPLOAD_ROOT,
+      serviceTag,
+      ...relativePath.split("/").filter(Boolean),
+    );
+    const stat = await fs.stat(fullPath);
+    if (!stat.isFile()) {
+      return res.status(400).json({ error: "Requested log path is not a file" });
+    }
+
+    if (/\.log$/i.test(fullPath)) {
+      res.type("text/plain; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${path.basename(fullPath)}"`,
+      );
+      return res.sendFile(path.resolve(fullPath));
+    }
+
+    return res.download(fullPath, path.basename(fullPath));
+  } catch (err) {
+    if (err?.message === "Invalid logs directory") {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ error: "Log file not found" });
+    }
+    console.error("Failed to download log file:", err);
+    return res.status(500).json({ error: "Failed to download log file" });
+  }
+});
+
 router.get("/:service_tag/l11-logs-found", async (req, res) => {
   const serviceTag = safeServiceTagSegment(req.params.service_tag);
   if (!serviceTag) {
@@ -2818,6 +3149,95 @@ router.get("/:service_tag/l11-logs-found", async (req, res) => {
     return res.status(500).json({ error: "Failed to evaluate l11-logs-found" });
   }
 });
+
+router.post("/:service_tag/l11-scan", authenticateToken, async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      [serviceTag],
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const rackServiceTag = safeServiceTagSegment(rows[0].rack_service_tag);
+    if (!rackServiceTag) {
+      return res
+        .status(400)
+        .json({ error: "Current rack service tag is required before scanning L11 logs" });
+    }
+
+    const found = await hasL11ArchiveForServiceTagAndRack(
+      PHOTO_UPLOAD_ROOT,
+      serviceTag,
+      rackServiceTag,
+    );
+    if (found) {
+      return res.status(409).json({
+        error: "L11 logs already exist for this unit and current rack tag",
+      });
+    }
+
+    const ack = await submitL11ScanJob(serviceTag, rackServiceTag, { wait: "ack" });
+    return res.status(202).json({
+      service_tag: serviceTag,
+      rack_service_tag: rackServiceTag,
+      job_id: ack?.job_id || null,
+      status: ack?.status || "queued",
+    });
+  } catch (err) {
+    console.error("Failed to start L11 scan:", err);
+    const { status, details } = summarizeUpstreamError(
+      err,
+      "Failed to start L11 scan",
+    );
+    return res.status(status).json({ error: details });
+  }
+});
+
+router.get(
+  "/:service_tag/l11-scan/:job_id",
+  authenticateToken,
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    const jobId = String(req.params.job_id || "").trim();
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+    if (!jobId) {
+      return res.status(400).json({ error: "job_id is required" });
+    }
+
+    try {
+      const job = await getHostRunnerJob(jobId);
+      return res.json({
+        service_tag: serviceTag,
+        job_id: job?.job_id || jobId,
+        status: job?.status || "unknown",
+        returncode: job?.returncode ?? null,
+        stdout: job?.stdout || "",
+        stderr: job?.stderr || "",
+        started_at: job?.started_at || null,
+        ended_at: job?.ended_at || null,
+      });
+    } catch (err) {
+      if (err?.status === 404) {
+        return res.status(404).json({ error: "L11 scan job not found" });
+      }
+      console.error("Failed to fetch L11 scan status:", err);
+      const { status, details } = summarizeUpstreamError(
+        err,
+        "Failed to fetch L11 scan status",
+      );
+      return res.status(status).json({ error: details });
+    }
+  },
+);
 
 router.post(
   "/:service_tag/photos",
@@ -2876,6 +3296,173 @@ router.post(
     } catch (err) {
       console.error("Photo upload failed:", err);
       return res.status(500).json({ error: "Failed to upload photo" });
+    }
+  },
+);
+
+router.post(
+  "/:service_tag/l11-log-archive",
+  authenticateToken,
+  (req, res, next) => {
+    l11LogUpload.array("files", MAX_L11_LOG_FILES)(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({
+            error: `Each L11 log file must be ${Math.floor(MAX_L11_LOG_BYTES / (1024 * 1024))}MB or smaller`,
+          });
+        }
+        if (err.code === "LIMIT_FILE_COUNT") {
+          return res.status(400).json({
+            error: `You can upload up to ${MAX_L11_LOG_FILES} files at once`,
+          });
+        }
+      }
+      return res
+        .status(400)
+        .json({ error: err.message || "Invalid L11 log upload" });
+    });
+  },
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    const files = Array.isArray(req.files) ? req.files : [];
+
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+    if (!files.length) {
+      return res.status(400).json({ error: "At least one file is required" });
+    }
+
+    let tempDir = null;
+    try {
+      const { rows } = await db.query(
+        `SELECT service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+        [serviceTag],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const rackServiceTag = safeServiceTagSegment(rows[0].rack_service_tag);
+      if (!rackServiceTag) {
+        return res
+          .status(400)
+          .json({ error: "Current rack service tag is required before uploading L11 logs" });
+      }
+
+      const existingArchive = await hasL11ArchiveForServiceTagAndRack(
+        PHOTO_UPLOAD_ROOT,
+        serviceTag,
+        rackServiceTag,
+      );
+      if (existingArchive) {
+        return res.status(409).json({
+          error: "L11 logs already exist for this unit and current rack tag",
+        });
+      }
+
+      const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+      await fs.mkdir(serviceDir, { recursive: true });
+
+      const archiveBaseName = `L11_logs_ST_${serviceTag}_RT_${rackServiceTag}`;
+      const archiveName = `${archiveBaseName}.tgz`;
+      const archivePath = path.join(serviceDir, archiveName);
+
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wistron-l11-"));
+      const archiveSourceDir = path.join(tempDir, archiveBaseName);
+      await fs.mkdir(archiveSourceDir, { recursive: true });
+      const usedNames = new Set();
+
+      for (const file of files) {
+        const safeName = uniqueFileName(
+          sanitizeUploadFileName(file.originalname, "l11_log"),
+          usedNames,
+        );
+        await fs.writeFile(path.join(archiveSourceDir, safeName), file.buffer);
+      }
+
+      await runTar(["-czf", archivePath, "-C", tempDir, archiveBaseName]);
+
+      return res.status(201).json({
+        message: "L11 logs archived",
+        service_tag: serviceTag,
+        rack_service_tag: rackServiceTag,
+        file_name: archiveName,
+        relative_path: `/l10_logs/${serviceTag}/${encodeURIComponent(archiveName)}`,
+      });
+    } catch (err) {
+      console.error("L11 log archive upload failed:", err);
+      return res.status(500).json({ error: "Failed to archive L11 logs" });
+    } finally {
+      if (tempDir) {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  },
+);
+
+router.get(
+  "/:service_tag/export-unit-data",
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+
+    let tempDir = null;
+    let archivePath = null;
+    try {
+      const { rows } = await db.query(
+        `SELECT 1 FROM system WHERE service_tag = $1 LIMIT 1`,
+        [serviceTag],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+      let serviceDirStat = null;
+      try {
+        serviceDirStat = await fs.stat(serviceDir);
+      } catch (err) {
+        if (err?.code === "ENOENT") {
+          return res.status(404).json({ error: "No unit data found to export" });
+        }
+        throw err;
+      }
+
+      if (!serviceDirStat.isDirectory()) {
+        return res.status(404).json({ error: "No unit data found to export" });
+      }
+
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wistron-unit-export-"));
+      const archiveName = `system_folder_${serviceTag}.tgz`;
+      archivePath = path.join(tempDir, archiveName);
+
+      await runTar(["-czf", archivePath, "-C", PHOTO_UPLOAD_ROOT, serviceTag]);
+
+      res.setHeader("Content-Type", "application/gzip");
+      return res.download(archivePath, archiveName, async (err) => {
+        if (err && !res.headersSent) {
+          res.status(500).json({ error: "Failed to export system folder" });
+        }
+        if (archivePath) {
+          await fs.rm(archivePath, { force: true }).catch(() => {});
+        }
+        if (tempDir) {
+          await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        }
+      });
+    } catch (err) {
+      console.error("System folder export failed:", err);
+      if (archivePath) {
+        await fs.rm(archivePath, { force: true }).catch(() => {});
+      }
+      if (tempDir) {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+      return res.status(500).json({ error: "Failed to export system folder" });
     }
   },
 );
@@ -3284,30 +3871,8 @@ router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
     // webhook AFTER response
     if (changed) {
       try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000); // 5s for ACK
-
-        const resp = await fetch("http://172.17.0.1:9000/", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Auth-Token": process.env.WEBHOOK_TOKEN || "",
-          },
-          body: JSON.stringify({
-            script: "/opt/hooks/on-system-created.sh",
-            args: [stUpper, rackUpper],
-            wait: "ack",
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-
-        const text = await resp.text();
-        if (!resp.ok) {
-          console.warn(`host-runner ack failed: ${resp.status} ${text}`);
-        } else {
-          console.log(`host-runner ack: ${text}`);
-        }
+        const ack = await submitL11ScanJob(stUpper, rackUpper, { wait: "ack" });
+        console.log(`host-runner ack: ${JSON.stringify(ack)}`);
       } catch (e) {
         console.error("host-runner call failed:", e);
       }

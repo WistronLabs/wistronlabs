@@ -211,6 +211,10 @@ function Items({
                       className="flex flex-1 min-w-0 items-center gap-x-4"
                       onClick={(e) => {
                         e.preventDefault();
+                        if (item.dir_path) {
+                          onDirChange(item.dir_path);
+                          return;
+                        }
                         try {
                           const url = new URL(href, window.location.origin);
                           const root = new URL(
