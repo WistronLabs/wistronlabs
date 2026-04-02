@@ -192,7 +192,7 @@ const RECEIVED_LOCATION_ID = 1;
 const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
 const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
 const MAX_L11_LOG_BYTES = 250 * 1024 * 1024; // 250MB per file
-const MAX_L11_LOG_FILES = 50;
+const MAX_L11_LOG_FILES = 75;
 const ALLOWED_PHOTO_MIME = new Set([
   "image/jpeg",
   "image/png",
