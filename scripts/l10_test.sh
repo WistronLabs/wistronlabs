@@ -512,19 +512,21 @@ if [[ "$RUN_OPTION_PICKER" -eq 1 ]]; then
         fi
     done
 
-    # Get unselected options
-    ADDED_SKIPPED_MODULES=$(comm -23 \
-        <(printf "%s\n" "${CONFIG_LIST[@]}" | sort) \
-        <(printf "%s\n" "$selected" | sort))
-
     #creates the formatted added modules string (one liner, comma separated, comma a beginning, no comma a beginning if empty)
-    ADDED_SKIPPED_MODULES_FORMATTED=$( [ -n "$ADDED_SKIPPED_MODULES" ] && printf ",%s" $(printf "%s\n" $ADDED_SKIPPED_MODULES | paste -sd, -) )
+    SELECTED_MODULES_FORMATTED=$( [ -n "$selected" ] && printf ",%s" $(printf "%s\n" $selected | paste -sd, -) | sed "s/^,//g" | sed "s/^inforom,//g")
 else
-    ADDED_SKIPPED_MODULES_FORMATTED=""
+    SELECTED_MODULES_FORMATTED=""
 fi
 
 #creates the formatted added modules string (one liner, comma separated)
 SKIPPED_MODULES_FORMATTED=$(IFS=,; echo "${SKIPPED_MODULES[*]}")
+
+TEST_ARG=""
+if [[ ! -z $SELECTED_MODULES_FORMATTED ]]; then
+    TEST_ARG="--test='$SELECTED_MODULES_FORMATTED'"
+else
+    TEST_ARG="--skip_tests='$SKIPPED_MODULES_FORMATTED'"
+fi
 
 BMC_MAC="$(normalize_mac_colon "$BMC_MAC")" || { err "Invalid BMC MAC"; exit 1; }
 HOST_MAC="$(normalize_mac_colon "$HOST_MAC")" || { err "Invalid HOST MAC"; exit 1; }
@@ -902,7 +904,7 @@ else
         sudo ./partnerdiag --mfg \
             --run_spec=spec_config'"$CONFIG"'.json \
             --run_on_error --no_bmc \
-            --skip_tests='"$SKIPPED_MODULES_FORMATTED$ADDED_SKIPPED_MODULES_FORMATTED"' \
+            '"$TEST_ARG"' \
             2>&1 | tee /home/nvidia/output.log
         ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts 2>/dev/null || true
         sleep 2
