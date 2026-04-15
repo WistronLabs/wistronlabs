@@ -482,6 +482,7 @@ export default function ShippingPage() {
   const {
     createPallet,
     getSystem,
+    getSystemHistory,
     getPallets,
     moveSystemBetweenPallets,
     releasePallet,
@@ -753,20 +754,76 @@ export default function ShippingPage() {
         return;
       }
 
-      // ...rest of your CSV code...
-
       const header = [
-        "pallet_number",
-        "service_tag",
-        "ppid",
-        "DPN",
+        "Date",
+        "Recv Count",
+        "RMA Count",
+        "Rack ID",
+        "PIC",
+        "FROM",
+        "Service Tag",
+        "PPID",
+        "DELL DPN",
         "Config",
-        "Dell Customer",
-        "issue",
-        "location",
-        "doa_number",
+        "Project",
+        "Issue",
+        "Analysis",
+        "Root cause",
+        "Pallet",
       ];
       const rows = [header];
+
+      const isRmaLocation = (locationName) => /^RMA\b/i.test(String(locationName || ""));
+      const fmtDate = new Intl.DateTimeFormat("en-US", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      const fmtNoteDate = new Intl.DateTimeFormat("en-US", {
+        month: "2-digit",
+        day: "2-digit",
+      });
+      const formatReceivedDate = (history = []) => {
+        const receivedEntry =
+          [...history]
+            .reverse()
+            .find((entry) => String(entry?.to_location || "") === "Received") ||
+          [...history].reverse()[0];
+        return receivedEntry?.changed_at
+          ? fmtDate.format(new Date(receivedEntry.changed_at))
+          : "";
+      };
+      const formatAnalysis = (history = []) => {
+        if (!Array.isArray(history) || history.length === 0) return "";
+        return [...history]
+          .reverse()
+          .map((entry) => {
+            const mmdd = entry?.changed_at
+              ? fmtNoteDate.format(new Date(entry.changed_at))
+              : "";
+            const fromLoc = entry?.from_location || "";
+            const toLoc = entry?.to_location || "";
+            const note = String(entry?.note || "").trim();
+            const by = entry?.moved_by || "";
+            return fromLoc
+              ? `${mmdd} - [${fromLoc} -> ${toLoc}] - ${note} [via] ${by}`
+              : `${mmdd} - [${toLoc}] - ${note} [via] ${by}`;
+          })
+          .join("\n");
+      };
+      const extractPic = (locationName) => {
+        const cleaned = String(locationName || "")
+          .replace(/\s+\((PENDING|COMPLETE)\)$/i, "")
+          .trim();
+        const match = cleaned.match(/^RMA\s+([A-Z]+ID)$/i);
+        return match ? match[1].toUpperCase() : "";
+      };
+      const buildRootCause = (details) => {
+        const root = String(details?.root_cause || "").trim();
+        const sub = String(details?.root_cause_sub_category || "").trim();
+        if (root && sub) return `${root} - ${sub}`;
+        return root || sub || "";
+      };
 
       // For each pallet → each active system → fetch live system details
       for (const pallet of filtered) {
@@ -778,27 +835,55 @@ export default function ShippingPage() {
         const details = await Promise.all(
           systems.map(async (s) => {
             try {
-              const d = await getSystem(s.service_tag);
+              const [d, history] = await Promise.all([
+                getSystem(s.service_tag),
+                getSystemHistory(s.service_tag),
+              ]);
+              const receivedCount = (history || []).filter(
+                (entry) => String(entry?.to_location || "") === "Received",
+              ).length;
+              const rmaCount = (history || []).filter((entry) => {
+                const toLoc = String(entry?.to_location || "");
+                const fromLoc = String(entry?.from_location || "");
+                return (
+                  isRmaLocation(toLoc) &&
+                  (!fromLoc || !isRmaLocation(fromLoc))
+                );
+              }).length;
               return {
-                st: s.service_tag,
+                dateReceived: formatReceivedDate(history),
+                recvCount: receivedCount,
+                rmaCount,
+                rackId: d?.rack_id || "",
+                pic: extractPic(d?.location),
+                fromFactory: d?.factory_code || "",
+                st: s.service_tag || "",
                 ppid: (d?.ppid || "").trim(),
                 dpn: d?.dpn || "",
-                config: `Config ${d?.config}` || "",
-                dell_customer: d?.dell_customer || "",
+                config: d?.config ? `Config ${d.config}` : "",
+                project: d?.dell_customer || "",
                 issue: d?.issue ?? "",
-                location: d?.location ?? "",
-                doa_number: d?.doa_number ?? s?.doa_number ?? "",
+                analysis: formatAnalysis(history),
+                rootCause: buildRootCause(d),
+                palletNumber: pallet.pallet_number || "",
               };
             } catch {
               return {
-                st: s.service_tag,
+                dateReceived: "",
+                recvCount: "",
+                rmaCount: "",
+                rackId: "",
+                pic: "",
+                fromFactory: "",
+                st: s.service_tag || "",
                 ppid: "",
                 dpn: "",
                 config: "",
-                dell_customer: "",
+                project: "",
                 issue: "",
-                location: "",
-                doa_number: s?.doa_number ?? "",
+                analysis: "",
+                rootCause: "",
+                palletNumber: pallet.pallet_number || "",
               };
             }
           }),
@@ -806,15 +891,21 @@ export default function ShippingPage() {
 
         for (const d of details) {
           rows.push([
-            pallet.pallet_number,
+            d.dateReceived,
+            d.recvCount,
+            d.rmaCount,
+            d.rackId,
+            d.pic,
+            d.fromFactory,
             d.st,
             d.ppid,
             d.dpn,
             d.config,
-            d.dell_customer,
+            d.project,
             d.issue,
-            d.location,
-            d.doa_number,
+            d.analysis,
+            d.rootCause,
+            d.palletNumber,
           ]);
         }
       }

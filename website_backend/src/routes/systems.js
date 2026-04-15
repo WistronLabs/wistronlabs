@@ -50,6 +50,7 @@ const NodeCache = require("node-cache");
 const snapshotCache = new NodeCache({ stdTTL: 8 * 60 * 60 }); // 8 hours
 
 const router = express.Router();
+const batchExportJobs = new Map();
 
 function escapeRegExp(str) {
   return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -335,6 +336,312 @@ async function runTar(args = [], options = {}) {
     });
   });
 }
+
+const BATCH_EXPORT_ROOT =
+  process.env.BATCH_EXPORT_ROOT || path.join(os.tmpdir(), "wistron-batch-exports");
+const BATCH_EXPORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const BATCH_EXPORT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // hourly
+
+async function ensureBatchExportRoot() {
+  await fs.mkdir(BATCH_EXPORT_ROOT, { recursive: true });
+}
+
+function buildBatchExportId() {
+  return `batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function batchExportMetaPath(jobId) {
+  return path.join(BATCH_EXPORT_ROOT, `${jobId}.json`);
+}
+
+function parseBatchExportCsv(raw) {
+  const seen = new Set();
+  const tags = [];
+
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const firstCell = String(line || "")
+      .split(",")[0]
+      .trim();
+    const tag = safeServiceTagSegment(firstCell);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+
+  return tags;
+}
+
+async function removeBatchExportArtifacts(meta) {
+  if (meta?.archive_path) {
+    await fs.rm(meta.archive_path, { force: true }).catch(() => {});
+  }
+  if (meta?.meta_path) {
+    await fs.rm(meta.meta_path, { force: true }).catch(() => {});
+  }
+}
+
+function serializeBatchExport(meta) {
+  const expiresAt = meta?.expires_at || null;
+  const ttlMsRemaining = expiresAt
+    ? Math.max(0, new Date(expiresAt).getTime() - Date.now())
+    : null;
+  const fileSizeBytes =
+    Number.isFinite(meta?.file_size_bytes) && meta.file_size_bytes >= 0
+      ? meta.file_size_bytes
+      : null;
+
+  return {
+    job_id: meta.job_id,
+    status: meta.status,
+    file_name: meta.file_name || null,
+    file_size_bytes: fileSizeBytes,
+    created_at: meta.created_at || null,
+    updated_at: meta.updated_at || null,
+    expires_at: expiresAt,
+    ttl_ms_remaining: ttlMsRemaining,
+    total_count: meta.total_count || 0,
+    processed_count: meta.processed_count || 0,
+    service_tags: Array.isArray(meta.service_tags) ? meta.service_tags : [],
+    skipped_not_found: Array.isArray(meta.skipped_not_found)
+      ? meta.skipped_not_found
+      : [],
+    skipped_internal_error: Array.isArray(meta.skipped_internal_error)
+      ? meta.skipped_internal_error
+      : [],
+    error: meta.error || null,
+  };
+}
+
+function isBatchExportCanceled(jobId) {
+  return batchExportJobs.get(jobId)?.canceled === true;
+}
+
+async function persistBatchExportMeta(meta) {
+  await ensureBatchExportRoot();
+  const next = {
+    ...meta,
+    meta_path: batchExportMetaPath(meta.job_id),
+    updated_at: new Date().toISOString(),
+  };
+  await fs.writeFile(next.meta_path, JSON.stringify(next, null, 2), "utf8");
+  batchExportJobs.set(next.job_id, next);
+  return next;
+}
+
+async function readBatchExportMeta(jobId) {
+  const cached = batchExportJobs.get(jobId);
+  if (cached) return cached;
+
+  const metaPath = batchExportMetaPath(jobId);
+  const raw = await fs.readFile(metaPath, "utf8");
+  const parsed = JSON.parse(raw);
+  batchExportJobs.set(jobId, parsed);
+  return parsed;
+}
+
+async function listBatchExportJobs() {
+  await ensureBatchExportRoot();
+  const entries = await fs.readdir(BATCH_EXPORT_ROOT, { withFileTypes: true });
+  const jobs = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    try {
+      const raw = await fs.readFile(path.join(BATCH_EXPORT_ROOT, entry.name), "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed?.status === "deleted") continue;
+      batchExportJobs.set(parsed.job_id, parsed);
+      jobs.push(parsed);
+    } catch {
+      // ignore unreadable metadata files
+    }
+  }
+
+  jobs.sort((a, b) => {
+    const aTs = new Date(a.created_at || 0).getTime();
+    const bTs = new Date(b.created_at || 0).getTime();
+    return bTs - aTs;
+  });
+
+  return jobs;
+}
+
+async function cleanupExpiredBatchExports() {
+  const jobs = await listBatchExportJobs().catch(() => []);
+  const now = Date.now();
+
+  await Promise.all(
+    jobs.map(async (job) => {
+      const expiresAt = job?.expires_at ? new Date(job.expires_at).getTime() : 0;
+      if (!expiresAt || expiresAt > now) return;
+      await removeBatchExportArtifacts(job);
+      batchExportJobs.delete(job.job_id);
+    }),
+  );
+}
+
+async function validateBatchExportServiceTags(serviceTags = []) {
+  const normalizedTags = [...new Set(
+    serviceTags.map((tag) => safeServiceTagSegment(tag)).filter(Boolean),
+  )];
+
+  if (!normalizedTags.length) {
+    return {
+      will_export: [],
+      skipped_not_found: [],
+      skipped_internal_error: [],
+    };
+  }
+
+  const { rows } = await db.query(
+    `SELECT service_tag FROM system WHERE service_tag = ANY($1::text[])`,
+    [normalizedTags],
+  );
+  const existing = new Set(
+    rows.map((row) => safeServiceTagSegment(row.service_tag)).filter(Boolean),
+  );
+
+  const willExport = [];
+  const skippedNotFound = [];
+  const skippedInternalError = [];
+
+  for (const serviceTag of normalizedTags) {
+    if (!existing.has(serviceTag)) {
+      skippedNotFound.push(serviceTag);
+      continue;
+    }
+
+    try {
+      const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+      const stat = await fs.stat(serviceDir);
+      if (!stat.isDirectory()) {
+        skippedInternalError.push(serviceTag);
+        continue;
+      }
+      willExport.push(serviceTag);
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        skippedInternalError.push(serviceTag);
+        continue;
+      }
+      skippedInternalError.push(serviceTag);
+    }
+  }
+
+  return {
+    will_export: willExport,
+    skipped_not_found: skippedNotFound,
+    skipped_internal_error: skippedInternalError,
+  };
+}
+
+function buildBatchExportReviewRows(serviceTags = [], preview = {}) {
+  const willExport = new Set(preview.will_export || []);
+  const skippedNotFound = new Set(preview.skipped_not_found || []);
+  const skippedInternalError = new Set(preview.skipped_internal_error || []);
+
+  return serviceTags.map((serviceTag) => ({
+    service_tag: serviceTag,
+    status: willExport.has(serviceTag)
+      ? "Will Proceed"
+      : skippedNotFound.has(serviceTag)
+        ? "Not Found"
+        : skippedInternalError.has(serviceTag)
+          ? "Internal Error"
+          : "Internal Error",
+  }));
+}
+
+async function runBatchExportJob(jobId, serviceTags = []) {
+  let meta = await readBatchExportMeta(jobId);
+  let tempDir = null;
+
+  try {
+    meta = await persistBatchExportMeta({
+      ...meta,
+      status: "running",
+      processed_count: 0,
+      error: null,
+    });
+
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wistron-batch-export-"));
+    const batchDirName = `batch_system_files_${timestampSuffix(new Date())}`;
+    const batchDir = path.join(tempDir, batchDirName);
+    await fs.mkdir(batchDir, { recursive: true });
+
+    for (let i = 0; i < serviceTags.length; i += 1) {
+      if (isBatchExportCanceled(jobId)) {
+        const canceledError = new Error("Batch export canceled");
+        canceledError.code = "BATCH_EXPORT_CANCELED";
+        throw canceledError;
+      }
+
+      const serviceTag = serviceTags[i];
+      const archiveName = `system_folder_${serviceTag}.tgz`;
+      const archivePath = path.join(batchDir, archiveName);
+
+      await runTar(["-czf", archivePath, "-C", PHOTO_UPLOAD_ROOT, serviceTag]);
+
+      meta = await persistBatchExportMeta({
+        ...meta,
+        processed_count: i + 1,
+      });
+    }
+
+    if (isBatchExportCanceled(jobId)) {
+      const canceledError = new Error("Batch export canceled");
+      canceledError.code = "BATCH_EXPORT_CANCELED";
+      throw canceledError;
+    }
+
+    await ensureBatchExportRoot();
+    const fileName = `${batchDirName}.tgz`;
+    const archivePath = path.join(BATCH_EXPORT_ROOT, `${jobId}_${fileName}`);
+    await runTar(["-czf", archivePath, "-C", tempDir, batchDirName]);
+    const archiveStat = await fs.stat(archivePath);
+
+    meta = await persistBatchExportMeta({
+      ...meta,
+      status: "ready",
+      file_name: fileName,
+      archive_path: archivePath,
+      file_size_bytes: archiveStat.size || 0,
+      expires_at: new Date(Date.now() + BATCH_EXPORT_TTL_MS).toISOString(),
+      processed_count: serviceTags.length,
+    });
+    return meta;
+  } catch (err) {
+    if (err?.code === "BATCH_EXPORT_CANCELED") {
+      try {
+        const currentMeta = await readBatchExportMeta(jobId);
+        await removeBatchExportArtifacts(currentMeta);
+      } catch {
+        // ignore cleanup read errors
+      }
+      batchExportJobs.delete(jobId);
+      return null;
+    }
+
+    console.error("Batch system export failed:", err);
+    meta = await persistBatchExportMeta({
+      ...meta,
+      status: "failed",
+      error: "Internal Error",
+      expires_at: new Date(Date.now() + BATCH_EXPORT_TTL_MS).toISOString(),
+    });
+    return meta;
+  } finally {
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+setInterval(() => {
+  cleanupExpiredBatchExports().catch((err) => {
+    console.error("Failed to clean up expired batch exports:", err);
+  });
+}, BATCH_EXPORT_CLEANUP_INTERVAL_MS).unref();
 
 const HOST_RUNNER_URL = process.env.HOST_RUNNER_URL || "http://172.17.0.1:9000";
 
@@ -1965,7 +2272,7 @@ router.get("/snapshot", async (req, res) => {
       "PPID",
       "DPN",
       "Config",
-      ...(!simplifiedFlag ? ["Dell Customer"] : []),
+      "Dell Customer",
       "Issue",
       "Note History",
       "Root Cause",
@@ -2092,7 +2399,7 @@ router.get("/snapshot", async (req, res) => {
         r.ppid ?? "",
         r.dpn ?? "",
         r.config != null ? `Config ${r.config}` : "",
-        ...(!simplifiedFlag ? [r.dell_customer ?? ""] : []),
+        r.dell_customer ?? "",
         r.issue ?? "",
         noteHistoryText ?? "",
         rootCauseText ?? "",
@@ -2752,6 +3059,156 @@ router.post("/", authenticateToken, async (req, res) => {
   }
 });
 
+router.get(
+  "/batch-export-unit-data",
+  async (_req, res) => {
+    try {
+      await cleanupExpiredBatchExports();
+      const jobs = await listBatchExportJobs();
+      return res.json(jobs.map(serializeBatchExport));
+    } catch (err) {
+      console.error("Failed to list batch exports:", err);
+      return res.status(500).json({ error: "Failed to list batch exports" });
+    }
+  },
+);
+
+router.post(
+  "/batch-export-unit-data/preview",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+      if (!serviceTags.length) {
+        return res.status(400).json({ error: "Provide at least one service tag" });
+      }
+
+      const preview = await validateBatchExportServiceTags(serviceTags);
+      return res.json({
+        ...preview,
+        total_count: serviceTags.length,
+        review_rows: buildBatchExportReviewRows(serviceTags, preview),
+      });
+    } catch (err) {
+      console.error("Failed to preview batch export:", err);
+      return res.status(500).json({ error: "Failed to preview batch export" });
+    }
+  },
+);
+
+router.post(
+  "/batch-export-unit-data",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      await cleanupExpiredBatchExports();
+
+      const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+      if (!serviceTags.length) {
+        return res.status(400).json({ error: "Provide at least one service tag" });
+      }
+
+      const preview = await validateBatchExportServiceTags(serviceTags);
+      if (!preview.will_export.length) {
+        return res.status(400).json({
+          error: "No valid systems available for export",
+          ...preview,
+          total_count: serviceTags.length,
+        });
+      }
+
+      let meta = {
+        job_id: buildBatchExportId(),
+        status: "queued",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        expires_at: null,
+        file_name: null,
+        archive_path: null,
+        total_count: preview.will_export.length,
+        processed_count: 0,
+        service_tags: preview.will_export,
+        skipped_not_found: preview.skipped_not_found,
+        skipped_internal_error: preview.skipped_internal_error,
+        review_rows: buildBatchExportReviewRows(serviceTags, preview),
+        error: null,
+      };
+
+      meta = await persistBatchExportMeta(meta);
+      runBatchExportJob(meta.job_id, preview.will_export).catch((err) => {
+        console.error("Failed to start batch export job:", err);
+      });
+
+      return res.status(202).json(serializeBatchExport(meta));
+    } catch (err) {
+      console.error("Failed to create batch export:", err);
+      return res.status(500).json({ error: "Failed to create batch export" });
+    }
+  },
+);
+
+router.get(
+  "/batch-export-unit-data/:job_id/download",
+  async (req, res) => {
+    const jobId = String(req.params.job_id || "").trim();
+    if (!jobId) {
+      return res.status(400).json({ error: "job_id is required" });
+    }
+
+    try {
+      await cleanupExpiredBatchExports();
+      const meta = await readBatchExportMeta(jobId);
+      if (meta.status !== "ready" || !meta.archive_path || !meta.file_name) {
+        return res.status(409).json({ error: "Batch export is not ready" });
+      }
+
+      await fs.access(meta.archive_path);
+      res.setHeader("Content-Type", "application/gzip");
+      return res.download(meta.archive_path, meta.file_name);
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        return res.status(404).json({ error: "Batch export not found" });
+      }
+      console.error("Failed to download batch export:", err);
+      return res.status(500).json({ error: "Failed to download batch export" });
+    }
+  },
+);
+
+router.delete(
+  "/batch-export-unit-data/:job_id",
+  authenticateToken,
+  async (req, res) => {
+    const jobId = String(req.params.job_id || "").trim();
+    if (!jobId) {
+      return res.status(400).json({ error: "job_id is required" });
+    }
+
+    try {
+      const meta = await readBatchExportMeta(jobId);
+      if (meta.status === "queued" || meta.status === "running") {
+        await persistBatchExportMeta({
+          ...meta,
+          status: "deleted",
+          canceled: true,
+          expires_at: new Date().toISOString(),
+        });
+        return res.json({ message: "Batch export deleted" });
+      }
+
+      await removeBatchExportArtifacts(meta);
+      batchExportJobs.delete(jobId);
+      return res.json({ message: "Batch export deleted" });
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        return res.status(404).json({ error: "Batch export not found" });
+      }
+      console.error("Failed to delete batch export:", err);
+      return res.status(500).json({ error: "Failed to delete batch export" });
+    }
+  },
+);
+
 // GET /api/v1/systems/:service_tag - get single system
 router.get("/:service_tag", async (req, res) => {
   const { service_tag } = req.params;
@@ -3404,6 +3861,7 @@ router.post(
 
 router.get(
   "/:service_tag/export-unit-data",
+  authenticateToken,
   async (req, res) => {
     const serviceTag = safeServiceTagSegment(req.params.service_tag);
     if (!serviceTag) {

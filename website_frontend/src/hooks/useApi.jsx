@@ -599,6 +599,23 @@ function useApi() {
     };
   };
 
+  const previewBatchExportUnitData = (csv_text) =>
+    fetchJSON(`/systems/batch-export-unit-data/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_text }),
+    });
+
+  const createBatchExportUnitData = (csv_text) =>
+    fetchJSON(`/systems/batch-export-unit-data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_text }),
+    });
+
+  const listBatchExportUnitData = () =>
+    fetchJSON(`/systems/batch-export-unit-data`);
+
   const getPallet = (pallet_number) =>
     fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
 
@@ -969,6 +986,9 @@ function useApi() {
     startSystemL11Scan,
     getSystemL11ScanStatus,
     exportSystemUnitData,
+    previewBatchExportUnitData,
+    createBatchExportUnitData,
+    listBatchExportUnitData,
   };
 }
 

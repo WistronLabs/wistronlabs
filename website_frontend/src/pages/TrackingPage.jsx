@@ -12,6 +12,7 @@ import SystemPDFLabel from "../components/SystemPDFLabel.jsx";
 
 import AddSystemModal from "../components/AddSystemModal.jsx";
 import DownloadReportModal from "../components/DownloadReportModal.jsx";
+import BatchExportSystemFilesModal from "../components/BatchExportSystemFilesModal.jsx";
 import Tooltip from "../components/Tooltip.jsx";
 
 import { formatDateHumanReadable } from "../utils/date_format.js";
@@ -55,6 +56,14 @@ function TrackingPage() {
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkStoppedTag, setBulkStoppedTag] = useState(null);
   const [bulkRetryWarning, setBulkRetryWarning] = useState(null);
+  const [isBatchExportModalOpen, setIsBatchExportModalOpen] = useState(false);
+  const [batchExportCsv, setBatchExportCsv] = useState("");
+  const [batchExportPreview, setBatchExportPreview] = useState(null);
+  const [batchExports, setBatchExports] = useState([]);
+  const [batchExportsLoading, setBatchExportsLoading] = useState(false);
+  const [batchExportPreviewLoading, setBatchExportPreviewLoading] = useState(false);
+  const [batchExportStartLoading, setBatchExportStartLoading] = useState(false);
+  const [activeBatchExportJobId, setActiveBatchExportJobId] = useState(null);
   const [chartDays, setChartDays] = useState(7);
   const [chartDaysInput, setChartDaysInput] = useState("7");
 
@@ -86,6 +95,8 @@ function TrackingPage() {
     updateHostMac,
     updateBmcMac,
     updateSystemDellCustomer,
+    previewBatchExportUnitData,
+    createBatchExportUnitData,
   } = useApi();
 
   const fetchData = async () => {
@@ -207,6 +218,36 @@ function TrackingPage() {
   const { confirm, ConfirmDialog } = useConfirm();
   const { showToast, Toast } = useToast();
   const isMobile = useIsMobile();
+
+  const fetchBatchExports = useCallback(async ({ showLoading = false } = {}) => {
+    if (showLoading) {
+      setBatchExportsLoading(true);
+    }
+    try {
+      const res = await fetch(`${BACKEND_URL}/systems/batch-export-unit-data`);
+      if (!res.ok) {
+        throw new Error(`Batch export list failed: ${res.status}`);
+      }
+      const data = await res.json();
+      setBatchExports(data || []);
+    } catch (err) {
+      console.error("Failed to load batch exports", err);
+    } finally {
+      if (showLoading) {
+        setBatchExportsLoading(false);
+      }
+    }
+  }, [BACKEND_URL]);
+
+  useEffect(() => {
+    if (!isBatchExportModalOpen) return undefined;
+
+    fetchBatchExports({ showLoading: true });
+    const interval = setInterval(() => {
+      fetchBatchExports({ showLoading: false });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [isBatchExportModalOpen, fetchBatchExports]);
 
   const getDpnFromPpid = (ppidRaw) =>
     String(ppidRaw || "")
@@ -898,6 +939,84 @@ function TrackingPage() {
       showToast("Failed to generate report", "error", 3000, "top-right");
     }
   }
+
+  async function handleBatchExportPreview() {
+    if (!batchExportCsv.trim()) {
+      showToast("Paste at least one service tag", "error", 3000, "top-right");
+      return;
+    }
+
+    setBatchExportPreviewLoading(true);
+    try {
+      const data = await previewBatchExportUnitData(batchExportCsv);
+      setBatchExportPreview(data);
+    } catch (err) {
+      console.error("Failed to preview batch export", err);
+      showToast(
+        err?.body?.error || err?.message || "Failed to preview batch export",
+        "error",
+        3500,
+        "top-right",
+      );
+    } finally {
+      setBatchExportPreviewLoading(false);
+    }
+  }
+
+  async function handleStartBatchExport() {
+    if (!batchExportPreview) {
+      showToast("Review the batch export first", "error", 3000, "top-right");
+      return;
+    }
+
+    if (!batchExportPreview.will_export?.length) {
+      showToast("No valid systems available for export", "error", 3500, "top-right");
+      return;
+    }
+
+    setBatchExportStartLoading(true);
+    try {
+      const job = await createBatchExportUnitData(batchExportCsv);
+      setActiveBatchExportJobId(job?.job_id || null);
+      setBatchExportPreview(null);
+      setBatchExportCsv("");
+      await fetchBatchExports({ showLoading: false });
+      showToast("Batch export started", "success", 3000, "top-right");
+    } catch (err) {
+      console.error("Failed to start batch export", err);
+      showToast(
+        err?.body?.error || err?.message || "Failed to start batch export",
+        "error",
+        3500,
+        "top-right",
+      );
+    } finally {
+      setBatchExportStartLoading(false);
+    }
+  }
+
+  async function handleDownloadBatchExport(job) {
+    try {
+      const url = `${BACKEND_URL}/systems/batch-export-unit-data/${encodeURIComponent(job.job_id)}/download`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = job.file_name || `${job.job_id}.tgz`;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showToast("Batch export downloading", "success", 3000, "top-right");
+    } catch (err) {
+      console.error("Failed to download batch export", err);
+      showToast(
+        err?.body?.error || err?.message || "Failed to download batch export",
+        "error",
+        3500,
+        "top-right",
+      );
+    }
+  }
+
   const fetchSystemsWithFlags = useCallback(
     (options) => {
       return fetchSystems({
@@ -1095,12 +1214,20 @@ function TrackingPage() {
                 ...customTags.map((t) => ({ field: "tags", value: t })),
               ]}
             />
-            <button
-              onClick={() => setIsModalOpen(true)}
-              className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 mt-4"
-            >
-              Download Report
-            </button>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                onClick={() => setIsModalOpen(true)}
+                className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+              >
+                Download Report
+              </button>
+              <button
+                onClick={() => setIsBatchExportModalOpen(true)}
+                className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Batch Export System Files
+              </button>
+            </div>
           </>
         )}
         {showModal && (
@@ -1136,6 +1263,27 @@ function TrackingPage() {
             setReportMode={setReportMode}
             idiotProof={idiotProof}
             setIdiotProof={setIdiotProof}
+          />
+        )}
+        {isBatchExportModalOpen && (
+          <BatchExportSystemFilesModal
+            onClose={() => {
+              setIsBatchExportModalOpen(false);
+              setBatchExportPreview(null);
+            }}
+            canCreateBatchExport={!!token}
+            csvText={batchExportCsv}
+            setCsvText={setBatchExportCsv}
+            onPreview={handleBatchExportPreview}
+            onBackToEdit={() => setBatchExportPreview(null)}
+            previewLoading={batchExportPreviewLoading}
+            previewData={batchExportPreview}
+            onStart={handleStartBatchExport}
+            startLoading={batchExportStartLoading}
+            jobs={batchExports}
+            jobsLoading={batchExportsLoading}
+            onDownload={handleDownloadBatchExport}
+            activeJobId={activeBatchExportJobId}
           />
         )}
       </main>
