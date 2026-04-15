@@ -128,7 +128,7 @@ function Station({
             aria-hidden="true"
           />
           <span
-            className="absolute right-0 top-0 h-full bg-red-300/70"
+            className="absolute right-0 top-0 h-full bg-green-200/70"
             style={{
               width: `${100 - progressPct}%`,
               transition: "width 0.6s linear",
