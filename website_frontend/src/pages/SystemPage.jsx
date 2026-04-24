@@ -351,7 +351,7 @@ function SystemPage() {
   // Add with the other constants near the top of SystemPage()
   const RMA_LOCATION_NAMES = ["RMA VID", "RMA CID", "RMA PID"];
   const L11_NAME = "Sent to L11";
-  const DELL_REPLACE_NAME = "DELL Part Replacement"
+  const DELL_REPLACE_NAME = "DELL Part Replacement";
 
   // --- Pending Parts state ---
   const [pendingBlocks, setPendingBlocks] = useState([]); // [{id, part_id}]
