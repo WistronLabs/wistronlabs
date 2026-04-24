@@ -1959,7 +1959,7 @@ router.get("/snapshot", async (req, res) => {
   const simplifiedFlag =
     simplified === "true" || simplified === "1" || simplified === true;
 
-  const INACTIVE_LOCATION_IDS = [6, 7, 8, 9];
+  const INACTIVE_LOCATION_IDS = [6, 7, 8, 9, 10];
   const RECEIVED_LOCATION_ID = 1;
 
   const serverZone = process.env.SERVER_TZ || "UTC";

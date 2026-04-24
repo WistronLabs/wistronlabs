@@ -13,6 +13,7 @@ export function allowedNextLocations(currentLocation, locations) {
           "RMA VID",
           "RMA PID",
           "RMA CID",
+          "DELL Part Replacement",
         ].includes(l.name)
       );
     case "Pending Parts":
@@ -28,6 +29,7 @@ export function allowedNextLocations(currentLocation, locations) {
           "RMA VID",
           "RMA PID",
           "RMA CID",
+          "DELL Part Replacement",
           "Sent to L11",
         ].includes(l.name)
       );

@@ -182,7 +182,7 @@ function SystemPage() {
 
   const currentLocation = history[0]?.to_location || ""; // most recent location name
 
-  const resolvedIDs = [6, 7, 8, 9];
+  const resolvedIDs = [6, 7, 8, 9, 10];
 
   const resolvedNames = locations
     ?.filter((loc) => resolvedIDs.includes(loc.id))
@@ -351,6 +351,7 @@ function SystemPage() {
   // Add with the other constants near the top of SystemPage()
   const RMA_LOCATION_NAMES = ["RMA VID", "RMA CID", "RMA PID"];
   const L11_NAME = "Sent to L11";
+  const DELL_REPLACE_NAME = "DELL Part Replacement"
 
   // --- Pending Parts state ---
   const [pendingBlocks, setPendingBlocks] = useState([]); // [{id, part_id}]
@@ -553,7 +554,8 @@ function SystemPage() {
       !isInL10 &&
       toLocationId != 6 &&
       toLocationId != 7 &&
-      toLocationId != 8) || // current location is Debug, but not sending to Pending
+      toLocationId != 8 &&
+      toLocationId != 10) || // current location is Debug, but not sending to Pending
     (toIsDebugOrL10 &&
       toLocationId !== 4 &&
       !isInPendingParts &&
@@ -569,7 +571,7 @@ function SystemPage() {
     });
   };
 
-  const ROOT_CAUSE_LOCATIONS = ["RMA VID", "RMA CID", "RMA PID", "Sent to L11"];
+  const ROOT_CAUSE_LOCATIONS = ["RMA VID", "RMA CID", "RMA PID", "DELL Part Replacement", "Sent to L11"];
   const showRootCauseControls = useMemo(() => {
     const movingToResolved = ROOT_CAUSE_LOCATIONS.includes(toLocationName);
     const inResolvedNow = ROOT_CAUSE_LOCATIONS.includes(currentLocation);
@@ -594,6 +596,7 @@ function SystemPage() {
 
         const isRMAto = RMA_LOCATION_NAMES.includes(toLocationName); // RMA VID/CID/PID
         const isL11to = toLocationName === L11_NAME; // "Sent to L11"
+        const isDELLREPLACEto = toLocationName === DELL_REPLACE_NAME; // "DELL Part Replacement"
 
         // Base lists
         let catOpts = (cats || []).map((c) => ({
@@ -606,7 +609,7 @@ function SystemPage() {
         }));
 
         // In RMA (VID/CID/PID): remove NTF from BOTH lists
-        if (isRMAto) {
+        if (isRMAto || isDELLREPLACEto) {
           catOpts = catOpts.filter((o) => o.label !== "NTF");
           baseSubOpts = baseSubOpts.filter(
             (o) => o.label !== "No Trouble Found",
