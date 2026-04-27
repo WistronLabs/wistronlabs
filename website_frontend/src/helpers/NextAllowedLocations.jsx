@@ -23,9 +23,9 @@ export function allowedNextLocations(currentLocation, locations) {
       return locations.filter((l) =>
         [
           "In Debug - Wistron",
-          "RMA VID",
+          //"RMA VID",
           "RMA PID",
-          "RMA CID",
+          //"RMA CID",
         ].includes(l.name),
       );
     case "In L10":
