@@ -86,7 +86,7 @@ export default function Flowchart({ currentLocation_id, locations }) {
       stemHeight: 20,
       totalLenth: 40,
       direction: "right",
-      ids: [2, 3, 5],
+      ids: [2, 5],
     },
     {
       x: 555,
@@ -102,7 +102,7 @@ export default function Flowchart({ currentLocation_id, locations }) {
       stemHeight: 20,
       totalLenth: 40,
       direction: "right",
-      ids: [2, 3, 5],
+      ids: [2, 5],
     },
   ];
 
@@ -161,7 +161,7 @@ export default function Flowchart({ currentLocation_id, locations }) {
       width: 185,
       height: 18,
       direction: "vertical",
-      ids: [2, 3, 5],
+      ids: [2, 5],
     },
     { x: 315, y: 205, width: 30, height: 20, direction: "vertical", ids: [2] },
     { x: 552, y: 165, width: 4, height: 20, direction: "horizontal", ids: [5] },

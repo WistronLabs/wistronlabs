@@ -2975,8 +2975,13 @@ function SystemPage() {
                       </span>
                     )}
                     {system?.issue && (
-                      <span className="inline-block mt-1 px-2 py-1 bg-red-100 text-red-800 text-xs sm:text-sm font-bold rounded-full uppercase">
-                        {system.issue}
+                      <span
+                        className="inline-flex max-w-[16rem] sm:max-w-[22rem] mt-1 px-2 py-1 bg-red-100 text-red-800 text-xs sm:text-sm font-bold rounded-full uppercase align-middle"
+                        title={system.issue}
+                      >
+                        <span className="truncate whitespace-nowrap">
+                          {system.issue}
+                        </span>
                       </span>
                     )}
                   </span>
