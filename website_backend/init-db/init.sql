@@ -8,7 +8,7 @@ CREATE TABLE location (
 INSERT INTO location (name) VALUES
 ('Received'),
 ('In Debug - Wistron'),
-('In Debug - Nvidia'),
+('Pending L11 Logs'),
 ('Pending Parts'),
 ('In L10'),
 ('RMA VID'),

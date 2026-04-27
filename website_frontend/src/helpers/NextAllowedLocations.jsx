@@ -8,19 +8,26 @@ export function allowedNextLocations(currentLocation, locations) {
         [
           "In L10",
           "Pending Parts",
-          //"In Debug - Nvidia",
+          "Pending L11 Logs",
           "In Debug - Wistron",
           "RMA VID",
           "RMA PID",
           "RMA CID",
-        ].includes(l.name)
+        ].includes(l.name),
       );
     case "Pending Parts":
       return locations.filter((l) =>
-        ["Pending Parts", "In Debug - Wistron"].includes(l.name)
+        ["Pending Parts", "In Debug - Wistron"].includes(l.name),
       );
-    case "In Debug - Nvidia":
-      return locations.filter((l) => l.name === "In Debug - Wistron");
+    case "Pending L11 Logs":
+      return locations.filter((l) =>
+        [
+          "In Debug - Wistron",
+          "RMA VID",
+          "RMA PID",
+          "RMA CID",
+        ].includes(l.name),
+      );
     case "In L10":
       return locations.filter((l) =>
         [
@@ -29,7 +36,7 @@ export function allowedNextLocations(currentLocation, locations) {
           "RMA PID",
           "RMA CID",
           "Sent to L11",
-        ].includes(l.name)
+        ].includes(l.name),
       );
     default:
       return [];

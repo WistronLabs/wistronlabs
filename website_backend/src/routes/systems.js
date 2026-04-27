@@ -36,6 +36,7 @@ const fs = require("fs/promises");
 const path = require("path");
 const os = require("os");
 const { spawn } = require("child_process");
+const { DateTime } = require("luxon");
 const multer = require("multer");
 const db = require("../db");
 const { authenticateToken } = require("./auth");
@@ -139,7 +140,12 @@ async function hasAnyFileNewerThan(dirPath, threshold) {
   return false;
 }
 
-async function hasL11ArchiveForServiceTagAndRack(logsRoot, serviceTag, rackTag) {
+async function hasL11ArchiveForServiceTagAndRack(
+  logsRoot,
+  serviceTag,
+  rackTag,
+  minCreatedAt = null,
+) {
   if (!logsRoot || !serviceTag || !rackTag) return false;
 
   const st = String(serviceTag || "").trim();
@@ -163,7 +169,31 @@ async function hasL11ArchiveForServiceTagAndRack(logsRoot, serviceTag, rackTag) 
   while (queue.length > 0) {
     const { dir, entries, depth } = queue.shift();
     for (const entry of entries) {
-      if (entry.isFile() && matcher.test(entry.name)) return true;
+      if (entry.isFile() && matcher.test(entry.name)) {
+        if (!minCreatedAt) return true;
+        try {
+          const stat = await fs.stat(path.join(dir, entry.name));
+          const serverZone = getServerTimeZone();
+          const archiveMillis = DateTime.fromJSDate(stat.mtime, {
+            zone: serverZone,
+          }).toMillis();
+          const thresholdSource =
+            minCreatedAt instanceof Date
+              ? DateTime.fromJSDate(minCreatedAt, { zone: serverZone })
+              : DateTime.fromISO(String(minCreatedAt || ""), {
+                  zone: serverZone,
+                });
+          const thresholdMillis = thresholdSource.isValid
+            ? thresholdSource.toMillis()
+            : Number.NaN;
+
+          if (Number.isFinite(archiveMillis) && Number.isFinite(thresholdMillis)) {
+            return archiveMillis > thresholdMillis;
+          }
+        } catch {
+          // ignore unreadable archive and keep searching
+        }
+      }
       if (entry.isDirectory() && depth < 2) {
         const subdir = path.join(dir, entry.name);
         try {
@@ -178,6 +208,22 @@ async function hasL11ArchiveForServiceTagAndRack(logsRoot, serviceTag, rackTag) 
   return false;
 }
 
+async function getLatestReceivedAt(client, systemId) {
+  if (!systemId) return null;
+  const { rows } = await client.query(
+    `
+    SELECT changed_at
+    FROM system_location_history
+    WHERE system_id = $1
+      AND to_location_id = $2
+    ORDER BY changed_at DESC
+    LIMIT 1
+    `,
+    [systemId, RECEIVED_LOCATION_ID],
+  );
+  return rows[0]?.changed_at || null;
+}
+
 // Helper: fetch deleted user id
 async function getDeletedUserId() {
   const result = await db.query(
@@ -188,6 +234,7 @@ async function getDeletedUserId() {
 
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
+const RMA_CID_LOCATION_ID = 7;
 const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
 const RECEIVED_LOCATION_ID = 1;
 const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
@@ -260,7 +307,9 @@ function extensionFromMime(mime) {
 }
 
 function sanitizeBaseName(name) {
-  const raw = String(name || "").trim().replace(/\.[^/.]+$/, "");
+  const raw = String(name || "")
+    .trim()
+    .replace(/\.[^/.]+$/, "");
   const cleaned = raw
     .normalize("NFKD")
     .replace(/[^a-zA-Z0-9_-]+/g, "_")
@@ -338,7 +387,8 @@ async function runTar(args = [], options = {}) {
 }
 
 const BATCH_EXPORT_ROOT =
-  process.env.BATCH_EXPORT_ROOT || path.join(os.tmpdir(), "wistron-batch-exports");
+  process.env.BATCH_EXPORT_ROOT ||
+  path.join(os.tmpdir(), "wistron-batch-exports");
 const BATCH_EXPORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const BATCH_EXPORT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // hourly
 
@@ -447,7 +497,10 @@ async function listBatchExportJobs() {
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
     try {
-      const raw = await fs.readFile(path.join(BATCH_EXPORT_ROOT, entry.name), "utf8");
+      const raw = await fs.readFile(
+        path.join(BATCH_EXPORT_ROOT, entry.name),
+        "utf8",
+      );
       const parsed = JSON.parse(raw);
       if (parsed?.status === "deleted") continue;
       batchExportJobs.set(parsed.job_id, parsed);
@@ -472,7 +525,9 @@ async function cleanupExpiredBatchExports() {
 
   await Promise.all(
     jobs.map(async (job) => {
-      const expiresAt = job?.expires_at ? new Date(job.expires_at).getTime() : 0;
+      const expiresAt = job?.expires_at
+        ? new Date(job.expires_at).getTime()
+        : 0;
       if (!expiresAt || expiresAt > now) return;
       await removeBatchExportArtifacts(job);
       batchExportJobs.delete(job.job_id);
@@ -481,9 +536,11 @@ async function cleanupExpiredBatchExports() {
 }
 
 async function validateBatchExportServiceTags(serviceTags = []) {
-  const normalizedTags = [...new Set(
-    serviceTags.map((tag) => safeServiceTagSegment(tag)).filter(Boolean),
-  )];
+  const normalizedTags = [
+    ...new Set(
+      serviceTags.map((tag) => safeServiceTagSegment(tag)).filter(Boolean),
+    ),
+  ];
 
   if (!normalizedTags.length) {
     return {
@@ -645,10 +702,16 @@ setInterval(() => {
 
 const HOST_RUNNER_URL = process.env.HOST_RUNNER_URL || "http://172.17.0.1:9000";
 
-async function submitL11ScanJob(unitTag, rackTag, { wait = "ack", timeout = 0 } = {}) {
+async function submitL11ScanJob(
+  unitTag,
+  rackTag,
+  { wait = "ack", timeout = 0 } = {},
+) {
   const controller = new AbortController();
   const timeoutMs =
-    wait === "ack" || !timeout ? 5000 : Math.max(1000, Math.round(timeout * 1000));
+    wait === "ack" || !timeout
+      ? 5000
+      : Math.max(1000, Math.round(timeout * 1000));
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
@@ -656,7 +719,8 @@ async function submitL11ScanJob(unitTag, rackTag, { wait = "ack", timeout = 0 } 
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Auth-Token": process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+        "X-Auth-Token":
+          process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
       },
       body: JSON.stringify({
         script: "/opt/hooks/on-system-created.sh",
@@ -702,11 +766,15 @@ async function submitL11ScanJob(unitTag, rackTag, { wait = "ack", timeout = 0 } 
 }
 
 async function getHostRunnerJob(jobId) {
-  const resp = await fetch(`${HOST_RUNNER_URL}/jobs/${encodeURIComponent(jobId)}`, {
-    headers: {
-      "X-Auth-Token": process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+  const resp = await fetch(
+    `${HOST_RUNNER_URL}/jobs/${encodeURIComponent(jobId)}`,
+    {
+      headers: {
+        "X-Auth-Token":
+          process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+      },
     },
-  });
+  );
 
   const text = await resp.text();
   let data = null;
@@ -744,7 +812,9 @@ function summarizeUpstreamError(err, fallbackMessage) {
   const details = rawBody || err?.message || fallbackMessage;
   const upstreamStatus = Number.isInteger(err?.status) ? err.status : null;
   const status =
-    upstreamStatus && upstreamStatus >= 400 && upstreamStatus < 500 ? 502 : upstreamStatus || 500;
+    upstreamStatus && upstreamStatus >= 400 && upstreamStatus < 500
+      ? 502
+      : upstreamStatus || 500;
 
   return {
     status,
@@ -944,7 +1014,13 @@ async function listDpnDellCustomers(client, dpnId) {
 }
 
 async function resolveDellCustomerIds(client, ids = []) {
-  const uniqueIds = [...new Set((ids || []).map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0))];
+  const uniqueIds = [
+    ...new Set(
+      (ids || [])
+        .map((v) => Number(v))
+        .filter((v) => Number.isInteger(v) && v > 0),
+    ),
+  ];
   if (uniqueIds.length === 0) return [];
   const { rows } = await client.query(
     `SELECT id FROM dell_customer WHERE id = ANY($1::int[])`,
@@ -1240,10 +1316,9 @@ router.delete(
         });
       }
 
-      const del = await db.query(
-        `DELETE FROM dell_customer WHERE id = $1`,
-        [req.params.id],
-      );
+      const del = await db.query(`DELETE FROM dell_customer WHERE id = $1`, [
+        req.params.id,
+      ]);
       if (del.rowCount === 0) {
         return res.status(404).json({ error: "Dell customer not found" });
       }
@@ -1440,7 +1515,11 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
         const finalIds = [...new Set(ids)];
         if (finalIds.length === 0) {
           await client.query("ROLLBACK");
-          return res.status(400).json({ error: "At least one Dell customer is required for a DPN" });
+          return res
+            .status(400)
+            .json({
+              error: "At least one Dell customer is required for a DPN",
+            });
         }
         baseline = await getDellCustomerById(client, finalIds[0]);
         baselineName = String(baseline?.name || "").trim();
@@ -1710,8 +1789,11 @@ router.get("/", async (req, res) => {
     const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
     if (parsed.length > 0) {
       const tagsSQL = parsed
-        .map((g) => `(${g.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ")})`)
-          .join(" OR ");
+        .map(
+          (g) =>
+            `(${g.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ")})`,
+        )
+        .join(" OR ");
       whereSQL = whereSQL ? `${whereSQL} AND (${tagsSQL})` : `WHERE ${tagsSQL}`;
     }
   }
@@ -2326,7 +2408,11 @@ router.get("/snapshot", async (req, res) => {
           .toUpperCase();
         const key = `${st}::${rack}`;
         if (!st || !rack || l11LogFoundByServiceTagAndRack.has(key)) return;
-        const found = await hasL11ArchiveForServiceTagAndRack(logsRoot, st, rack);
+        const found = await hasL11ArchiveForServiceTagAndRack(
+          logsRoot,
+          st,
+          rack,
+        );
         l11LogFoundByServiceTagAndRack.set(key, found);
       }),
     );
@@ -2761,9 +2847,10 @@ router.delete(
         rollbackLocation &&
         !RESOLVED_LOCATION_IDS.includes(rollbackLocation)
       ) {
-        await client.query("UPDATE system SET doa_number = NULL WHERE id = $1", [
-          system_id,
-        ]);
+        await client.query(
+          "UPDATE system SET doa_number = NULL WHERE id = $1",
+          [system_id],
+        );
       }
 
       // 7. If we are LEAVING an RMA location, remove from any open pallet
@@ -2935,7 +3022,11 @@ router.post("/", authenticateToken, async (req, res) => {
       throw new Error(`DPN ${parsed.dpn} has no configured Dell customers`);
     }
     const allowedSet = new Set(
-      mappedCustomers.map((c) => String(c.name || "").trim().toLowerCase()),
+      mappedCustomers.map((c) =>
+        String(c.name || "")
+          .trim()
+          .toLowerCase(),
+      ),
     );
     let chosenDellCustomer = String(dell_customer || "").trim();
     if (!chosenDellCustomer) {
@@ -3059,19 +3150,16 @@ router.post("/", authenticateToken, async (req, res) => {
   }
 });
 
-router.get(
-  "/batch-export-unit-data",
-  async (_req, res) => {
-    try {
-      await cleanupExpiredBatchExports();
-      const jobs = await listBatchExportJobs();
-      return res.json(jobs.map(serializeBatchExport));
-    } catch (err) {
-      console.error("Failed to list batch exports:", err);
-      return res.status(500).json({ error: "Failed to list batch exports" });
-    }
-  },
-);
+router.get("/batch-export-unit-data", async (_req, res) => {
+  try {
+    await cleanupExpiredBatchExports();
+    const jobs = await listBatchExportJobs();
+    return res.json(jobs.map(serializeBatchExport));
+  } catch (err) {
+    console.error("Failed to list batch exports:", err);
+    return res.status(500).json({ error: "Failed to list batch exports" });
+  }
+});
 
 router.post(
   "/batch-export-unit-data/preview",
@@ -3080,7 +3168,9 @@ router.post(
     try {
       const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
       if (!serviceTags.length) {
-        return res.status(400).json({ error: "Provide at least one service tag" });
+        return res
+          .status(400)
+          .json({ error: "Provide at least one service tag" });
       }
 
       const preview = await validateBatchExportServiceTags(serviceTags);
@@ -3096,84 +3186,79 @@ router.post(
   },
 );
 
-router.post(
-  "/batch-export-unit-data",
-  authenticateToken,
-  async (req, res) => {
-    try {
-      await cleanupExpiredBatchExports();
+router.post("/batch-export-unit-data", authenticateToken, async (req, res) => {
+  try {
+    await cleanupExpiredBatchExports();
 
-      const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
-      if (!serviceTags.length) {
-        return res.status(400).json({ error: "Provide at least one service tag" });
-      }
+    const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+    if (!serviceTags.length) {
+      return res
+        .status(400)
+        .json({ error: "Provide at least one service tag" });
+    }
 
-      const preview = await validateBatchExportServiceTags(serviceTags);
-      if (!preview.will_export.length) {
-        return res.status(400).json({
-          error: "No valid systems available for export",
-          ...preview,
-          total_count: serviceTags.length,
-        });
-      }
-
-      let meta = {
-        job_id: buildBatchExportId(),
-        status: "queued",
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        expires_at: null,
-        file_name: null,
-        archive_path: null,
-        total_count: preview.will_export.length,
-        processed_count: 0,
-        service_tags: preview.will_export,
-        skipped_not_found: preview.skipped_not_found,
-        skipped_internal_error: preview.skipped_internal_error,
-        review_rows: buildBatchExportReviewRows(serviceTags, preview),
-        error: null,
-      };
-
-      meta = await persistBatchExportMeta(meta);
-      runBatchExportJob(meta.job_id, preview.will_export).catch((err) => {
-        console.error("Failed to start batch export job:", err);
+    const preview = await validateBatchExportServiceTags(serviceTags);
+    if (!preview.will_export.length) {
+      return res.status(400).json({
+        error: "No valid systems available for export",
+        ...preview,
+        total_count: serviceTags.length,
       });
-
-      return res.status(202).json(serializeBatchExport(meta));
-    } catch (err) {
-      console.error("Failed to create batch export:", err);
-      return res.status(500).json({ error: "Failed to create batch export" });
-    }
-  },
-);
-
-router.get(
-  "/batch-export-unit-data/:job_id/download",
-  async (req, res) => {
-    const jobId = String(req.params.job_id || "").trim();
-    if (!jobId) {
-      return res.status(400).json({ error: "job_id is required" });
     }
 
-    try {
-      await cleanupExpiredBatchExports();
-      const meta = await readBatchExportMeta(jobId);
-      if (meta.status !== "ready" || !meta.archive_path || !meta.file_name) {
-        return res.status(409).json({ error: "Batch export is not ready" });
-      }
+    let meta = {
+      job_id: buildBatchExportId(),
+      status: "queued",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      expires_at: null,
+      file_name: null,
+      archive_path: null,
+      total_count: preview.will_export.length,
+      processed_count: 0,
+      service_tags: preview.will_export,
+      skipped_not_found: preview.skipped_not_found,
+      skipped_internal_error: preview.skipped_internal_error,
+      review_rows: buildBatchExportReviewRows(serviceTags, preview),
+      error: null,
+    };
 
-      await fs.access(meta.archive_path);
-      res.setHeader("Content-Type", "application/gzip");
-      return res.download(meta.archive_path, meta.file_name);
-    } catch (err) {
-      if (err?.code === "ENOENT") {
-        return res.status(404).json({ error: "Batch export not found" });
-      }
-      console.error("Failed to download batch export:", err);
-      return res.status(500).json({ error: "Failed to download batch export" });
+    meta = await persistBatchExportMeta(meta);
+    runBatchExportJob(meta.job_id, preview.will_export).catch((err) => {
+      console.error("Failed to start batch export job:", err);
+    });
+
+    return res.status(202).json(serializeBatchExport(meta));
+  } catch (err) {
+    console.error("Failed to create batch export:", err);
+    return res.status(500).json({ error: "Failed to create batch export" });
+  }
+});
+
+router.get("/batch-export-unit-data/:job_id/download", async (req, res) => {
+  const jobId = String(req.params.job_id || "").trim();
+  if (!jobId) {
+    return res.status(400).json({ error: "job_id is required" });
+  }
+
+  try {
+    await cleanupExpiredBatchExports();
+    const meta = await readBatchExportMeta(jobId);
+    if (meta.status !== "ready" || !meta.archive_path || !meta.file_name) {
+      return res.status(409).json({ error: "Batch export is not ready" });
     }
-  },
-);
+
+    await fs.access(meta.archive_path);
+    res.setHeader("Content-Type", "application/gzip");
+    return res.download(meta.archive_path, meta.file_name);
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ error: "Batch export not found" });
+    }
+    console.error("Failed to download batch export:", err);
+    return res.status(500).json({ error: "Failed to download batch export" });
+  }
+});
 
 router.delete(
   "/batch-export-unit-data/:job_id",
@@ -3320,8 +3405,11 @@ router.get("/:service_tag", async (req, res) => {
       path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
       path.resolve(process.cwd(), "l10_logs"),
     ]);
-    const stSegment = safeServiceTagSegment(details?.service_tag || service_tag);
-    const logsDir = logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+    const stSegment = safeServiceTagSegment(
+      details?.service_tag || service_tag,
+    );
+    const logsDir =
+      logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
     const l10LogsTotalSizeBytes = await getDirectorySizeBytes(logsDir);
 
     res.json({
@@ -3472,10 +3560,17 @@ router.get("/:service_tag/photos/file", async (req, res) => {
   }
 
   try {
-    const fullPath = path.join(PHOTO_UPLOAD_ROOT, serviceTag, "photos", fileName);
+    const fullPath = path.join(
+      PHOTO_UPLOAD_ROOT,
+      serviceTag,
+      "photos",
+      fileName,
+    );
     const stat = await fs.stat(fullPath);
     if (!stat.isFile()) {
-      return res.status(400).json({ error: "Requested photo path is not a file" });
+      return res
+        .status(400)
+        .json({ error: "Requested photo path is not a file" });
     }
 
     return res.sendFile(path.resolve(fullPath));
@@ -3496,7 +3591,10 @@ router.get("/:service_tag/logs", async (req, res) => {
 
   try {
     const requestedDir = normalizeRelativeLogsDir(req.query.dir || "");
-    const { entries, currentDir } = await listLogsEntries(serviceTag, requestedDir);
+    const { entries, currentDir } = await listLogsEntries(
+      serviceTag,
+      requestedDir,
+    );
     return res.json({
       service_tag: serviceTag,
       current_dir: currentDir,
@@ -3534,7 +3632,9 @@ router.get("/:service_tag/logs/download", async (req, res) => {
     );
     const stat = await fs.stat(fullPath);
     if (!stat.isFile()) {
-      return res.status(400).json({ error: "Requested log path is not a file" });
+      return res
+        .status(400)
+        .json({ error: "Requested log path is not a file" });
     }
 
     if (/\.log$/i.test(fullPath)) {
@@ -3567,7 +3667,7 @@ router.get("/:service_tag/l11-logs-found", async (req, res) => {
 
   try {
     const { rows } = await db.query(
-      `SELECT service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
       [serviceTag],
     );
     if (!rows.length) {
@@ -3585,6 +3685,15 @@ router.get("/:service_tag/l11-logs-found", async (req, res) => {
       });
     }
 
+    const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
+    if (!latestReceivedAt) {
+      return res.json({
+        service_tag: serviceTag,
+        rack_service_tag: rackServiceTag,
+        found: false,
+      });
+    }
+
     const logsRoot = await firstExistingDir([
       process.env.L10_LOGS_ROOT,
       path.resolve(process.cwd(), "../l10_logs"),
@@ -3595,6 +3704,7 @@ router.get("/:service_tag/l11-logs-found", async (req, res) => {
       logsRoot,
       serviceTag,
       rackServiceTag,
+      latestReceivedAt,
     );
     return res.json({
       service_tag: serviceTag,
@@ -3615,7 +3725,7 @@ router.post("/:service_tag/l11-scan", authenticateToken, async (req, res) => {
 
   try {
     const { rows } = await db.query(
-      `SELECT service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
       [serviceTag],
     );
     if (!rows.length) {
@@ -3626,13 +3736,19 @@ router.post("/:service_tag/l11-scan", authenticateToken, async (req, res) => {
     if (!rackServiceTag) {
       return res
         .status(400)
-        .json({ error: "Current rack service tag is required before scanning L11 logs" });
+        .json({
+          error:
+            "Current rack service tag is required before scanning L11 logs",
+        });
     }
+
+    const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
 
     const found = await hasL11ArchiveForServiceTagAndRack(
       PHOTO_UPLOAD_ROOT,
       serviceTag,
       rackServiceTag,
+      latestReceivedAt,
     );
     if (found) {
       return res.status(409).json({
@@ -3640,7 +3756,9 @@ router.post("/:service_tag/l11-scan", authenticateToken, async (req, res) => {
       });
     }
 
-    const ack = await submitL11ScanJob(serviceTag, rackServiceTag, { wait: "ack" });
+    const ack = await submitL11ScanJob(serviceTag, rackServiceTag, {
+      wait: "ack",
+    });
     return res.status(202).json({
       service_tag: serviceTag,
       rack_service_tag: rackServiceTag,
@@ -3707,7 +3825,9 @@ router.post(
           error: `Photo exceeds ${Math.floor(MAX_PHOTO_BYTES / (1024 * 1024))}MB limit`,
         });
       }
-      return res.status(400).json({ error: err.message || "Invalid photo upload" });
+      return res
+        .status(400)
+        .json({ error: err.message || "Invalid photo upload" });
     });
   },
   async (req, res) => {
@@ -3737,8 +3857,10 @@ router.post(
       await fs.mkdir(photosDir, { recursive: true });
 
       const ext =
-        extensionFromMime(file.mimetype) || path.extname(file.originalname || "");
-      const safeExt = ext && /^[.][a-zA-Z0-9]+$/.test(ext) ? ext.toLowerCase() : ".jpg";
+        extensionFromMime(file.mimetype) ||
+        path.extname(file.originalname || "");
+      const safeExt =
+        ext && /^[.][a-zA-Z0-9]+$/.test(ext) ? ext.toLowerCase() : ".jpg";
       const base = sanitizeBaseName(file.originalname);
       const fileName = `${base}_${timestampSuffix()}${safeExt}`;
       const fullPath = path.join(photosDir, fileName);
@@ -3794,7 +3916,7 @@ router.post(
     let tempDir = null;
     try {
       const { rows } = await db.query(
-        `SELECT service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+        `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
         [serviceTag],
       );
       if (!rows.length) {
@@ -3805,13 +3927,19 @@ router.post(
       if (!rackServiceTag) {
         return res
           .status(400)
-          .json({ error: "Current rack service tag is required before uploading L11 logs" });
+          .json({
+            error:
+              "Current rack service tag is required before uploading L11 logs",
+          });
       }
+
+      const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
 
       const existingArchive = await hasL11ArchiveForServiceTagAndRack(
         PHOTO_UPLOAD_ROOT,
         serviceTag,
         rackServiceTag,
+        latestReceivedAt,
       );
       if (existingArchive) {
         return res.status(409).json({
@@ -3885,7 +4013,9 @@ router.get(
         serviceDirStat = await fs.stat(serviceDir);
       } catch (err) {
         if (err?.code === "ENOENT") {
-          return res.status(404).json({ error: "No unit data found to export" });
+          return res
+            .status(404)
+            .json({ error: "No unit data found to export" });
         }
         throw err;
       }
@@ -3894,7 +4024,9 @@ router.get(
         return res.status(404).json({ error: "No unit data found to export" });
       }
 
-      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wistron-unit-export-"));
+      tempDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "wistron-unit-export-"),
+      );
       const archiveName = `system_folder_${serviceTag}.tgz`;
       archivePath = path.join(tempDir, archiveName);
 
@@ -3909,7 +4041,9 @@ router.get(
           await fs.rm(archivePath, { force: true }).catch(() => {});
         }
         if (tempDir) {
-          await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+          await fs
+            .rm(tempDir, { recursive: true, force: true })
+            .catch(() => {});
         }
       });
     } catch (err) {
@@ -4070,6 +4204,8 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       rev,
     } = rows[0];
 
+    let receivedAt = null;
+
     // Moving into a resolved location requires new logs since latest Received.
     if (RESOLVED_LOCATION_IDS.includes(targetLocationId)) {
       const latestReceived = await client.query(
@@ -4092,7 +4228,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         });
       }
 
-      const receivedAt = latestReceived.rows[0].changed_at;
+      receivedAt = latestReceived.rows[0].changed_at;
       const logsRoot = await firstExistingDir([
         process.env.L10_LOGS_ROOT,
         path.resolve(process.cwd(), "../l10_logs"),
@@ -4100,13 +4236,31 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         path.resolve(process.cwd(), "l10_logs"),
       ]);
       const stSegment = safeServiceTagSegment(service_tag);
-      const serviceTagDir = logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+      const serviceTagDir =
+        logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
       const hasNewFile = await hasAnyFileNewerThan(serviceTagDir, receivedAt);
 
       if (!hasNewFile) {
         await client.query("ROLLBACK");
         return res.status(400).json({
           error: "Add evidence (logs or photos) before resolving this unit.",
+        });
+      }
+    }
+
+    if (targetLocationId === RMA_CID_LOCATION_ID) {
+      const stSegment = safeServiceTagSegment(service_tag);
+      const photosDir =
+        PHOTO_UPLOAD_ROOT && stSegment
+          ? path.join(PHOTO_UPLOAD_ROOT, stSegment, "photos")
+          : null;
+      const hasFreshPhotoEvidence =
+        receivedAt && (await hasAnyFileNewerThan(photosDir, receivedAt));
+
+      if (!hasFreshPhotoEvidence) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "Photo evidence of the damage must be uploaded before RMA CID.",
         });
       }
     }
@@ -4132,7 +4286,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       if (!rev) missingFields.push("rev");
 
       if (missingFields.length) {
-      await client.query("ROLLBACK");
+        await client.query("ROLLBACK");
         return res.status(400).json({
           error: `Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
             ", ",
@@ -4168,10 +4322,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
 
     // Handle RMA-specific logic
     if (RMA_LOCATION_IDS.includes(targetLocationId)) {
-      const { pallet_number } = await assignSystemToPallet(
-        system_id,
-        client,
-      );
+      const { pallet_number } = await assignSystemToPallet(system_id, client);
       finalNote = `${note} - added to ${pallet_number}`;
     } else if (RMA_LOCATION_IDS.includes(from_location_id)) {
       await client.query(
@@ -4190,7 +4341,13 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       `INSERT INTO system_location_history
        (system_id, from_location_id, to_location_id, note, moved_by)
        VALUES ($1, $2, $3, $4, $5)`,
-      [system_id, from_location_id, targetLocationId, finalNote, req.user.userId],
+      [
+        system_id,
+        from_location_id,
+        targetLocationId,
+        finalNote,
+        req.user.userId,
+      ],
     );
 
     await client.query("COMMIT");
@@ -4379,7 +4536,11 @@ router.patch(
 
       const mappedCustomers = await listDpnDellCustomers(client, system.dpn_id);
       const allowedSet = new Set(
-        mappedCustomers.map((c) => String(c.name || "").trim().toLowerCase()),
+        mappedCustomers.map((c) =>
+          String(c.name || "")
+            .trim()
+            .toLowerCase(),
+        ),
       );
       if (!allowedSet.has(raw.toLowerCase())) {
         await client.query("ROLLBACK");
@@ -4395,7 +4556,10 @@ router.patch(
         [raw, system.id],
       );
       await client.query("COMMIT");
-      return res.json({ service_tag: service_tag.trim().toUpperCase(), dell_customer: raw });
+      return res.json({
+        service_tag: service_tag.trim().toUpperCase(),
+        dell_customer: raw,
+      });
     } catch (err) {
       await client.query("ROLLBACK");
       console.error(err);
@@ -4478,7 +4642,11 @@ router.patch("/:service_tag/doa", authenticateToken, async (req, res) => {
   const { service_tag } = req.params;
   const raw = req.body?.doa_number;
   const doa_number =
-    typeof raw === "string" ? raw.trim() : raw == null ? "" : String(raw).trim();
+    typeof raw === "string"
+      ? raw.trim()
+      : raw == null
+        ? ""
+        : String(raw).trim();
 
   if (doa_number.length > 20) {
     return res
