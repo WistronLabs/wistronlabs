@@ -77,7 +77,7 @@ function TrackingPage() {
   const fetchHistory = useHistoryFetch();
 
   const activeLocationIDs = [1, 2, 3, 4, 5];
-  const systemLocationChartIDs = [1, 2, 4, 5];
+  const systemLocationChartIDs = [1, 2, 3, 4, 5];
   const inactiveLocationIDs = [6, 7, 8, 9];
 
   const {

@@ -1372,6 +1372,8 @@ function SystemPage() {
         setPhotos(
           photoItems.map((i) => ({
             name: i.name,
+            modified_at: i.modified_at,
+            modified_at_local: i.modified_at_local,
             href: `${import.meta.env.VITE_BACKEND_URL}/systems/${encodeURIComponent(
               serviceTag,
             )}/photos/file?name=${encodeURIComponent(i.name)}`,
