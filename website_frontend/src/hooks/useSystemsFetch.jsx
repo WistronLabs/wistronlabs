@@ -102,7 +102,7 @@ export function useSystemsFetch() {
         }
       }
 
-      const inactiveLocations = [6, 7, 8, 9];
+      const inactiveLocations = [6, 7, 8, 9, 10];
 
       if (active && !inactive) {
         conditions.push(buildLeaf("location_id", inactiveLocations, "NOT IN"));

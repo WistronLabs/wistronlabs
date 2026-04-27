@@ -18,7 +18,8 @@ function Header() {
   const active = "bg-white/20 text-white";
 
   const [user, setUser] = useState(null);
-  const { getMe } = useApi();
+  const [repairsAllowed, setRepairsAllowed] = useState(null);
+  const { getMe, getRepairsAllowed } = useApi();
 
   useEffect(() => {
     let isMounted = true;
@@ -38,6 +39,28 @@ function Header() {
     // We only care about token changes here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const data = await getRepairsAllowed();
+        if (!isMounted) return;
+        setRepairsAllowed(
+          typeof data?.repairs_allowed === "boolean"
+            ? data.repairs_allowed
+            : null,
+        );
+      } catch (e) {
+        console.error("getRepairsAllowed failed:", e);
+        if (isMounted) setRepairsAllowed(null);
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ...
   const url = `ssh://falab@tss.wistronlabs.com:22`;
@@ -81,12 +104,14 @@ function Header() {
           >
             Shipping
           </Link>
-          <Link
-            to="/parts"
-            className={`${linkBase} ${pathname === "/parts" ? active : ""}`}
-          >
-            Parts
-          </Link>
+          {repairsAllowed !== false && (
+            <Link
+              to="/parts"
+              className={`${linkBase} ${pathname === "/parts" ? active : ""}`}
+            >
+              Parts
+            </Link>
+          )}
           {token ? (
             <Link
               to="/user"
@@ -159,13 +184,15 @@ function Header() {
             >
               Shipping
             </Link>
-            <Link
-              to="/parts"
-              className={`${linkBase} ${pathname === "/parts" ? active : ""}`}
-              onClick={() => setMenuOpen(false)}
-            >
-              Parts
-            </Link>
+            {repairsAllowed !== false && (
+              <Link
+                to="/parts"
+                className={`${linkBase} ${pathname === "/parts" ? active : ""}`}
+                onClick={() => setMenuOpen(false)}
+              >
+                Parts
+              </Link>
+            )}
             {token ? (
               <Link
                 to="/user"

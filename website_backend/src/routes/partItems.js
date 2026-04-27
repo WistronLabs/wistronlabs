@@ -149,7 +149,7 @@ router.get("/", async (req, res) => {
               WHEN pal.id IS NOT NULL AND pal.status = 'open' THEN 'inactive_on_active_pallet'
               ELSE 'inactive'
             END
-          WHEN loc.name = 'Sent to L11' THEN 'inactive'
+          WHEN loc.name IN ('Sent to L11', 'Sent for Dell Repair') THEN 'inactive'
           ELSE 'active'
         END AS unit_activity_state,
 
@@ -247,7 +247,7 @@ router.get("/:ppid", async (req, res) => {
               WHEN pal.id IS NOT NULL AND pal.status = 'open' THEN 'inactive_on_active_pallet'
               ELSE 'inactive'
             END
-          WHEN loc.name = 'Sent to L11' THEN 'inactive'
+          WHEN loc.name IN ('Sent to L11', 'Sent for Dell Repair') THEN 'inactive'
           ELSE 'active'
         END AS unit_activity_state,
 

@@ -235,7 +235,7 @@ async function getDeletedUserId() {
 // RMA location IDs (must match DB)
 const RMA_LOCATION_IDS = [6, 7, 8];
 const RMA_CID_LOCATION_ID = 7;
-const RESOLVED_LOCATION_IDS = [6, 7, 8, 9];
+const RESOLVED_LOCATION_IDS = [6, 7, 8, 9, 10];
 const RECEIVED_LOCATION_ID = 1;
 const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
 const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
@@ -2041,7 +2041,7 @@ router.get("/snapshot", async (req, res) => {
   const simplifiedFlag =
     simplified === "true" || simplified === "1" || simplified === true;
 
-  const INACTIVE_LOCATION_IDS = [6, 7, 8, 9];
+  const INACTIVE_LOCATION_IDS = [6, 7, 8, 9, 10];
   const RECEIVED_LOCATION_ID = 1;
 
   const serverZone = process.env.SERVER_TZ || "UTC";
@@ -2121,7 +2121,7 @@ router.get("/snapshot", async (req, res) => {
                 THEN 'Good Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
                 ELSE
                   CASE
-                    WHEN trim(l.name) ILIKE 'RMA%' OR trim(l.name) = 'Sent to L11'
+                    WHEN trim(l.name) ILIKE 'RMA%' OR trim(l.name) IN ('Sent to L11', 'Sent for Dell Repair')
                       THEN 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '') || ' - ' || COALESCE(pl.ppid,'')
                     ELSE 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '')
                   END
@@ -2321,6 +2321,8 @@ router.get("/snapshot", async (req, res) => {
           r.location = "Waiting for RMA";
         } else if (/^Sent to L11$/i.test(original)) {
           r.location = "Fixed";
+        } else if (/^Sent for Dell Repair$/i.test(original)) {
+          r.location = "Dell Repair";
         } else if (reInDebugSet.test(original)) {
           r.location = "In Debug";
         }

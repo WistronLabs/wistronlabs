@@ -181,6 +181,13 @@ function useApi() {
     const res = await fetchJSON(`/server/time`);
     return { ...res, utcOffset: getServerUTCOffset(res.localtime) };
   };
+  const getRepairsAllowed = () => fetchJSON(`/server/repairs_allowed`);
+  const updateRepairsAllowed = (repairs_allowed) =>
+    fetchJSON(`/server/repairs_allowed`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repairs_allowed: !!repairs_allowed }),
+    });
 
   const createSystem = (payload) =>
     fetchJSON("/systems", {
@@ -925,6 +932,8 @@ function useApi() {
     moveSystemToReceived,
     getHistoryById,
     getServerTime,
+    getRepairsAllowed,
+    updateRepairsAllowed,
     getSnapshot,
     updateSystemPPID,
     updateSystemDOA,

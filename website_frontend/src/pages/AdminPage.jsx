@@ -39,6 +39,8 @@ function AdminPage() {
     createPartCategory,
     updatePartCategory,
     deletePartCategory,
+    getRepairsAllowed,
+    updateRepairsAllowed,
   } = useApi();
   const [users, setUsers] = useState([]);
   const [baselineUsers, setBaselineUsers] = useState([]); // snapshot to diff from
@@ -93,6 +95,9 @@ function AdminPage() {
   const [partCatErr, setPartCatErr] = useState(null);
   const [partCatQ, setPartCatQ] = useState("");
   const [deletingPartCatId, setDeletingPartCatId] = useState(null);
+  const [repairsAllowed, setRepairsAllowed] = useState(true);
+  const [repairsAllowedLoading, setRepairsAllowedLoading] = useState(false);
+  const [repairsAllowedSaving, setRepairsAllowedSaving] = useState(false);
 
   const normalizeDpns = (list = []) =>
     (list || []).map((d) => ({
@@ -219,6 +224,26 @@ function AdminPage() {
       alive = false;
     };
   }, []); // ← run once
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setRepairsAllowedLoading(true);
+        const res = await getRepairsAllowed();
+        if (!alive) return;
+        setRepairsAllowed(!!res?.repairs_allowed);
+      } catch (e) {
+        if (!alive) return;
+        console.error("Failed to load repairs_allowed:", e);
+      } finally {
+        if (alive) setRepairsAllowedLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -1158,6 +1183,44 @@ function AdminPage() {
     }
   };
 
+  const handleRepairsAllowedToggle = async () => {
+    const nextValue = !repairsAllowed;
+    const confirmed = await confirm({
+      title: nextValue ? "Enable Repairs" : "Disable Repairs",
+      message: nextValue
+        ? "Enable repair intake across the app?"
+        : "Disable repair intake across the app? This setting will be stored globally.",
+      confirmText: nextValue ? "Enable" : "Disable",
+      cancelText: "Cancel",
+      confirmClass: nextValue
+        ? "bg-green-600 text-white hover:bg-green-700"
+        : "bg-red-600 text-white hover:bg-red-700",
+      cancelClass: "bg-gray-200 text-gray-700 hover:bg-gray-300",
+    });
+    if (!confirmed) return;
+
+    try {
+      setRepairsAllowedSaving(true);
+      const res = await updateRepairsAllowed(nextValue);
+      setRepairsAllowed(!!res?.repairs_allowed);
+      showToast(
+        `Repairs ${res?.repairs_allowed ? "enabled" : "disabled"}`,
+        "success",
+        2200,
+        "bottom-right",
+      );
+    } catch (e) {
+      showToast(
+        e?.body?.error || e?.message || "Failed to update repairs setting",
+        "error",
+        3200,
+        "bottom-right",
+      );
+    } finally {
+      setRepairsAllowedSaving(false);
+    }
+  };
+
   return (
     <>
       <Toast />
@@ -1165,6 +1228,44 @@ function AdminPage() {
 
       <main className="mx-auto mt-10 w-11/12 md:w-10/12 max-w-screen-xl bg-white rounded-2xl shadow-lg p-6 space-y-6">
         <h1 className="text-3xl font-semibold text-gray-800">Admin</h1>
+
+        <section className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">
+                Repairs Allowed
+              </div>
+              <p className="mt-1 text-sm text-gray-700">
+                Global setting for repair intake. Changes here affect the entire
+                app.
+              </p>
+              <p className="mt-2 text-xs font-medium uppercase tracking-wide text-amber-700">
+                {repairsAllowedLoading
+                  ? "Loading current state..."
+                  : repairsAllowed
+                    ? "Currently enabled"
+                    : "Currently disabled"}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              disabled={repairsAllowedLoading || repairsAllowedSaving}
+              onClick={handleRepairsAllowedToggle}
+              className={`inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-white shadow transition disabled:opacity-50 ${
+                repairsAllowed
+                  ? "bg-red-600 hover:bg-red-700"
+                  : "bg-green-600 hover:bg-green-700"
+              }`}
+            >
+              {repairsAllowedSaving
+                ? "Saving..."
+                : repairsAllowed
+                  ? "Disable Repairs"
+                  : "Enable Repairs"}
+            </button>
+          </div>
+        </section>
 
         <AdminTabs tab={tab} setTab={setTab} />
 

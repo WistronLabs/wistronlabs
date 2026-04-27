@@ -132,6 +132,7 @@ function SystemPage() {
   const [hasLogsTab, setHasLogsTab] = useState(false);
   const [hasPhotosTab, setHasPhotosTab] = useState(false);
   const [hasL11RackLogs, setHasL11RackLogs] = useState(false);
+  const [repairsAllowed, setRepairsAllowed] = useState(null);
   const [showPhotoMenu, setShowPhotoMenu] = useState(false);
   const [showL11Menu, setShowL11Menu] = useState(false);
   const [showPhoneQr, setShowPhoneQr] = useState(false);
@@ -184,7 +185,7 @@ function SystemPage() {
     currentLocation === "In Debug - Wistron" || currentLocation === "In L10";
   const l11LogsAlreadyPresent = hasL11RackLogs;
 
-  const resolvedIDs = [6, 7, 8, 9];
+  const resolvedIDs = [6, 7, 8, 9, 10];
 
   const resolvedNames = locations
     ?.filter((loc) => resolvedIDs.includes(loc.id))
@@ -192,7 +193,7 @@ function SystemPage() {
 
   const isResolved = resolvedNames?.includes(currentLocation);
   // Disable the entire form when the current location is resolved
-  const formDisabled = isResolved; // Sent to L11, RMA VID/PID/CID
+  const formDisabled = isResolved; // Sent to L11, Sent for Dell Repair, RMA VID/PID/CID
 
   const rmaIDs = [6, 7, 8];
 
@@ -297,6 +298,7 @@ function SystemPage() {
     startSystemL11Scan,
     getSystemL11ScanStatus,
     exportSystemUnitData,
+    getRepairsAllowed,
   } = useApi();
 
   const { confirm, ConfirmDialog } = useConfirm();
@@ -368,6 +370,12 @@ function SystemPage() {
   // Add with the other constants near the top of SystemPage()
   const RMA_LOCATION_NAMES = ["RMA VID", "RMA CID", "RMA PID"];
   const L11_NAME = "Sent to L11";
+  const DELL_REPAIR_NAME = "Sent for Dell Repair";
+  const RESOLVED_LOCATION_NAMES = [
+    ...RMA_LOCATION_NAMES,
+    L11_NAME,
+    DELL_REPAIR_NAME,
+  ];
   const ROOT_CAUSE_CATEGORY_RULES_BY_LOCATION = {
     "RMA PID": {
       allowedCategoryIds: ["14", "15", "9", "3", "2", "16"],
@@ -630,7 +638,7 @@ function SystemPage() {
     });
   };
 
-  const ROOT_CAUSE_LOCATIONS = ["RMA VID", "RMA CID", "RMA PID", "Sent to L11"];
+  const ROOT_CAUSE_LOCATIONS = RESOLVED_LOCATION_NAMES;
   const showRootCauseControls = useMemo(() => {
     const movingToResolved = ROOT_CAUSE_LOCATIONS.includes(toLocationName);
     const inResolvedNow = ROOT_CAUSE_LOCATIONS.includes(currentLocation);
@@ -860,6 +868,29 @@ function SystemPage() {
     // 👇 only depend on token so it runs once per login/logout
   }, [token]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await getRepairsAllowed();
+        if (!cancelled) {
+          setRepairsAllowed(
+            typeof res?.repairs_allowed === "boolean"
+              ? res.repairs_allowed
+              : null,
+          );
+        }
+      } catch {
+        if (!cancelled) setRepairsAllowed(null);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Load parts when Good Parts flow is allowed (Debug → Debug/L10)
   useEffect(() => {
     if (!canAddGoodParts) return;
@@ -947,7 +978,8 @@ function SystemPage() {
       const donors = allSystems.filter((u) => {
         const locName = u.location;
         const isRMAUnit = RMA_LOCATION_NAMES.includes(locName);
-        const isL11Unit = locName === L11_NAME;
+        const isResolvedNonRmaUnit =
+          RESOLVED_LOCATION_NAMES.includes(locName) && !isRMAUnit;
         const isInPalletNumber = !!releasedPalletsData?.find((p) =>
           p.active_systems?.some(
             (s) =>
@@ -958,7 +990,10 @@ function SystemPage() {
 
         // keep all units that are NOT inactive RMA
         // (!isRMA || (isRMA && isInPalletNumber))
-        return (!isRMAUnit || (isRMAUnit && isInPalletNumber)) && !isL11Unit;
+        return (
+          (!isRMAUnit || (isRMAUnit && isInPalletNumber)) &&
+          !isResolvedNonRmaUnit
+        );
       });
 
       setSystem(systemsData);
@@ -1155,7 +1190,7 @@ function SystemPage() {
             place: "unit",
             owner_unit_id: ownerUnitId,
             owner_service_tag: r.unit_service_tag || owner?.service_tag || null,
-            // "live origin" = in donorSystems (active or RMA with open pallet, not Sent to L11)
+            // "live origin" = in donorSystems (active or RMA with open pallet, not a resolved non-RMA unit)
             is_live_origin: !!owner,
           };
         });
@@ -2140,17 +2175,12 @@ function SystemPage() {
       }
     }
 
-    // Require Root Cause + Sub Category for RMA VID/CID/PID or Sent to L11
+    // Require Root Cause + Sub Category for resolved destinations.
     const destName = locations.find((l) => l.id === toId)?.name || "";
-    const REQUIRES_RC = [
-      "RMA VID",
-      "RMA CID",
-      "RMA PID",
-      "Sent to L11",
-    ].includes(destName);
+    const REQUIRES_RC = ROOT_CAUSE_LOCATIONS.includes(destName);
     if (REQUIRES_RC && (!selectedRootCauseId || !selectedRootCauseSubId)) {
       setFormError(
-        "Root Cause and Sub Category are required when moving to RMA (VID/CID/PID) or Sent to L11.",
+        "Root Cause and Sub Category are required when moving to RMA (VID/CID/PID), Sent to L11, or Sent for Dell Repair.",
       );
       return;
     }
@@ -2944,7 +2974,12 @@ function SystemPage() {
           }}
         />
       )}
-      <main className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6">
+      <main
+        data-repairs-allowed={
+          repairsAllowed === null ? "unknown" : String(repairsAllowed)
+        }
+        className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6"
+      >
         {loading ? (
           <LoadingSkeleton rows={6} />
         ) : error ? (
@@ -3067,6 +3102,7 @@ function SystemPage() {
                   locations.find((l) => l.name === currentLocation)?.id || 1
                 }
                 locations={locations}
+                repairsAllowed={repairsAllowed}
               />
             </div>
 
@@ -3098,80 +3134,81 @@ function SystemPage() {
                       </label>
 
                       <div className="flex flex-wrap gap-3">
-                        {allowedNextLocations(currentLocation, locations).map(
-                          (loc) => {
-                            const isRMA = RMA_LOCATION_IDS.includes(loc.id);
-                            const isRmaCid = loc.name === "RMA CID";
-                            const isL10 = L10_LOCATION_ID
-                              ? loc.id === L10_LOCATION_ID
-                              : loc.name === "In L10";
-                            const isPendingL11Destination =
-                              loc.name === "Pending L11 Logs";
+                        {allowedNextLocations(
+                          currentLocation,
+                          locations,
+                          repairsAllowed,
+                        ).map((loc) => {
+                          const isRMA = RMA_LOCATION_IDS.includes(loc.id);
+                          const isRmaCid = loc.name === "RMA CID";
+                          const isL10 = L10_LOCATION_ID
+                            ? loc.id === L10_LOCATION_ID
+                            : loc.name === "In L10";
+                          const isPendingL11Destination =
+                            loc.name === "Pending L11 Logs";
 
-                            const rmaBlocked = isRMA && willHaveGoodAfterSubmit;
-                            const cidPhotoBlocked =
-                              isRmaCid && !hasFreshPhotoEvidenceForCid;
-                            const pendingL11GoodPartsBlocked =
-                              isPendingL11Destination &&
-                              willHaveGoodAfterSubmit;
-                            // Allow In L10 when at least one bad has a Replacement PPID chosen
-                            const l10Blocked =
-                              isL10 &&
-                              willHaveBadAfterSubmit &&
-                              !hasAnyBadReplacementChosen;
-                            const l11Blocked =
-                              isPendingL11Destination && l11LogsAlreadyPresent;
-                            const disabled =
-                              isResolved ||
-                              rmaBlocked ||
-                              cidPhotoBlocked ||
-                              l10Blocked ||
-                              l11Blocked ||
-                              pendingL11GoodPartsBlocked;
+                          const rmaBlocked = isRMA && willHaveGoodAfterSubmit;
+                          const cidPhotoBlocked =
+                            isRmaCid && !hasFreshPhotoEvidenceForCid;
+                          const pendingL11GoodPartsBlocked =
+                            isPendingL11Destination && willHaveGoodAfterSubmit;
+                          // Allow In L10 when at least one bad has a Replacement PPID chosen
+                          const l10Blocked =
+                            isL10 &&
+                            willHaveBadAfterSubmit &&
+                            !hasAnyBadReplacementChosen;
+                          const l11Blocked =
+                            isPendingL11Destination && l11LogsAlreadyPresent;
+                          const disabled =
+                            isResolved ||
+                            rmaBlocked ||
+                            cidPhotoBlocked ||
+                            l10Blocked ||
+                            l11Blocked ||
+                            pendingL11GoodPartsBlocked;
 
-                            const title = l11Blocked
-                              ? "L11 Logs Already Present"
-                              : rmaBlocked
-                                ? "Remove/return all good parts before moving to an RMA location."
-                                : cidPhotoBlocked
-                                  ? "Photo evidence of the damage must be uploaded before moving to RMA CID."
-                                  : pendingL11GoodPartsBlocked
-                                    ? "Return/remove all good parts before moving to Pending L11 Logs"
-                                    : l10Blocked
-                                      ? "Add a Replacement PPID for at least one defective part to move to In L10."
-                                      : isResolved
-                                        ? "Resolved units can’t be moved."
-                                        : undefined;
+                          const title = l11Blocked
+                            ? "L11 Logs Already Present"
+                            : rmaBlocked
+                              ? "Remove/return all good parts before moving to an RMA location."
+                              : cidPhotoBlocked
+                                ? "Photo evidence of the damage must be uploaded before moving to RMA CID."
+                                : pendingL11GoodPartsBlocked
+                                  ? "Return/remove all good parts before moving to Pending L11 Logs"
+                                  : l10Blocked
+                                    ? "Add a Replacement PPID for at least one defective part to move to In L10."
+                                    : isResolved
+                                      ? "Resolved units can’t be moved."
+                                      : undefined;
 
-                            return (
-                              <Tooltip
-                                key={loc.id}
-                                show={disabled && !!title}
-                                text={title}
-                                maxWidthClassName="max-w-[22rem] sm:max-w-sm"
-                              >
-                                <span className="inline-flex">
-                                  <button
-                                    type="button"
-                                    disabled={disabled}
-                                    onClick={() => setToLocationId(loc.id)}
-                                    className={`px-4 py-2 rounded-lg shadow text-sm font-medium border transition ${
-                                      toLocationId === loc.id
-                                        ? "bg-blue-600 text-white border-blue-600"
-                                        : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
-                                    } ${
-                                      disabled
-                                        ? "opacity-50 cursor-not-allowed disabled:pointer-events-none"
-                                        : ""
-                                    }`}
-                                  >
-                                    {loc.name}
-                                  </button>
-                                </span>
-                              </Tooltip>
-                            );
-                          },
-                        )}
+                          return (
+                            <Tooltip
+                              key={loc.id}
+                              show={disabled && !!title}
+                              text={title}
+                              maxWidthClassName="max-w-[22rem] sm:max-w-sm"
+                            >
+                              <span className="inline-flex">
+                                <button
+                                  type="button"
+                                  disabled={disabled}
+                                  onClick={() => setToLocationId(loc.id)}
+                                  className={`px-4 py-2 rounded-lg shadow text-sm font-medium border transition ${
+                                    toLocationId === loc.id
+                                      ? "bg-blue-600 text-white border-blue-600"
+                                      : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
+                                  } ${
+                                    disabled
+                                      ? "opacity-50 cursor-not-allowed disabled:pointer-events-none"
+                                      : ""
+                                  }`}
+                                >
+                                  {loc.name}
+                                </button>
+                              </span>
+                            </Tooltip>
+                          );
+                        })}
                       </div>
 
                       <p className="text-xs text-gray-500 mt-1">
@@ -3193,7 +3230,7 @@ function SystemPage() {
                           + Add Pending Part
                         </button>
                       ) : null}
-                      {canAddGoodParts && (
+                      {canAddGoodParts && repairsAllowed !== false && (
                         <button
                           type="button"
                           onClick={addGoodPartBlock}
@@ -3206,6 +3243,7 @@ function SystemPage() {
 
                     {/* Good part blocks */}
                     {canAddGoodParts &&
+                      repairsAllowed !== false &&
                       (goodBlocks.length === 0 ? (
                         <div className="text-sm text-gray-500 border border-dashed border-gray-300 rounded-lg p-4">
                           No replacement parts to be added. Click “Add
@@ -4873,6 +4911,7 @@ function SystemPage() {
                     fieldStyles={{
                       to_location: (val) =>
                         val === "Sent to L11" ||
+                        val === "Sent for Dell Repair" ||
                         val === "RMA CID" ||
                         val === "RMA VID" ||
                         val === "RMA PID"
@@ -4890,6 +4929,7 @@ function SystemPage() {
                               },
                       from_location: (val) =>
                         val === "Sent to L11" ||
+                        val === "Sent for Dell Repair" ||
                         val === "RMA CID" ||
                         val === "RMA VID" ||
                         val === "RMA PID"

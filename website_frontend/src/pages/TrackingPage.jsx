@@ -78,7 +78,7 @@ function TrackingPage() {
 
   const activeLocationIDs = [1, 2, 3, 4, 5];
   const systemLocationChartIDs = [1, 2, 3, 4, 5];
-  const inactiveLocationIDs = [6, 7, 8, 9];
+  const inactiveLocationIDs = [6, 7, 8, 9, 10];
 
   const {
     getDpns,
@@ -1181,7 +1181,13 @@ function TrackingPage() {
                 date_created: "text-gray-500 text-sm",
                 date_last_modified: "text-gray-500 text-sm",
                 location: (val) =>
-                  ["Sent to L11", "RMA CID", "RMA VID", "RMA PID"].includes(val)
+                  [
+                    "Sent to L11",
+                    "Sent for Dell Repair",
+                    "RMA CID",
+                    "RMA VID",
+                    "RMA PID",
+                  ].includes(val)
                     ? { type: "pill", color: "bg-green-100 text-green-800" }
                     : ["Received", "In Debug - Wistron", "In L10"].includes(val)
                       ? { type: "pill", color: "bg-red-100 text-red-800" }
