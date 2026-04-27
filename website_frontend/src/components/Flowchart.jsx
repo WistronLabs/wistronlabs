@@ -6,7 +6,7 @@ export default function Flowchart({
   const locationsHiddenWhenRepairsDisabled = new Set([3, 4]);
   const locationsHiddenWhenRepairsEnabled = new Set([10]);
   const arrowsHiddenWhenRepairsDisabled = new Set([3, 4, 6]);
-  const arrowsHiddenWhenRepairsEnabled = new Set();
+  const arrowsHiddenWhenRepairsEnabled = new Set([11]);
   const rectsHiddenWhenRepairsDisabled = new Set([2, 5, 6, 12, 13, 14]);
   const rectsHiddenWhenRepairsEnabled = new Set([15, 16, 17, 18, 19, 20]);
 
