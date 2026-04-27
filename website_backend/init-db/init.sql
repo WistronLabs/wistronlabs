@@ -14,7 +14,8 @@ INSERT INTO location (name) VALUES
 ('RMA VID'),
 ('RMA CID'),
 ('RMA PID'),
-('Sent to L11');
+('Sent to L11'),
+('Sent for Dell Repair');
 
 -- 📄 Create users table
 CREATE TABLE users (
@@ -24,9 +25,18 @@ CREATE TABLE users (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+CREATE TABLE global_settings (
+    key TEXT PRIMARY KEY,
+    value_json JSONB NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- 🌱 Seed deleted user
 INSERT INTO users (username, password_hash)
 VALUES ('deleted_user@example.com', '');
+
+INSERT INTO global_settings (key, value_json)
+VALUES ('repairs_allowed', 'true'::jsonb);
 
 -- 📄 Create factory table
 CREATE TABLE factory (

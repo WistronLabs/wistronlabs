@@ -49,7 +49,11 @@ export default function useDetailsModal(showToast, onUpdated) {
   const isResolvedLocation = useMemo(() => {
     const loc = String(details?.location || details?.current_location || "").trim();
     if (!loc) return false;
-    return /^RMA\b/i.test(loc) || /^Sent to L11$/i.test(loc);
+    return (
+      /^RMA\b/i.test(loc) ||
+      /^Sent to L11$/i.test(loc) ||
+      /^Sent for Dell Repair$/i.test(loc)
+    );
   }, [details?.location, details?.current_location]);
 
   const openDetails = useCallback((data, options = {}) => {

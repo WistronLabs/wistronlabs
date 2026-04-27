@@ -811,7 +811,7 @@ export default function PartsInventory() {
                       type: "pill",
                       color: "bg-gray-100 text-gray-700 border border-gray-200",
                     }
-                  : v === "Sent to L11"
+                  : ["Sent to L11", "Sent for Dell Repair"].includes(v)
                     ? {
                         type: "pill",
                         color: "bg-slate-100 text-slate-700 border border-slate-200",
