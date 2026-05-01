@@ -4415,6 +4415,10 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
     return res.status(400).json({ error: "ppid is required" });
   }
 
+  if (ppid.trim().toUpperCase() === service_tag.toUpperCase()) {
+    res.json({ message: "PPID provided matches service tag, skipping PPID update" });
+  }
+
   let parsed;
   try {
     parsed = parseAndValidatePPID(ppid);
