@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
 export default function Tooltip({
   children,
@@ -6,6 +6,10 @@ export default function Tooltip({
   position = "top",
   show = false,
   maxWidthClassName = "max-w-xs",
+  zIndexClassName = "z-0",
+  autoFlip = true,
+  topViewportOffset = 0,
+  bottomViewportOffset = 0,
 }) {
   const posClasses = {
     top: {
@@ -31,18 +35,67 @@ export default function Tooltip({
   };
 
   const [open, setOpen] = useState(false);
+  const [resolvedPosition, setResolvedPosition] = useState(position);
+  const triggerRef = useRef(null);
+  const bubbleRef = useRef(null);
 
   if (!show || !text) {
     return <>{children}</>;
   }
 
-  const activePos = posClasses[position] || posClasses.top;
+  const activePos = posClasses[resolvedPosition] || posClasses.top;
   const openTooltip = () => setOpen(true);
   const closeTooltip = () => setOpen(false);
   const toggleTooltip = () => setOpen((prev) => !prev);
 
+  useEffect(() => {
+    setResolvedPosition(position);
+  }, [position]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!autoFlip) return;
+    if (position !== "top" && position !== "bottom") return;
+
+    const updatePosition = () => {
+      const triggerEl = triggerRef.current;
+      const bubbleEl = bubbleRef.current;
+      if (!triggerEl || !bubbleEl) return;
+
+      const triggerRect = triggerEl.getBoundingClientRect();
+      const bubbleRect = bubbleEl.getBoundingClientRect();
+      const margin = 12;
+
+      const spaceAbove = triggerRect.top - topViewportOffset;
+      const spaceBelow =
+        window.innerHeight - bottomViewportOffset - triggerRect.bottom;
+      const fitsAbove = spaceAbove >= bubbleRect.height + margin;
+      const fitsBelow = spaceBelow >= bubbleRect.height + margin;
+
+      if (position === "top") {
+        if (fitsAbove) setResolvedPosition("top");
+        else if (fitsBelow) setResolvedPosition("bottom");
+        else setResolvedPosition(spaceAbove >= spaceBelow ? "top" : "bottom");
+        return;
+      }
+
+      if (fitsBelow) setResolvedPosition("bottom");
+      else if (fitsAbove) setResolvedPosition("top");
+      else setResolvedPosition(spaceBelow >= spaceAbove ? "bottom" : "top");
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [autoFlip, bottomViewportOffset, open, position, topViewportOffset]);
+
   return (
     <span
+      ref={triggerRef}
       className="relative inline-flex align-middle"
       onMouseEnter={openTooltip}
       onMouseLeave={closeTooltip}
@@ -52,7 +105,8 @@ export default function Tooltip({
     >
       {children}
       <span
-        className={`pointer-events-none absolute z-0 ${
+        ref={bubbleRef}
+        className={`pointer-events-none absolute ${zIndexClassName} ${
           activePos.bubble
         } transition-all duration-150 ease-out ${
           open
