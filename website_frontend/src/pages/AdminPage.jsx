@@ -41,6 +41,8 @@ function AdminPage() {
     deletePartCategory,
     getRepairsAllowed,
     updateRepairsAllowed,
+    getL11LogReconciliationMode,
+    updateL11LogReconciliationMode,
   } = useApi();
   const [users, setUsers] = useState([]);
   const [baselineUsers, setBaselineUsers] = useState([]); // snapshot to diff from
@@ -98,6 +100,12 @@ function AdminPage() {
   const [repairsAllowed, setRepairsAllowed] = useState(true);
   const [repairsAllowedLoading, setRepairsAllowedLoading] = useState(false);
   const [repairsAllowedSaving, setRepairsAllowedSaving] = useState(false);
+  const [l11LogReconciliationMode, setL11LogReconciliationMode] =
+    useState(false);
+  const [l11LogReconciliationModeLoading, setL11LogReconciliationModeLoading] =
+    useState(false);
+  const [l11LogReconciliationModeSaving, setL11LogReconciliationModeSaving] =
+    useState(false);
 
   const normalizeDpns = (list = []) =>
     (list || []).map((d) => ({
@@ -247,6 +255,26 @@ function AdminPage() {
 
   useEffect(() => {
     let alive = true;
+    (async () => {
+      try {
+        setL11LogReconciliationModeLoading(true);
+        const res = await getL11LogReconciliationMode();
+        if (!alive) return;
+        setL11LogReconciliationMode(!!res?.l11_log_reconciliation_mode);
+      } catch (e) {
+        if (!alive) return;
+        console.error("Failed to load l11_log_reconciliation_mode:", e);
+      } finally {
+        if (alive) setL11LogReconciliationModeLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
     const loadDpns = async () => {
       if (tab !== "dpns" || dpnLoading || baselineDpns.length) return;
       try {
@@ -271,8 +299,7 @@ function AdminPage() {
 
   useEffect(() => {
     let alive = true;
-    const shouldLoad =
-      tab === "dell-customers" || tab === "dpns";
+    const shouldLoad = tab === "dell-customers" || tab === "dpns";
     const haveBaseline = baselineDellCustomers.length > 0;
     if (!shouldLoad || dellCustomerLoading || haveBaseline) return;
 
@@ -327,7 +354,7 @@ function AdminPage() {
         dell_customer_ids: Array.isArray(d.dell_customers)
           ? d.dell_customers.map((c) => c.id).sort((a, b) => a - b)
           : [],
-      })
+      }),
     );
     return m;
   }, [baselineDpns]);
@@ -341,9 +368,11 @@ function AdminPage() {
         (d.config || "").toLowerCase().includes(q) ||
         (Array.isArray(d.dell_customers)
           ? d.dell_customers.some((c) =>
-              String(c?.name || "").toLowerCase().includes(q),
+              String(c?.name || "")
+                .toLowerCase()
+                .includes(q),
             )
-          : false)
+          : false),
     );
   }, [dpns, dpnQ]);
 
@@ -363,7 +392,9 @@ function AdminPage() {
           (base.config ?? "") !== (d.config ?? "") ||
           JSON.stringify(base.dell_customer_ids || []) !==
             JSON.stringify(
-              (Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : []).slice().sort((a, b) => a - b),
+              (Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : [])
+                .slice()
+                .sort((a, b) => a - b),
             ))
       );
     });
@@ -376,7 +407,7 @@ function AdminPage() {
         name: f.name,
         code: f.code,
         ppid_code: f.ppid_code ?? "",
-      })
+      }),
     );
     return m;
   }, [baselineFactories]);
@@ -388,7 +419,7 @@ function AdminPage() {
       (f) =>
         f.name.toLowerCase().includes(q) ||
         f.code.toLowerCase().includes(q) ||
-        (f.ppid_code || "").toLowerCase().includes(q)
+        (f.ppid_code || "").toLowerCase().includes(q),
     );
   }, [factories, factoryQ]);
 
@@ -414,7 +445,7 @@ function AdminPage() {
         name: p.name,
         dpn: p.dpn ?? "",
         part_category_id: p.part_category_id ?? null,
-      })
+      }),
     );
     return m;
   }, [baselineParts]);
@@ -452,7 +483,7 @@ function AdminPage() {
 
   const onPartCellNameChange = (id, value) => {
     setParts((cur) =>
-      cur.map((p) => (p.id === id ? { ...p, name: value } : p))
+      cur.map((p) => (p.id === id ? { ...p, name: value } : p)),
     );
   };
 
@@ -480,7 +511,7 @@ function AdminPage() {
           isTemp(p.id) &&
           ((p.name && p.name.trim()) ||
             (p.dpn && p.dpn.trim()) ||
-            p.part_category_id != null)
+            p.part_category_id != null),
       );
 
       // Changed rows: detect name, dpn, and category changes
@@ -599,7 +630,7 @@ function AdminPage() {
 
   const onFactoryCellChange = (id, field, value) => {
     setFactories((cur) =>
-      cur.map((f) => (f.id === id ? { ...f, [field]: value } : f))
+      cur.map((f) => (f.id === id ? { ...f, [field]: value } : f)),
     );
   };
 
@@ -615,7 +646,7 @@ function AdminPage() {
     setFactorySaving(true);
     try {
       const newRows = factories.filter(
-        (f) => typeof f.id !== "number" && (f.name?.trim() || f.code?.trim())
+        (f) => typeof f.id !== "number" && (f.name?.trim() || f.code?.trim()),
       );
       const changedRows = factories.filter((f) => {
         if (typeof f.id !== "number") return false;
@@ -704,7 +735,8 @@ function AdminPage() {
   const sanitizeCustomer = (s) => ((s ?? "") + "").trim();
   const getCustomerNameById = (id) =>
     sanitizeCustomer(
-      (dellCustomers || []).find((c) => Number(c.id) === Number(id))?.name || "",
+      (dellCustomers || []).find((c) => Number(c.id) === Number(id))?.name ||
+        "",
     );
 
   const validateRow = (row) => {
@@ -737,7 +769,9 @@ function AdminPage() {
     setDpns((cur) =>
       cur.map((d) => {
         if (d.id !== dpnId) return d;
-        const ids = new Set(Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : []);
+        const ids = new Set(
+          Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : [],
+        );
         if (ids.has(customerId)) ids.delete(customerId);
         else ids.add(customerId);
         return { ...d, dell_customer_ids: [...ids] };
@@ -759,7 +793,7 @@ function AdminPage() {
     try {
       // Separate new vs changed
       const newRows = dpns.filter(
-        (d) => typeof d.id !== "number" && (d.name?.trim() || d.config?.trim())
+        (d) => typeof d.id !== "number" && (d.name?.trim() || d.config?.trim()),
       );
       const changedRows = dpns.filter((d) => {
         if (typeof d.id !== "number") return false;
@@ -770,7 +804,9 @@ function AdminPage() {
             (base.config ?? "") !== (d.config ?? "") ||
             JSON.stringify(base.dell_customer_ids || []) !==
               JSON.stringify(
-                (Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : []).slice().sort((a, b) => a - b),
+                (Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : [])
+                  .slice()
+                  .sort((a, b) => a - b),
               ))
         );
       });
@@ -779,9 +815,9 @@ function AdminPage() {
       for (const row of newRows) {
         const name = sanitizeName(row.name);
         const config = sanitizeConfig(row.config);
-        const dell_customer_ids = (Array.isArray(row.dell_customer_ids)
-          ? row.dell_customer_ids
-          : [])
+        const dell_customer_ids = (
+          Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : []
+        )
           .map((id) => Number(id))
           .filter((id) => Number.isInteger(id) && id > 0);
         const dell_customer = getCustomerNameById(dell_customer_ids[0]);
@@ -801,19 +837,25 @@ function AdminPage() {
         const payload = {};
         const nameSan = sanitizeName(row.name);
         const configSan = sanitizeConfig(row.config);
-        const idsSan = (Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : [])
+        const idsSan = (
+          Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : []
+        )
           .map((id) => Number(id))
           .filter((id) => Number.isInteger(id) && id > 0);
         const customerSan = getCustomerNameById(idsSan[0]);
         if (!idsSan.length || !customerSan) {
-          throw new Error(`Row "${row.name}": Select at least one allowed Dell customer`);
+          throw new Error(
+            `Row "${row.name}": Select at least one allowed Dell customer`,
+          );
         }
         if (nameSan !== base.name) payload.name = nameSan;
         if ((configSan ?? "") !== (base.config ?? ""))
           payload.config = configSan;
         if (
           JSON.stringify((idsSan || []).slice().sort((a, b) => a - b)) !==
-          JSON.stringify((base.dell_customer_ids || []).slice().sort((a, b) => a - b))
+          JSON.stringify(
+            (base.dell_customer_ids || []).slice().sort((a, b) => a - b),
+          )
         ) {
           payload.dell_customer_ids = idsSan;
         }
@@ -894,8 +936,8 @@ function AdminPage() {
 
     setUsers((cur) =>
       cur.map((x) =>
-        x.username === u.username ? { ...x, isAdmin: nextChecked } : x
-      )
+        x.username === u.username ? { ...x, isAdmin: nextChecked } : x,
+      ),
     );
   };
 
@@ -925,7 +967,7 @@ function AdminPage() {
 
     // Block self de-admin if somehow present in pending
     const self = pendingChanges.find(
-      (c) => c.username.toLowerCase() === me.username.toLowerCase()
+      (c) => c.username.toLowerCase() === me.username.toLowerCase(),
     );
     if (self && self.admin === false) {
       setErr("You cannot remove your own admin role.");
@@ -974,7 +1016,7 @@ function AdminPage() {
 
   const onPartCatCellChange = (id, value) => {
     setPartCats((cur) =>
-      cur.map((c) => (c.id === id ? { ...c, name: value } : c))
+      cur.map((c) => (c.id === id ? { ...c, name: value } : c)),
     );
   };
 
@@ -991,7 +1033,7 @@ function AdminPage() {
     setPartCatSaving(true);
     try {
       const newRows = partCats.filter(
-        (c) => typeof c.id !== "number" && c.name?.trim()
+        (c) => typeof c.id !== "number" && c.name?.trim(),
       );
       const changedRows = partCats.filter((c) => {
         if (typeof c.id !== "number") return false;
@@ -1021,13 +1063,13 @@ function AdminPage() {
     } catch (e2) {
       console.error("Saving part categories failed:", e2);
       setPartCatErr(
-        e2?.body?.error || e2.message || "Failed to save part categories"
+        e2?.body?.error || e2.message || "Failed to save part categories",
       );
       showToast(
         "Failed to save part categories",
         "error",
         3000,
-        "bottom-right"
+        "bottom-right",
       );
     } finally {
       setPartCatSaving(false);
@@ -1082,7 +1124,9 @@ function AdminPage() {
     const q = dellCustomerQ.trim().toLowerCase();
     if (!q) return dellCustomers;
     return dellCustomers.filter((c) =>
-      String(c?.name || "").toLowerCase().includes(q),
+      String(c?.name || "")
+        .toLowerCase()
+        .includes(q),
     );
   }, [dellCustomers, dellCustomerQ]);
 
@@ -1145,7 +1189,9 @@ function AdminPage() {
       showToast("Dell customers saved", "success", 2200, "bottom-right");
     } catch (e2) {
       console.error("Saving Dell customers failed:", e2);
-      setDellCustomerErr(e2?.body?.error || e2.message || "Failed to save Dell customers");
+      setDellCustomerErr(
+        e2?.body?.error || e2.message || "Failed to save Dell customers",
+      );
       showToast("Failed to save Dell customers", "error", 3000, "bottom-right");
     } finally {
       setDellCustomerSaving(false);
@@ -1176,7 +1222,8 @@ function AdminPage() {
       setBaselineDellCustomers((cur) => cur.filter((c) => c.id !== row.id));
       showToast(`Deleted ${row.name}`, "success", 2200, "bottom-right");
     } catch (e) {
-      const msg = e?.body?.error || e?.message || "Failed to delete Dell customer";
+      const msg =
+        e?.body?.error || e?.message || "Failed to delete Dell customer";
       showToast(msg, "error", 3500, "bottom-right");
     } finally {
       setDeletingDellCustomerId(null);
@@ -1218,6 +1265,50 @@ function AdminPage() {
       );
     } finally {
       setRepairsAllowedSaving(false);
+    }
+  };
+
+  const handleL11LogReconciliationModeToggle = async () => {
+    const nextValue = !l11LogReconciliationMode;
+    const confirmed = await confirm({
+      title: nextValue
+        ? "Enable L11 Log Reconciliation"
+        : "Disable L11 Log Reconciliation",
+      message: nextValue
+        ? "This will make L11 log actions available outside the normal Pending L11 Logs flow, including RMA locations."
+        : "Disable L11 log reconciliation mode and return L11 log actions to the normal flow?",
+      confirmText: nextValue ? "Enable" : "Disable",
+      cancelText: "Cancel",
+      confirmClass: nextValue
+        ? "bg-amber-600 text-white hover:bg-amber-700"
+        : "bg-gray-700 text-white hover:bg-gray-800",
+      cancelClass: "bg-gray-200 text-gray-700 hover:bg-gray-300",
+    });
+    if (!confirmed) return;
+
+    try {
+      setL11LogReconciliationModeSaving(true);
+      const res = await updateL11LogReconciliationMode(nextValue);
+      setL11LogReconciliationMode(!!res?.l11_log_reconciliation_mode);
+      showToast(
+        `L11 log reconciliation ${
+          res?.l11_log_reconciliation_mode ? "enabled" : "disabled"
+        }`,
+        "success",
+        2200,
+        "bottom-right",
+      );
+    } catch (e) {
+      showToast(
+        e?.body?.error ||
+          e?.message ||
+          "Failed to update L11 log reconciliation setting",
+        "error",
+        3200,
+        "bottom-right",
+      );
+    } finally {
+      setL11LogReconciliationModeSaving(false);
     }
   };
 
@@ -1263,6 +1354,50 @@ function AdminPage() {
                 : repairsAllowed
                   ? "Disable Repairs"
                   : "Enable Repairs"}
+            </button>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-sky-200 bg-sky-50/70 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">
+                L11 Log Reconciliation Mode
+              </div>
+              <p className="mt-1 text-sm text-gray-700">
+                Allows L11 log actions from any system location, including RMA
+                locations.
+              </p>
+              <p className="mt-1 text-sm text-gray-700">
+                Only enable this when log reconciliations need to be made.
+              </p>
+              <p className="mt-2 text-xs font-medium uppercase tracking-wide text-sky-700">
+                {l11LogReconciliationModeLoading
+                  ? "Loading current state..."
+                  : l11LogReconciliationMode
+                    ? "Currently enabled"
+                    : "Currently disabled"}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              disabled={
+                l11LogReconciliationModeLoading ||
+                l11LogReconciliationModeSaving
+              }
+              onClick={handleL11LogReconciliationModeToggle}
+              className={`inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-white shadow transition disabled:opacity-50 ${
+                l11LogReconciliationMode
+                  ? "bg-gray-700 hover:bg-gray-800"
+                  : "bg-amber-600 hover:bg-amber-700"
+              }`}
+            >
+              {l11LogReconciliationModeSaving
+                ? "Saving..."
+                : l11LogReconciliationMode
+                  ? "Disable Reconciliation"
+                  : "Enable Reconciliation"}
             </button>
           </div>
         </section>

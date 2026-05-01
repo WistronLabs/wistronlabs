@@ -133,6 +133,8 @@ function SystemPage() {
   const [hasPhotosTab, setHasPhotosTab] = useState(false);
   const [hasL11RackLogs, setHasL11RackLogs] = useState(false);
   const [repairsAllowed, setRepairsAllowed] = useState(null);
+  const [l11LogReconciliationMode, setL11LogReconciliationMode] =
+    useState(false);
   const [showPhotoMenu, setShowPhotoMenu] = useState(false);
   const [showL11Menu, setShowL11Menu] = useState(false);
   const [showPhoneQr, setShowPhoneQr] = useState(false);
@@ -245,13 +247,19 @@ function SystemPage() {
 
   const { token } = useContext(AuthContext);
   const canAddPhoto = !isResolved && !!token;
+  const canUseL11LogReconciliationMode =
+    l11LogReconciliationMode && !!me?.isAdmin;
+  const canUseL11LogActions =
+    isPendingL11Logs || canUseL11LogReconciliationMode;
   const canUploadL11Logs =
     !!token &&
-    !isResolved &&
-    !hasL11RackLogs &&
+    (!isResolved || canUseL11LogReconciliationMode) &&
+    (!hasL11RackLogs || canUseL11LogReconciliationMode) &&
     !!String(system?.rack_id || "").trim();
   const canRunL11Scan =
-    !!token && !hasL11RackLogs && !!String(system?.rack_id || "").trim();
+    !!token &&
+    (!hasL11RackLogs || canUseL11LogReconciliationMode) &&
+    !!String(system?.rack_id || "").trim();
   const canExportUnitData = !!serviceTag;
   const qrPhotoUrl =
     typeof window !== "undefined"
@@ -299,6 +307,7 @@ function SystemPage() {
     getSystemL11ScanStatus,
     exportSystemUnitData,
     getRepairsAllowed,
+    getL11LogReconciliationMode,
   } = useApi();
 
   const { confirm, ConfirmDialog } = useConfirm();
@@ -890,6 +899,32 @@ function SystemPage() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!token || !me?.isAdmin) {
+      setL11LogReconciliationMode(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await getL11LogReconciliationMode();
+        if (!cancelled) {
+          setL11LogReconciliationMode(
+            !!res?.l11_log_reconciliation_mode,
+          );
+        }
+      } catch {
+        if (!cancelled) setL11LogReconciliationMode(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [token, me?.isAdmin]);
 
   // Load parts when Good Parts flow is allowed (Debug → Debug/L10)
   useEffect(() => {
@@ -2916,6 +2951,75 @@ function SystemPage() {
       ? String(system.root_cause_sub_category_id)
       : null);
 
+  const renderL11LogActions = () =>
+    canUseL11LogActions ? (
+      <div className="relative" ref={l11MenuRef}>
+        <button
+          type="button"
+          disabled={
+            uploadingL11Logs ||
+            runningL11Scan ||
+            (!canUploadL11Logs && !canRunL11Scan)
+          }
+          onClick={() => setShowL11Menu((v) => !v)}
+          title={
+            hasL11RackLogs && !canUseL11LogReconciliationMode
+              ? "L11 logs already exist for this unit"
+              : !String(system?.rack_id || "").trim()
+                ? "Rack service tag is required before using L11 log actions"
+                : !token
+                  ? "Login required to use L11 log actions"
+                  : undefined
+          }
+          className="w-full sm:w-auto bg-sky-600 hover:bg-sky-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition"
+        >
+          {uploadingL11Logs
+            ? "Archiving..."
+            : runningL11Scan
+              ? "Scanning..."
+              : "L11 Logs"}
+        </button>
+        {showL11Menu && (
+          <div className="absolute z-30 mt-2 w-64 max-w-[85vw] rounded-lg border border-gray-200 bg-white shadow-lg p-2 space-y-2">
+            <button
+              type="button"
+              disabled={!canUploadL11Logs || uploadingL11Logs}
+              onClick={() => l11LogsInputRef.current?.click()}
+              className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 disabled:opacity-50"
+              title={
+                hasL11RackLogs && !canUseL11LogReconciliationMode
+                  ? "L11 logs already exist for this unit"
+                  : isResolved && !canUseL11LogReconciliationMode
+                    ? "Resolved units cannot upload L11 logs"
+                    : !String(system?.rack_id || "").trim()
+                      ? "Rack service tag is required before uploading L11 logs"
+                      : undefined
+              }
+            >
+              Upload L11 Logs
+            </button>
+            <button
+              type="button"
+              disabled={!canRunL11Scan || runningL11Scan}
+              onClick={handleRunL11Scan}
+              className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 disabled:opacity-50"
+              title={
+                hasL11RackLogs && !canUseL11LogReconciliationMode
+                  ? "L11 logs already exist for this unit"
+                  : !String(system?.rack_id || "").trim()
+                    ? "Rack service tag is required before scanning L11 logs"
+                    : !token
+                      ? "Login required to scan for L11 logs"
+                      : undefined
+              }
+            >
+              Scan L11 Logs
+            </button>
+          </div>
+        )}
+      </div>
+    ) : null;
+
   return (
     <>
       <ConfirmDialog />
@@ -4727,81 +4831,7 @@ function SystemPage() {
                     </div>
                   )}
 
-                  {isPendingL11Logs && (
-                    <div className="relative" ref={l11MenuRef}>
-                      <button
-                        type="button"
-                        disabled={
-                          uploadingL11Logs ||
-                          runningL11Scan ||
-                          (!canUploadL11Logs && !canRunL11Scan)
-                        }
-                        onClick={() => setShowL11Menu((v) => !v)}
-                        title={
-                          hasL11RackLogs
-                            ? "L11 logs already exist for this unit"
-                            : !String(system?.rack_id || "").trim()
-                              ? "Rack service tag is required before using L11 log actions"
-                              : !token
-                                ? "Login required to use L11 log actions"
-                                : undefined
-                        }
-                        className="w-full sm:w-auto bg-sky-600 hover:bg-sky-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition"
-                      >
-                        {uploadingL11Logs
-                          ? "Archiving…"
-                          : runningL11Scan
-                            ? "Scanning…"
-                            : "L11 Logs"}
-                      </button>
-                      {showL11Menu && (
-                        <div className="absolute z-30 mt-2 w-64 max-w-[85vw] rounded-lg border border-gray-200 bg-white shadow-lg p-2 space-y-2">
-                          <button
-                            type="button"
-                            disabled={!canUploadL11Logs || uploadingL11Logs}
-                            onClick={() => l11LogsInputRef.current?.click()}
-                            className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 disabled:opacity-50"
-                            title={
-                              hasL11RackLogs
-                                ? "L11 logs already exist for this unit"
-                                : isResolved
-                                  ? "Resolved units cannot upload L11 logs"
-                                  : !String(system?.rack_id || "").trim()
-                                    ? "Rack service tag is required before uploading L11 logs"
-                                    : undefined
-                            }
-                          >
-                            Upload L11 Logs
-                          </button>
-                          <button
-                            type="button"
-                            disabled={!canRunL11Scan || runningL11Scan}
-                            onClick={handleRunL11Scan}
-                            className="w-full text-left px-3 py-2 rounded bg-gray-100 hover:bg-gray-200 text-sm font-medium text-gray-800 disabled:opacity-50"
-                            title={
-                              hasL11RackLogs
-                                ? "L11 logs already exist for this unit"
-                                : !String(system?.rack_id || "").trim()
-                                  ? "Rack service tag is required before scanning L11 logs"
-                                  : !token
-                                    ? "Login required to scan for L11 logs"
-                                    : undefined
-                            }
-                          >
-                            Scan L11 Logs
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <input
-                    ref={l11LogsInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={handleL11LogsPick}
-                  />
+                  {!formDisabled && renderL11LogActions()}
                 </div>
 
                 {isRMA ? (
@@ -4828,6 +4858,18 @@ function SystemPage() {
                   <></>
                 )}
               </fieldset>
+              {formDisabled && canUseL11LogActions && (
+                <div className="w-full sm:w-auto flex flex-wrap items-start gap-2">
+                  {renderL11LogActions()}
+                </div>
+              )}
+              <input
+                ref={l11LogsInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleL11LogsPick}
+              />
               {formError && (
                 <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded">
                   {formError}

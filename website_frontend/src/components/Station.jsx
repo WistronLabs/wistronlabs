@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DateTime } from "luxon";
+import Tooltip from "./Tooltip.jsx";
 
 const PROGRESS_WINDOW_MIN = 110; // how long until the bar reaches 100%
 
@@ -68,7 +69,7 @@ function Station({
 
     const pct = total > 0? (passed / total) * 100 : (minutesSince / progressWindowMin) * 100;
     return Math.max(0, Math.min(100, pct));
-  }, [minutesSince]);
+  }, [details, minutesSince, progressWindowMin]);
 
   const humanAgo = useMemo(() => {
     if (!diff) return "";
@@ -90,29 +91,35 @@ function Station({
     const base =
       "relative inline-flex items-center justify-center min-w-24 max-w-[12rem] px-2 py-1 rounded-md md:rounded-full text-xs font-medium text-center";
     const textClass = "block truncate whitespace-nowrap";
+    const withTooltip = (statusBadge) => (
+      <Tooltip
+        show={!!tooltip}
+        text={<span className="whitespace-pre-line">{tooltip}</span>}
+        maxWidthClassName="max-w-[22rem] sm:max-w-sm"
+      >
+        {statusBadge}
+      </Tooltip>
+    );
+
     if (status === 3)
-      return (
-        <span className={`${base} bg-gray-200 text-gray-700`} title={tooltip}>
+      return withTooltip(
+        <span className={`${base} bg-gray-200 text-gray-700`}>
           <span className={textClass}>{message}</span>
         </span>
       );
 
     if (status === 0)
-      return (
-        <span
-          className={`${base} bg-yellow-100 text-yellow-800`}
-          title={tooltip}
-        >
+      return withTooltip(
+        <span className={`${base} bg-yellow-100 text-yellow-800`}>
           <span className={textClass}>{message}</span>
         </span>
       );
 
     if (status === 1) {
       // “loading bar” background with status text on top
-      return (
+      return withTooltip(
         <span
           className={`${base} bg-green-100 text-green-900 overflow-hidden cursor-default select-none`}
-          title={tooltip}
           aria-label={`In progress: ${progressPct.toFixed(0)} percent`}
           role="progressbar"
           aria-valuenow={Math.round(progressPct)}
@@ -136,28 +143,28 @@ function Station({
             }}
             aria-hidden="true"
           />
-          {/* text stays readable above the fill */}
-          <span className={`relative z-10 ${textClass}`}>{message}</span>
+          {/* text stays readable above the fill without competing with sticky headers */}
+          <span className={`relative z-[1] ${textClass}`}>{message}</span>
         </span>
       );
     }
 
     if (status === 4)
-      return (
-        <span className={`${base} bg-green-100 text-green-800`} title={tooltip}>
+      return withTooltip(
+        <span className={`${base} bg-green-100 text-green-800`}>
           <span className={textClass}>{message}</span>
         </span>
       );
 
     if (status === 5)
-      return (
-        <span className={`${base} bg-red-100 text-red-800`} title={tooltip}>
+      return withTooltip(
+        <span className={`${base} bg-red-100 text-red-800`}>
           <span className={textClass}>{message}</span>
         </span>
       );
 
-    return (
-      <span className={`${base} bg-red-100 text-red-800`} title={tooltip}>
+    return withTooltip(
+      <span className={`${base} bg-red-100 text-red-800`}>
         <span className={textClass}>{message}</span>
       </span>
     );

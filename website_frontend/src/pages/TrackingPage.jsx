@@ -66,6 +66,7 @@ function TrackingPage() {
   const [activeBatchExportJobId, setActiveBatchExportJobId] = useState(null);
   const [chartDays, setChartDays] = useState(7);
   const [chartDaysInput, setChartDaysInput] = useState("7");
+  const [repairsAllowed, setRepairsAllowed] = useState(null);
 
   const [serverTime, setServerTime] = useState([]);
 
@@ -92,6 +93,7 @@ function TrackingPage() {
     getSystemHistory,
     getSystem,
     getTags,
+    getRepairsAllowed,
     updateHostMac,
     updateBmcMac,
     updateSystemDellCustomer,
@@ -103,13 +105,21 @@ function TrackingPage() {
     setLoading(true);
 
     try {
-      const [locationsData, serverTimeData, dpnsData, factoriesData, tagsData] =
+      const [
+        locationsData,
+        serverTimeData,
+        dpnsData,
+        factoriesData,
+        tagsData,
+        repairsAllowedData,
+      ] =
         await Promise.all([
           getLocations(),
           getServerTime(),
           getDpns(),
           getFactories(),
           getTags(),
+          getRepairsAllowed(),
         ]);
 
       const activeLocationNames = locationsData
@@ -199,6 +209,11 @@ function TrackingPage() {
       setFactories(factoriesData.map((f) => f.code));
       setConfigs([...new Set(dpnsData.map(x => x.config))].filter(x => x).sort());
       setCustomTags(tagsData.map((t) => t.code));
+      setRepairsAllowed(
+        typeof repairsAllowedData?.repairs_allowed === "boolean"
+          ? repairsAllowedData.repairs_allowed
+          : null,
+      );
     } catch (err) {
       setError(err.message);
       console.error(err.message);
@@ -1073,6 +1088,7 @@ function TrackingPage() {
               serverTime={serverTime}
               chartDays={chartDays}
               printFriendly={printFriendly}
+              repairsAllowed={repairsAllowed}
             />
             <SystemInOutChart
               history={InOutChartHistory}
