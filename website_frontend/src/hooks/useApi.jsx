@@ -188,6 +188,16 @@ function useApi() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repairs_allowed: !!repairs_allowed }),
     });
+  const getL11LogReconciliationMode = () =>
+    fetchJSON(`/server/l11_log_reconciliation_mode`);
+  const updateL11LogReconciliationMode = (l11_log_reconciliation_mode) =>
+    fetchJSON(`/server/l11_log_reconciliation_mode`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        l11_log_reconciliation_mode: !!l11_log_reconciliation_mode,
+      }),
+    });
 
   const createSystem = (payload) =>
     fetchJSON("/systems", {
@@ -934,6 +944,8 @@ function useApi() {
     getServerTime,
     getRepairsAllowed,
     updateRepairsAllowed,
+    getL11LogReconciliationMode,
+    updateL11LogReconciliationMode,
     getSnapshot,
     updateSystemPPID,
     updateSystemDOA,

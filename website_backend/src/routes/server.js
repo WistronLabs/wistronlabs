@@ -6,17 +6,45 @@ const { getServerTimeZone } = require("../utils/serverTimeZone");
 const router = express.Router();
 
 const REPAIRS_ALLOWED_KEY = "repairs_allowed";
+const L11_LOG_RECONCILIATION_MODE_KEY = "l11_log_reconciliation_mode";
 
-async function getRepairsAllowedValue() {
+async function getBooleanSettingValue(key, defaultValue) {
   const { rows } = await db.query(
     `SELECT value_json FROM global_settings WHERE key = $1 LIMIT 1`,
-    [REPAIRS_ALLOWED_KEY],
+    [key],
   );
-  if (!rows.length) return true;
+  if (!rows.length) return defaultValue;
   const raw = rows[0].value_json;
   if (typeof raw === "boolean") return raw;
   if (raw && typeof raw === "object" && "value" in raw) return !!raw.value;
   return !!raw;
+}
+
+async function upsertBooleanSettingValue(key, value) {
+  const { rows } = await db.query(
+    `
+    INSERT INTO global_settings (key, value_json, updated_at)
+    VALUES ($1, to_jsonb($2::boolean), NOW())
+    ON CONFLICT (key)
+    DO UPDATE SET
+      value_json = EXCLUDED.value_json,
+      updated_at = NOW()
+    RETURNING value_json
+    `,
+    [key, value],
+  );
+
+  return typeof rows[0]?.value_json === "boolean"
+    ? rows[0].value_json
+    : !!rows[0]?.value_json;
+}
+
+async function getRepairsAllowedValue() {
+  return getBooleanSettingValue(REPAIRS_ALLOWED_KEY, true);
+}
+
+async function getL11LogReconciliationModeValue() {
+  return getBooleanSettingValue(L11_LOG_RECONCILIATION_MODE_KEY, false);
 }
 
 // API route for server time and CST/CDT
@@ -77,29 +105,60 @@ router.patch(
     }
 
     try {
-      const { rows } = await db.query(
-        `
-        INSERT INTO global_settings (key, value_json, updated_at)
-        VALUES ($1, to_jsonb($2::boolean), NOW())
-        ON CONFLICT (key)
-        DO UPDATE SET
-          value_json = EXCLUDED.value_json,
-          updated_at = NOW()
-        RETURNING value_json
-        `,
-        [REPAIRS_ALLOWED_KEY, repairs_allowed],
+      const value = await upsertBooleanSettingValue(
+        REPAIRS_ALLOWED_KEY,
+        repairs_allowed,
       );
-
-      const value =
-        typeof rows[0]?.value_json === "boolean"
-          ? rows[0].value_json
-          : !!rows[0]?.value_json;
       return res.json({ repairs_allowed: value });
     } catch (err) {
       console.error("Failed to update repairs_allowed:", err);
       return res
         .status(500)
         .json({ error: "Failed to update repairs_allowed" });
+    }
+  },
+);
+
+router.get(
+  "/l11_log_reconciliation_mode",
+  async (_req, res) => {
+    try {
+      const l11_log_reconciliation_mode =
+        await getL11LogReconciliationModeValue();
+      return res.json({ l11_log_reconciliation_mode });
+    } catch (err) {
+      console.error("Failed to fetch l11_log_reconciliation_mode:", err);
+      return res
+        .status(500)
+        .json({ error: "Failed to fetch l11_log_reconciliation_mode" });
+    }
+  },
+);
+
+router.patch(
+  "/l11_log_reconciliation_mode",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const l11_log_reconciliation_mode =
+      req.body?.l11_log_reconciliation_mode;
+    if (typeof l11_log_reconciliation_mode !== "boolean") {
+      return res.status(400).json({
+        error: "l11_log_reconciliation_mode must be a boolean",
+      });
+    }
+
+    try {
+      const value = await upsertBooleanSettingValue(
+        L11_LOG_RECONCILIATION_MODE_KEY,
+        l11_log_reconciliation_mode,
+      );
+      return res.json({ l11_log_reconciliation_mode: value });
+    } catch (err) {
+      console.error("Failed to update l11_log_reconciliation_mode:", err);
+      return res
+        .status(500)
+        .json({ error: "Failed to update l11_log_reconciliation_mode" });
     }
   },
 );

@@ -14,6 +14,8 @@ import {
   Legend,
 } from "recharts";
 
+const REPAIR_ONLY_ZERO_SERIES = new Set(["Pending L11 Logs", "Pending Parts"]);
+
 function computeActiveLocationsPerDay(
   snapshot,
   history,
@@ -134,7 +136,7 @@ function computeActiveLocationsPerDay(
       counts[loc] = 0;
     });
     for (const loc of stateMap.values()) {
-      if (counts.hasOwnProperty(loc)) {
+      if (Object.prototype.hasOwnProperty.call(counts, loc)) {
         counts[loc]++;
       }
     }
@@ -150,11 +152,16 @@ function SystemLocationsChart({
   serverTime,
   chartDays = 7,
   printFriendly = false,
+  repairsAllowed = null,
 }) {
   const [hiddenSeries, setHiddenSeries] = useState({});
-  const activeLocationNames = locations
-    .filter((loc) => activeLocationIDs.includes(loc.id))
-    .map((loc) => loc.name);
+  const activeLocationNames = useMemo(
+    () =>
+      locations
+        .filter((loc) => activeLocationIDs.includes(loc.id))
+        .map((loc) => loc.name),
+    [locations, activeLocationIDs],
+  );
 
   const historyByDay = useMemo(() => {
     return computeActiveLocationsPerDay(
@@ -165,17 +172,31 @@ function SystemLocationsChart({
       serverTime,
       chartDays,
     );
-  }, [snapshot, history, activeLocationNames, serverTime.zone, serverTime.localtime, chartDays]);
+  }, [
+    snapshot,
+    history,
+    activeLocationNames,
+    serverTime,
+    chartDays,
+  ]);
 
-  if (!historyByDay || historyByDay.length === 0) return <div>No data</div>;
+  const chartData = useMemo(() => {
+    return historyByDay.map((day) => {
+      const row = { date: DateTime.fromISO(day.date).toFormat("MM/dd/yy") };
+      activeLocationNames.forEach((loc) => (row[loc] = day.counts[loc] || 0));
+      return row;
+    });
+  }, [activeLocationNames, historyByDay]);
 
-  const chartData = historyByDay.map((day) => {
-    const row = { date: DateTime.fromISO(day.date).toFormat("MM/dd/yy") };
-    activeLocationNames.forEach((loc) => (row[loc] = day.counts[loc] || 0));
-    return row;
-  });
+  const locationKeys = useMemo(() => {
+    return activeLocationNames.filter((loc) => {
+      if (repairsAllowed !== false || !REPAIR_ONLY_ZERO_SERIES.has(loc)) {
+        return true;
+      }
 
-  const locationKeys = activeLocationNames;
+      return chartData.some((day) => Number(day[loc] || 0) !== 0);
+    });
+  }, [activeLocationNames, chartData, repairsAllowed]);
   const CHART_COLORS = ["#1f77b4", "#9467bd", "#ff7f0e", "#2ca02c", "#d62728"];
 
   // Give the legend some headroom when printFriendly
@@ -201,6 +222,8 @@ function SystemLocationsChart({
     },
     [hiddenSeries],
   );
+
+  if (!historyByDay || historyByDay.length === 0) return <div>No data</div>;
 
   return (
     <div className="bg-white p-4">

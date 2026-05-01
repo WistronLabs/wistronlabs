@@ -41,7 +41,6 @@ export function allowedNextLocations(
           //"RMA VID",
           "RMA PID",
           //"RMA CID",
-          "Sent for Dell Repair",
         ].includes(l.name),
       );
     case "In L10":
