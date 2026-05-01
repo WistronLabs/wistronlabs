@@ -21,7 +21,7 @@ function Station({
   const lastUpdatedISO = stationInfo?.last_updated;
   const then = useMemo(
     () => (lastUpdatedISO ? DateTime.fromISO(lastUpdatedISO) : null),
-    [lastUpdatedISO]
+    [lastUpdatedISO],
   );
 
   const diff = useMemo(() => {
@@ -41,12 +41,12 @@ function Station({
   if (details) {
     for (let key in details) {
       if (key === "CURRENT TEST") {
-        details_text+=key+": "+details[key]+"\n\n";
+        details_text += key + ": " + details[key] + "\n\n";
         continue;
       }
-      details_text+=key+"\n";
-      details_text+=details[key].reduce((acc, e) => acc+e+"\n", "");
-      details_text+="\n";
+      details_text += key + "\n";
+      details_text += details[key].reduce((acc, e) => acc + e + "\n", "");
+      details_text += "\n";
     }
   }
 
@@ -67,7 +67,10 @@ function Station({
       }
     }
 
-    const pct = total > 0? (passed / total) * 100 : (minutesSince / progressWindowMin) * 100;
+    const pct =
+      total > 0
+        ? (passed / total) * 100
+        : (minutesSince / progressWindowMin) * 100;
     return Math.max(0, Math.min(100, pct));
   }, [details, minutesSince, progressWindowMin]);
 
@@ -81,7 +84,7 @@ function Station({
     if (m > 0) return `${m} minute${m > 1 ? "s" : ""} ago`;
     return "just now";
   }, [diff]);
-  
+
   const tooltip =
     stationInfo.status === 1 && then
       ? `${details_text}• updated ${humanAgo} •`
@@ -96,6 +99,8 @@ function Station({
         show={!!tooltip}
         text={<span className="whitespace-pre-line">{tooltip}</span>}
         maxWidthClassName="max-w-[22rem] sm:max-w-sm"
+        zIndexClassName="z-1"
+        topViewportOffset={110}
       >
         {statusBadge}
       </Tooltip>
@@ -105,14 +110,14 @@ function Station({
       return withTooltip(
         <span className={`${base} bg-gray-200 text-gray-700`}>
           <span className={textClass}>{message}</span>
-        </span>
+        </span>,
       );
 
     if (status === 0)
       return withTooltip(
         <span className={`${base} bg-yellow-100 text-yellow-800`}>
           <span className={textClass}>{message}</span>
-        </span>
+        </span>,
       );
 
     if (status === 1) {
@@ -145,7 +150,7 @@ function Station({
           />
           {/* text stays readable above the fill without competing with sticky headers */}
           <span className={`relative z-[1] ${textClass}`}>{message}</span>
-        </span>
+        </span>,
       );
     }
 
@@ -153,20 +158,20 @@ function Station({
       return withTooltip(
         <span className={`${base} bg-green-100 text-green-800`}>
           <span className={textClass}>{message}</span>
-        </span>
+        </span>,
       );
 
     if (status === 5)
       return withTooltip(
         <span className={`${base} bg-red-100 text-red-800`}>
           <span className={textClass}>{message}</span>
-        </span>
+        </span>,
       );
 
     return withTooltip(
       <span className={`${base} bg-red-100 text-red-800`}>
         <span className={textClass}>{message}</span>
-      </span>
+      </span>,
     );
   };
 
@@ -176,7 +181,7 @@ function Station({
         Station {stationInfo.station_name}
       </td>
 
-      <td className="p-3 border-b border-gray-200 text-center">
+      <td className="relative overflow-visible p-3 border-b border-gray-200 text-center">
         {renderStatus(stationInfo.status, stationInfo.message)}
       </td>
 

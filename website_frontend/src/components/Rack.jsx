@@ -6,8 +6,8 @@ function Rack({ stations, rackNumber, link }) {
   return (
     <>
       <h2 className="text-xl font-medium mb-4">Debug Rack {rackNumber}</h2>
-      <div className="pb-4 w-full">
-        <table className="w-full bg-white rounded shadow-sm overflow-hidden border-collapse">
+      <div className="pb-4 w-full rounded overflow-visible shadow-sm">
+        <table className="w-full bg-white rounded border-collapse overflow-visible">
           <thead>
             <tr>
               <th className="bg-gray-50 font-semibold uppercase text-xs text-gray-600 p-3 text-left">
