@@ -362,6 +362,56 @@ CONFIG_F_MASTER_MODULE_LIST=(
   "DmesgLogAERCheck"
 )
 
+CONFIG_H_MASTER_MODULE_LIST=(
+  "inforom"
+  "Checkinforom"
+  "Inventory"
+  "CxPcieProperties_Gen5"
+  "CxPcieProperties_Gen6"
+  "BfPcieProperties"
+  "BfMgmtPcieProperties"
+  "SsdPciePropertiesM2"
+  "SsdPciePropertiesE1S"
+  "Ssd"
+  "UsbPcieProperties"
+  "TegraCpu"
+  "TegraMemory"
+  "CpuMemorySweep"
+  "TegraClink"
+  "Gpustress"
+  "Gpumem"
+  "PerfBenchmark_GEMM"
+  "Pcie"
+  "Connectivity"
+  "NvlBwStress"
+  "NvlBwStressBg610"
+  "C2C"
+  "CpuGpuSyncPulsePower"
+  "ThermalSteadyState"
+  "PerfBenchmark_FP8_GEMM100"
+  "PerfBenchmark_FP8_GEMM65"
+  "Thermal"
+  "CxeyegradeStart"
+  "CxeyegradeStop"
+  "DisableAcs"
+  "Cx8GpuDirectLoopback_ETH"
+  "Cx8GpuDirectExtLoopback_ETH"
+  "Cx8GpuDirectCrossNIC_ETH"
+  "Cx8GpuDirectCrossNIC_IB"
+  "Cx8CpuCrissCrossNIC_ETH"
+  "Cx8CpuCrossNIC_ETH"
+  "Cx8CpuCrossNIC_IB"
+  "Cx8CpuLoopback"
+  "BF3PcieInterfaceTraffic"
+  "DimmStress"
+  "SyslogErrorCheck"
+  "KernLogErrorCheck"
+  "DmesgLogErrorCheck"
+  "SyslogAERCheck"
+  "KernLogAERCheck"
+  "DmesgLogAERCheck"
+)
+
 
 if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
@@ -375,11 +425,13 @@ elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" ]]; then
 elif [[ "$CONFIG" == "F" ]]; then
     MASTER_MODULE_LIST=("${CONFIG_F_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-50611-rev1.tgz"
+elif [[ "$CONFIG" == "H1" ]]; then
+    MASTER_MODULE_LIST=("${CONFIG_H_MASTER_MODULE_LIST[@]}")
+    DIAG_FILE="629-24059-0000-FLD-60002-rev3.tgz"
 else
     err "This config ($CONFIG) has not been implemented at L10 yet."
     exit 1
 fi
-
 # Per-config HTTP folder under /var/www/html (ex: config_6, config_F)
 WIS_FOLDER="config_${CONFIG}"
 
@@ -473,6 +525,14 @@ case "$CONFIG" in
             "SsdPciePropertiesE1S"
         )
         ;;
+    H1)
+        SKIPPED_MODULES=(
+            "PerfBenchmark_GEMM"
+            "Cx8GpuDirectCrossNIC_IB"
+            "Cx8CpuCrossNIC_IB"
+            "Cx8CpuLoopback"
+            "BF3PcieInterfaceTraffic"
+        );;
     *)
         echo "Configuration $CONFIG is not valid on this server"
         exit 1
@@ -588,7 +648,7 @@ menuentry "${WIS_FOLDER}L10 Image" {
 }
 EOF
     ;;
-  2|4|6|A|B)
+  2|4|6|A|B|H1)
     tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
