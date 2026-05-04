@@ -39,20 +39,12 @@ export default function Tooltip({
   const triggerRef = useRef(null);
   const bubbleRef = useRef(null);
 
-  if (!show || !text) {
-    return <>{children}</>;
-  }
-
-  const activePos = posClasses[resolvedPosition] || posClasses.top;
-  const openTooltip = () => setOpen(true);
-  const closeTooltip = () => setOpen(false);
-  const toggleTooltip = () => setOpen((prev) => !prev);
-
   useEffect(() => {
     setResolvedPosition(position);
   }, [position]);
 
   useEffect(() => {
+    if (!show || !text) return;
     if (!open) return;
     if (!autoFlip) return;
     if (position !== "top" && position !== "bottom") return;
@@ -91,7 +83,16 @@ export default function Tooltip({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [autoFlip, bottomViewportOffset, open, position, topViewportOffset]);
+  }, [autoFlip, bottomViewportOffset, open, position, show, text, topViewportOffset]);
+
+  if (!show || !text) {
+    return <>{children}</>;
+  }
+
+  const activePos = posClasses[resolvedPosition] || posClasses.top;
+  const openTooltip = () => setOpen(true);
+  const closeTooltip = () => setOpen(false);
+  const toggleTooltip = () => setOpen((prev) => !prev);
 
   return (
     <span
