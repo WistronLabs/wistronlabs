@@ -23,6 +23,7 @@ function AdminPage() {
     createDpn,
     updateDpn,
     deleteDpn,
+    deleteDpnFamily,
     getDellCustomers,
     createDellCustomer,
     updateDellCustomer,
@@ -733,6 +734,7 @@ function AdminPage() {
   const sanitizeName = (s) => ((s ?? "") + "").trim().toUpperCase();
   const sanitizeConfig = (s) => ((s ?? "") + "").trim().toUpperCase();
   const sanitizeCustomer = (s) => ((s ?? "") + "").trim();
+  const getDpnFamilyKey = (name) => sanitizeName(name);
   const getCustomerNameById = (id) =>
     sanitizeCustomer(
       (dellCustomers || []).find((c) => Number(c.id) === Number(id))?.name ||
@@ -742,7 +744,8 @@ function AdminPage() {
   const validateRow = (row) => {
     const name = sanitizeName(row.name);
     if (!name) return "DPN name is required";
-    // optional: length/format checks here
+    const config = sanitizeConfig(row.config);
+    if (!config) return "Config is required";
     return null;
   };
 
@@ -756,6 +759,21 @@ function AdminPage() {
     ]);
   };
 
+  const addBlankConfigRow = (dpnName = "") => {
+    const newId = `new-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    setDpns((cur) => [
+      ...cur,
+      {
+        id: newId,
+        name: sanitizeName(dpnName),
+        config: "",
+        dell_customer_ids: [],
+      },
+    ]);
+  };
+
   const onCellChange = (id, field, value) => {
     setDpns((cur) =>
       cur.map((d) => {
@@ -766,16 +784,47 @@ function AdminPage() {
   };
 
   const onToggleDpnDellCustomer = (dpnId, customerId) => {
-    setDpns((cur) =>
-      cur.map((d) => {
-        if (d.id !== dpnId) return d;
+    setDpns((cur) => {
+      const target = cur.find((d) => d.id === dpnId);
+      if (!target) return cur;
+
+      const targetIds = new Set(
+        Array.isArray(target.dell_customer_ids) ? target.dell_customer_ids : [],
+      );
+      const isRemoving = targetIds.has(customerId);
+
+      if (isRemoving) {
+        return cur.map((d) => {
+          if (d.id !== dpnId) return d;
+          return {
+            ...d,
+            dell_customer_ids: (d.dell_customer_ids || []).filter(
+              (id) => id !== customerId,
+            ),
+          };
+        });
+      }
+
+      const familyKey = getDpnFamilyKey(target.name);
+      return cur.map((d) => {
         const ids = new Set(
           Array.isArray(d.dell_customer_ids) ? d.dell_customer_ids : [],
         );
-        if (ids.has(customerId)) ids.delete(customerId);
-        else ids.add(customerId);
+        if (familyKey && getDpnFamilyKey(d.name) === familyKey) {
+          ids.delete(customerId);
+        }
+        if (d.id === dpnId) {
+          ids.add(customerId);
+        }
         return { ...d, dell_customer_ids: [...ids] };
-      }),
+      });
+    });
+  };
+
+  const onFamilyNameChange = (rowIds, value) => {
+    const idSet = new Set(rowIds);
+    setDpns((cur) =>
+      cur.map((d) => (idSet.has(d.id) ? { ...d, name: value } : d)),
     );
   };
 
@@ -791,6 +840,30 @@ function AdminPage() {
 
     setDpnSaving(true);
     try {
+      const familyAssignments = new Map();
+      for (const row of dpns) {
+        const name = sanitizeName(row.name);
+        const config = sanitizeConfig(row.config);
+        const ids = (
+          Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : []
+        )
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0);
+
+        if (!name || !config || ids.length === 0) continue;
+
+        for (const customerId of ids) {
+          const key = `${name}::${customerId}`;
+          const existing = familyAssignments.get(key);
+          if (existing && existing.config !== config) {
+            throw new Error(
+              `Dell customer "${getCustomerNameById(customerId)}" is already assigned to config ${existing.config} for DPN ${name}`,
+            );
+          }
+          familyAssignments.set(key, { config });
+        }
+      }
+
       // Separate new vs changed
       const newRows = dpns.filter(
         (d) => typeof d.id !== "number" && (d.name?.trim() || d.config?.trim()),
@@ -811,29 +884,23 @@ function AdminPage() {
         );
       });
 
-      // NEW rows
-      for (const row of newRows) {
-        const name = sanitizeName(row.name);
-        const config = sanitizeConfig(row.config);
-        const dell_customer_ids = (
-          Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : []
-        )
+      const getSortedIds = (ids = []) =>
+        (Array.isArray(ids) ? ids : [])
           .map((id) => Number(id))
-          .filter((id) => Number.isInteger(id) && id > 0);
-        const dell_customer = getCustomerNameById(dell_customer_ids[0]);
-        const errMsg = validateRow({ name, config });
-        if (errMsg) throw new Error(`Row "${row.name || "(new)"}": ${errMsg}`);
-        if (!dell_customer_ids.length || !dell_customer) {
-          throw new Error(
-            `Row "${row.name || "(new)"}": Select at least one allowed Dell customer`,
-          );
-        }
-        await createDpn({ name, config, dell_customer_ids });
-      }
+          .filter((id) => Number.isInteger(id) && id > 0)
+          .slice()
+          .sort((a, b) => a - b);
 
-      // CHANGED rows
-      for (const row of changedRows) {
+      const changedRowsWithDiff = changedRows.map((row) => {
         const base = dpnBaselineMap.get(row.id);
+        const baseIds = getSortedIds(base?.dell_customer_ids || []);
+        const nextIds = getSortedIds(row.dell_customer_ids || []);
+        const removedIds = baseIds.filter((id) => !nextIds.includes(id));
+        const addedIds = nextIds.filter((id) => !baseIds.includes(id));
+        return { row, base, removedIds, addedIds };
+      });
+
+      const persistChangedRow = async (row, base) => {
         const payload = {};
         const nameSan = sanitizeName(row.name);
         const configSan = sanitizeConfig(row.config);
@@ -861,6 +928,38 @@ function AdminPage() {
         }
         if (Object.keys(payload).length > 0) {
           await updateDpn(row.id, payload);
+        }
+      };
+
+      for (const { row, base, removedIds } of changedRowsWithDiff) {
+        if (removedIds.length > 0) {
+          await persistChangedRow(row, base);
+        }
+      }
+
+      // NEW rows
+      for (const row of newRows) {
+        const name = sanitizeName(row.name);
+        const config = sanitizeConfig(row.config);
+        const dell_customer_ids = (
+          Array.isArray(row.dell_customer_ids) ? row.dell_customer_ids : []
+        )
+          .map((id) => Number(id))
+          .filter((id) => Number.isInteger(id) && id > 0);
+        const dell_customer = getCustomerNameById(dell_customer_ids[0]);
+        const errMsg = validateRow({ name, config });
+        if (errMsg) throw new Error(`Row "${row.name || "(new)"}": ${errMsg}`);
+        if (!dell_customer_ids.length || !dell_customer) {
+          throw new Error(
+            `Row "${row.name || "(new)"}": Select at least one allowed Dell customer`,
+          );
+        }
+        await createDpn({ name, config, dell_customer_ids });
+      }
+
+      for (const { row, base, removedIds } of changedRowsWithDiff) {
+        if (removedIds.length === 0) {
+          await persistChangedRow(row, base);
         }
       }
 
@@ -912,6 +1011,52 @@ function AdminPage() {
         (e?.body && e.body.error) ||
         (e?.status === 409
           ? "Cannot delete DPN: referenced by systems or pallets"
+          : e?.message) ||
+        "Failed to delete DPN";
+      showToast(msg, "error", 3500, "bottom-right");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleDeleteDpnFamily = async (rows) => {
+    const familyRows = Array.isArray(rows) ? rows : [];
+    if (familyRows.length === 0) return;
+
+    const familyName = sanitizeName(familyRows[0]?.name) || "this DPN";
+    const confirmed = await confirm({
+      title: "Confirm Deletion",
+      message: `Delete DPN ${familyName} and all of its configs? This only works when none of the configs have units attached.`,
+      confirmText: "Delete",
+      cancelText: "Cancel",
+      confirmClass: "bg-red-600 text-white hover:bg-red-700",
+      cancelClass: "bg-gray-200 text-gray-700 hover:bg-gray-300",
+    });
+    if (!confirmed) {
+      showToast("Deletion cancelled", "info", 3000, "bottom-right");
+      return;
+    }
+
+    const existingIds = familyRows
+      .map((row) => Number(row.id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+
+    try {
+      setDeletingId(`family:${familyName}`);
+      if (existingIds.length > 0) {
+        await deleteDpnFamily(existingIds);
+      }
+      const idSet = new Set(familyRows.map((row) => row.id));
+      setDpns((cur) => cur.filter((d) => !idSet.has(d.id)));
+      setBaselineDpns((cur) =>
+        cur.filter((d) => !existingIds.includes(Number(d.id))),
+      );
+      showToast(`Deleted ${familyName}`, "success", 2200, "bottom-right");
+    } catch (e) {
+      const msg =
+        (e?.body && e.body.error) ||
+        (e?.status === 409
+          ? "Cannot delete DPN: one or more configs are referenced by systems or pallets"
           : e?.message) ||
         "Failed to delete DPN";
       showToast(msg, "error", 3500, "bottom-right");
@@ -1442,16 +1587,20 @@ function AdminPage() {
           <DpnsSection
             onDpnSave={onDpnSave}
             addBlankRow={addBlankRow}
+            addBlankConfigRow={addBlankConfigRow}
             dpnQ={dpnQ}
             setDpnQ={setDpnQ}
             dpnErr={dpnErr}
             dpnLoading={dpnLoading}
             filteredDpns={filteredDpns}
+            allDpns={dpns}
             dpnBaselineMap={dpnBaselineMap}
             onCellChange={onCellChange}
+            onFamilyNameChange={onFamilyNameChange}
             onToggleDellCustomer={onToggleDpnDellCustomer}
             dellCustomers={dellCustomers}
             handleDeleteDpn={handleDeleteDpn}
+            handleDeleteDpnFamily={handleDeleteDpnFamily}
             deletingId={deletingId}
             dpnSaving={dpnSaving}
             onDpnDiscard={onDpnDiscard}

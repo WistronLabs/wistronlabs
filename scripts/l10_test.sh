@@ -419,7 +419,7 @@ if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
 elif [[ "$CONFIG" == "7" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
      DIAG_FILE="diag_629-24975-0000-FLD-43749_rev13.tgz"
-elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" ]]; then
+elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "B1" ]]; then
     MASTER_MODULE_LIST=("${GB300_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-43538.tgz"
 elif [[ "$CONFIG" == "F" ]]; then
@@ -502,6 +502,16 @@ case "$CONFIG" in
     A)
         SKIPPED_MODULES=(
             "BF3PcieInterfaceTraffic"
+            "Cx8GpuDirectLoopback"
+            "Cx8GpuDirectCrossGpu_ETH"
+            "CpuCx8Phy"
+            "Cx8GpuDirectCrossGpu_IB"
+        )
+        ;;
+    B1)
+        SKIPPED_MODULES=(
+            "BF3PcieInterfaceTraffic"
+            "CxeyegradeStop"
             "Cx8GpuDirectLoopback"
             "Cx8GpuDirectCrossGpu_ETH"
             "CpuCx8Phy"
@@ -648,7 +658,7 @@ menuentry "${WIS_FOLDER}L10 Image" {
 }
 EOF
     ;;
-  2|4|6|A|B|H1)
+  2|4|6|A|B|H1|B1)
     tee "$OUT" >/dev/null <<EOF
 set timeout=5
 

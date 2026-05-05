@@ -676,6 +676,13 @@ function useApi() {
   const deleteDpn = (id) =>
     fetchJSON(`/systems/dpn/${encodeURIComponent(id)}`, { method: "DELETE" });
 
+  const deleteDpnFamily = (ids = []) =>
+    fetchJSON(`/systems/dpn/delete-family`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+
   const getDellCustomers = ({ q } = {}) =>
     fetchJSON(`/systems/dell-customers${q ? `?q=${encodeURIComponent(q)}` : ""}`);
 
@@ -964,6 +971,7 @@ function useApi() {
     createDpn,
     updateDpn,
     deleteDpn,
+    deleteDpnFamily,
     getFactories,
     createFactory,
     updateFactory,

@@ -1013,6 +1013,204 @@ async function listDpnDellCustomers(client, dpnId) {
   return rows;
 }
 
+function normalizeDpnName(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeDpnConfig(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeDellCustomerName(value) {
+  return String(value || "").trim();
+}
+
+async function listDpnsByName(client, dpnName) {
+  const normalizedName = normalizeDpnName(dpnName);
+  if (!normalizedName) return [];
+  const { rows } = await client.query(
+    `SELECT id, name, config, dell_customer
+       FROM dpn
+      WHERE UPPER(TRIM(name)) = $1
+      ORDER BY UPPER(TRIM(config)) ASC, id ASC`,
+    [normalizedName],
+  );
+  return rows;
+}
+
+async function findDpnCustomerConflicts(
+  client,
+  dpnName,
+  dellCustomerIds = [],
+  excludeDpnId = null,
+) {
+  const normalizedName = normalizeDpnName(dpnName);
+  const uniqueIds = [
+    ...new Set(
+      (dellCustomerIds || [])
+        .map((v) => Number(v))
+        .filter((v) => Number.isInteger(v) && v > 0),
+    ),
+  ];
+  if (!normalizedName || uniqueIds.length === 0) return [];
+
+  const params = [normalizedName, uniqueIds];
+  let excludeSql = "";
+  if (Number.isInteger(Number(excludeDpnId)) && Number(excludeDpnId) > 0) {
+    params.push(Number(excludeDpnId));
+    excludeSql = `AND d.id <> $${params.length}`;
+  }
+
+  const { rows } = await client.query(
+    `SELECT d.id, d.name, d.config, dc.id AS dell_customer_id, dc.name AS dell_customer_name
+       FROM dpn d
+       JOIN dpn_dell_customer ddc ON ddc.dpn_id = d.id
+       JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+      WHERE UPPER(TRIM(d.name)) = $1
+        AND ddc.dell_customer_id = ANY($2::int[])
+        ${excludeSql}
+      GROUP BY d.id, d.name, d.config, dc.id, dc.name
+      ORDER BY UPPER(TRIM(d.config)) ASC, dc.name ASC`,
+    params,
+  );
+  return rows;
+}
+
+async function resolveDpnForSystem(client, dpnName, preferredDellCustomer = "") {
+  const matches = await listDpnsByName(client, dpnName);
+  if (matches.length === 0) {
+    throw new Error(`Unknown DPN: ${normalizeDpnName(dpnName)}`);
+  }
+
+  const normalizedCustomer = normalizeDellCustomerName(preferredDellCustomer)
+    .toLowerCase();
+  const candidates = [];
+
+  for (const dpn of matches) {
+    const mappedCustomers = await listDpnDellCustomers(client, dpn.id);
+    candidates.push({ ...dpn, mappedCustomers });
+  }
+
+  const allMapped = candidates.flatMap((entry) => entry.mappedCustomers);
+  if (allMapped.length === 0) {
+    throw new Error(
+      `DPN ${normalizeDpnName(dpnName)} has no configured Dell customers`,
+    );
+  }
+
+  if (!normalizedCustomer) {
+    const uniqueNames = [
+      ...new Set(
+        allMapped
+          .map((c) => normalizeDellCustomerName(c.name))
+          .filter(Boolean),
+      ),
+    ];
+    if (uniqueNames.length === 1) {
+      const chosenName = uniqueNames[0];
+      const candidate = candidates.find((entry) =>
+        entry.mappedCustomers.some(
+          (c) => normalizeDellCustomerName(c.name).toLowerCase() === chosenName.toLowerCase(),
+        ),
+      );
+      if (!candidate) {
+        throw new Error(
+          `DPN ${normalizeDpnName(dpnName)} has no configured Dell customers`,
+        );
+      }
+      return {
+        dpn: candidate,
+        chosenDellCustomer: chosenName,
+        mappedCustomers: candidate.mappedCustomers,
+      };
+    }
+    throw new Error(`Dell customer selection required for DPN ${normalizeDpnName(dpnName)}`);
+  }
+
+  const matchingCandidates = candidates.filter((entry) =>
+    entry.mappedCustomers.some(
+      (c) =>
+        normalizeDellCustomerName(c.name).toLowerCase() === normalizedCustomer,
+    ),
+  );
+
+  if (matchingCandidates.length === 0) {
+    throw new Error(
+      `Invalid Dell customer "${preferredDellCustomer}" for DPN ${normalizeDpnName(dpnName)}`,
+    );
+  }
+  if (matchingCandidates.length > 1) {
+    throw new Error(
+      `Dell customer "${preferredDellCustomer}" is assigned to multiple configs for DPN ${normalizeDpnName(dpnName)}`,
+    );
+  }
+
+  const chosen = matchingCandidates[0];
+  const chosenDellCustomer = chosen.mappedCustomers.find(
+    (c) => normalizeDellCustomerName(c.name).toLowerCase() === normalizedCustomer,
+  )?.name;
+
+  return {
+    dpn: chosen,
+    chosenDellCustomer: chosenDellCustomer || normalizeDellCustomerName(preferredDellCustomer),
+    mappedCustomers: chosen.mappedCustomers,
+  };
+}
+
+async function syncSystemsToDpnFamily(client, dpnName) {
+  const familyName = normalizeDpnName(dpnName);
+  if (!familyName) return;
+
+  const familyRows = await listDpnsByName(client, familyName);
+  if (familyRows.length === 0) return;
+
+  const familyById = new Map();
+  for (const row of familyRows) {
+    const mappedCustomers = await listDpnDellCustomers(client, row.id);
+    familyById.set(row.id, {
+      ...row,
+      mappedCustomers,
+    });
+  }
+
+  const systemsRes = await client.query(
+    `SELECT s.id, s.dpn_id, s.dell_customer
+       FROM system s
+       JOIN dpn d ON d.id = s.dpn_id
+      WHERE UPPER(TRIM(d.name)) = $1
+      FOR UPDATE`,
+    [familyName],
+  );
+
+  for (const systemRow of systemsRes.rows) {
+    const currentDpnId = Number(systemRow.dpn_id);
+    const currentCustomer = normalizeDellCustomerName(systemRow.dell_customer);
+    if (!currentCustomer) continue;
+
+    const matchingRows = [...familyById.values()].filter((row) =>
+      row.mappedCustomers.some(
+        (customer) =>
+          normalizeDellCustomerName(customer.name).toLowerCase() ===
+          currentCustomer.toLowerCase(),
+      ),
+    );
+
+    if (matchingRows.length !== 1) continue;
+
+    const targetDpnId = Number(matchingRows[0].id);
+    if (targetDpnId === currentDpnId) continue;
+
+    await client.query(`UPDATE system SET dpn_id = $1 WHERE id = $2`, [
+      targetDpnId,
+      systemRow.id,
+    ]);
+  }
+}
+
 async function resolveDellCustomerIds(client, ids = []) {
   const uniqueIds = [
     ...new Set(
@@ -1356,7 +1554,7 @@ router.get("/dpn", async (req, res) => {
             OR CAST(d.config AS TEXT) ILIKE $1
             OR dc.name ILIKE $1
          GROUP BY d.id, d.name, d.config
-         ORDER BY d.name ASC`,
+         ORDER BY d.name ASC, d.config ASC`,
         [like],
       );
       return res.json(rows);
@@ -1376,7 +1574,7 @@ router.get("/dpn", async (req, res) => {
        LEFT JOIN dpn_dell_customer ddc ON ddc.dpn_id = d.id
        LEFT JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
        GROUP BY d.id, d.name, d.config
-       ORDER BY d.name ASC`,
+       ORDER BY d.name ASC, d.config ASC`,
     );
     return res.json(rows);
   } catch (e) {
@@ -1417,8 +1615,13 @@ router.get("/dpn/:id", async (req, res) => {
 // POST dpn (admin)
 router.post("/dpn", authenticateToken, ensureAdmin, async (req, res) => {
   const { name, config, dell_customer, dell_customer_ids } = req.body || {};
-  if (!name) {
+  const cleanName = normalizeDpnName(name);
+  const cleanConfig = normalizeDpnConfig(config);
+  if (!cleanName) {
     return res.status(400).json({ error: "name is required" });
+  }
+  if (!cleanConfig) {
+    return res.status(400).json({ error: "config is required" });
   }
   try {
     const client = await db.connect();
@@ -1440,11 +1643,24 @@ router.post("/dpn", authenticateToken, ensureAdmin, async (req, res) => {
           .json({ error: "At least one Dell customer is required for a DPN" });
       }
 
+      const conflicts = await findDpnCustomerConflicts(
+        client,
+        cleanName,
+        chosenIds,
+      );
+      if (conflicts.length > 0) {
+        const first = conflicts[0];
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: `Dell customer "${first.dell_customer_name}" is already assigned to config ${first.config} for DPN ${cleanName}`,
+        });
+      }
+
       const { rows } = await client.query(
         `INSERT INTO dpn (name, config, dell_customer)
           VALUES ($1, $2, $3)
           RETURNING id, name, config, dell_customer`,
-        [name.trim(), (config ?? "").trim(), baseline.name],
+        [cleanName, cleanConfig, baseline.name],
       );
       const dpn = rows[0];
 
@@ -1458,6 +1674,7 @@ router.post("/dpn", authenticateToken, ensureAdmin, async (req, res) => {
       }
 
       const mapped = await listDpnDellCustomers(client, dpn.id);
+      await syncSystemsToDpnFamily(client, cleanName);
       await client.query("COMMIT");
       return res.status(201).json({
         ...dpn,
@@ -1472,7 +1689,7 @@ router.post("/dpn", authenticateToken, ensureAdmin, async (req, res) => {
   } catch (e) {
     console.error(e);
     if (isPgUniqueViolation(e)) {
-      return res.status(409).json({ error: "DPN name already exists" });
+      return res.status(409).json({ error: "DPN name and config already exist" });
     }
     return res.status(500).json({ error: "Failed to create DPN" });
   }
@@ -1505,14 +1722,35 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
         return res.status(404).json({ error: "DPN not found" });
       }
 
+      const finalName =
+        typeof name !== "undefined"
+          ? normalizeDpnName(name)
+          : normalizeDpnName(current.rows[0].name);
+      const finalConfig =
+        typeof config !== "undefined"
+          ? normalizeDpnConfig(config)
+          : normalizeDpnConfig(current.rows[0].config);
+      if (!finalName) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "name is required" });
+      }
+      if (!finalConfig) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "config is required" });
+      }
+
       let baselineName = String(current.rows[0].dell_customer || "").trim();
       let baseline = baselineName
         ? await ensureDellCustomerByName(client, baselineName)
         : null;
+      let finalIds = await resolveDellCustomerIds(
+        client,
+        (await listDpnDellCustomers(client, req.params.id)).map((row) => row.id),
+      );
 
       if (typeof dell_customer_ids !== "undefined") {
         const ids = await resolveDellCustomerIds(client, dell_customer_ids);
-        const finalIds = [...new Set(ids)];
+        finalIds = [...new Set(ids)];
         if (finalIds.length === 0) {
           await client.query("ROLLBACK");
           return res
@@ -1523,6 +1761,19 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
         }
         baseline = await getDellCustomerById(client, finalIds[0]);
         baselineName = String(baseline?.name || "").trim();
+        const conflicts = await findDpnCustomerConflicts(
+          client,
+          finalName,
+          finalIds,
+          req.params.id,
+        );
+        if (conflicts.length > 0) {
+          const first = conflicts[0];
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            error: `Dell customer "${first.dell_customer_name}" is already assigned to config ${first.config} for DPN ${finalName}`,
+          });
+        }
         await client.query(`DELETE FROM dpn_dell_customer WHERE dpn_id = $1`, [
           req.params.id,
         ]);
@@ -1542,6 +1793,7 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
             return res.status(400).json({ error: "dell_customer is required" });
           }
           baseline = await ensureDellCustomerByName(client, baselineName);
+          finalIds = [...new Set([...finalIds, baseline.id])];
           await client.query(
             `INSERT INTO dpn_dell_customer (dpn_id, dell_customer_id)
              VALUES ($1, $2)
@@ -1551,15 +1803,29 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
         }
       }
 
+      const nameFamilyConflicts = await findDpnCustomerConflicts(
+        client,
+        finalName,
+        finalIds,
+        req.params.id,
+      );
+      if (nameFamilyConflicts.length > 0) {
+        const first = nameFamilyConflicts[0];
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: `Dell customer "${first.dell_customer_name}" is already assigned to config ${first.config} for DPN ${finalName}`,
+        });
+      }
+
       const fields = [];
       const vals = [];
       if (typeof name !== "undefined") {
         fields.push(`name = $${fields.length + 1}`);
-        vals.push(name.trim());
+        vals.push(finalName);
       }
       if (typeof config !== "undefined") {
         fields.push(`config = $${fields.length + 1}`);
-        vals.push((config ?? "").trim());
+        vals.push(finalConfig);
       }
       fields.push(`dell_customer = $${fields.length + 1}`);
       vals.push(baseline.name);
@@ -1572,6 +1838,10 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
       );
 
       const mapped = await listDpnDellCustomers(client, req.params.id);
+      await syncSystemsToDpnFamily(client, current.rows[0].name);
+      if (normalizeDpnName(current.rows[0].name) !== finalName) {
+        await syncSystemsToDpnFamily(client, finalName);
+      }
       await client.query("COMMIT");
       return res.json({
         ...rows[0],
@@ -1586,13 +1856,73 @@ router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
   } catch (e) {
     console.error(e);
     if (isPgUniqueViolation(e)) {
-      return res.status(409).json({ error: "DPN name already exists" });
+      return res.status(409).json({ error: "DPN name and config already exist" });
     }
     return res.status(500).json({ error: "Failed to update DPN" });
   }
 });
 
 // DELETE dpn (admin) – block if referenced
+router.post(
+  "/dpn/delete-family",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const ids = [
+      ...new Set(
+        (req.body?.ids || [])
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0),
+      ),
+    ];
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "At least one DPN id is required" });
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      const familyRows = await client.query(
+        `SELECT id, name, config
+           FROM dpn
+          WHERE id = ANY($1::int[])
+          FOR UPDATE`,
+        [ids],
+      );
+      if (familyRows.rowCount !== ids.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "One or more DPN configs were not found" });
+      }
+
+      const ref = await client.query(
+        `
+        SELECT
+          EXISTS(SELECT 1 FROM system WHERE dpn_id = ANY($1::int[])) AS has_systems,
+          EXISTS(SELECT 1 FROM pallet WHERE dpn_id = ANY($1::int[])) AS has_pallets
+        `,
+        [ids],
+      );
+      if (ref.rows[0].has_systems || ref.rows[0].has_pallets) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: "Cannot delete DPN: one or more configs are referenced by systems or pallets",
+        });
+      }
+
+      await client.query(`DELETE FROM dpn WHERE id = ANY($1::int[])`, [ids]);
+      await client.query("COMMIT");
+      return res.json({ message: "DPN family deleted" });
+    } catch (e) {
+      await client.query("ROLLBACK");
+      console.error(e);
+      return res.status(500).json({ error: "Failed to delete DPN family" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
 router.delete("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
   const id = req.params.id;
   try {
@@ -3007,44 +3337,11 @@ router.post("/", authenticateToken, async (req, res) => {
     await client.query("BEGIN");
 
     // Require existing DPN (no silent auto-create) so customer mappings are configured.
-    const dpnRes = await client.query(
-      `SELECT id, name
-         FROM dpn
-        WHERE name = $1`,
-      [parsed.dpn],
-    );
-    const dpnRow = dpnRes.rows[0];
-    if (!dpnRow) {
-      throw new Error(`Unknown DPN: ${parsed.dpn}`);
-    }
-    const dpn_id = dpnRow.id;
-
-    const mappedCustomers = await listDpnDellCustomers(client, dpn_id);
-    if (mappedCustomers.length === 0) {
-      throw new Error(`DPN ${parsed.dpn} has no configured Dell customers`);
-    }
-    const allowedSet = new Set(
-      mappedCustomers.map((c) =>
-        String(c.name || "")
-          .trim()
-          .toLowerCase(),
-      ),
-    );
-    let chosenDellCustomer = String(dell_customer || "").trim();
-    if (!chosenDellCustomer) {
-      if (mappedCustomers.length === 1) {
-        chosenDellCustomer = mappedCustomers[0].name;
-      } else {
-        throw new Error(
-          `Dell customer selection required for DPN ${parsed.dpn}`,
-        );
-      }
-    }
-    if (!allowedSet.has(chosenDellCustomer.toLowerCase())) {
-      throw new Error(
-        `Invalid Dell customer "${chosenDellCustomer}" for DPN ${parsed.dpn}`,
-      );
-    }
+    const {
+      dpn: resolvedDpn,
+      chosenDellCustomer,
+    } = await resolveDpnForSystem(client, parsed.dpn, dell_customer);
+    const dpn_id = resolvedDpn.id;
 
     // factory via PPID code
     const facRes = await client.query(
@@ -3141,7 +3438,8 @@ router.post("/", authenticateToken, async (req, res) => {
       (err.message.startsWith("Unknown DPN:") ||
         err.message.includes("has no configured Dell customers") ||
         err.message.startsWith("Dell customer selection required") ||
-        err.message.startsWith("Invalid Dell customer"))
+        err.message.startsWith("Invalid Dell customer") ||
+        err.message.includes("assigned to multiple configs"))
     ) {
       return res.status(400).json({ error: err.message });
     }
@@ -4582,7 +4880,9 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
   }
 
   if (ppid.trim().toUpperCase() === service_tag.toUpperCase()) {
-    res.json({ message: "PPID provided matches service tag, skipping PPID update" });
+    return res.json({
+      message: "PPID provided matches service tag, skipping PPID update",
+    });
   }
 
   let parsed;
@@ -4604,42 +4904,67 @@ router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
       throw new Error(`Unknown factory PPID code: ${parsed.factoryCodeRaw}`);
     }
 
-    // dpn_id from parsed.dpn
-    const upsert = await db.query(
-      `INSERT INTO dpn (name) VALUES ($1)
-       ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-       RETURNING id`,
-      [parsed.dpn],
-    );
-    const dpnId = upsert.rows[0].id;
+    const client = await db.connect();
+    try {
+      const systemRes = await client.query(
+        `SELECT s.dell_customer
+           FROM system s
+          WHERE s.service_tag = $1`,
+        [service_tag],
+      );
+      if (systemRes.rowCount === 0) {
+        return res.status(404).json({ error: "System not found" });
+      }
 
-    const fields = [
-      { column: "ppid", value: parsed.ppid },
-      { column: "dpn_id", value: dpnId },
-      { column: "manufactured_date", value: parsed.manufacturedDate },
-      { column: "serial", value: parsed.serial },
-      { column: "rev", value: parsed.rev },
-    ];
-    if (factoryId) fields.push({ column: "factory_id", value: factoryId });
+      const preferredDellCustomer = String(
+        systemRes.rows[0]?.dell_customer || "",
+      ).trim();
+      const { dpn } = await resolveDpnForSystem(
+        client,
+        parsed.dpn,
+        preferredDellCustomer,
+      );
 
-    const setClauses = fields
-      .map((f, i) => `${f.column} = $${i + 2}`)
-      .join(", ");
-    const values = fields.map((f) => f.value);
+      const fields = [
+        { column: "ppid", value: parsed.ppid },
+        { column: "dpn_id", value: dpn.id },
+        { column: "manufactured_date", value: parsed.manufacturedDate },
+        { column: "serial", value: parsed.serial },
+        { column: "rev", value: parsed.rev },
+      ];
+      if (factoryId) fields.push({ column: "factory_id", value: factoryId });
 
-    const result = await db.query(
-      `UPDATE system SET ${setClauses} WHERE service_tag = $1 RETURNING service_tag`,
-      [service_tag, ...values],
-    );
+      const setClauses = fields
+        .map((f, i) => `${f.column} = $${i + 2}`)
+        .join(", ");
+      const values = fields.map((f) => f.value);
 
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: "System not found" });
+      const result = await client.query(
+        `UPDATE system SET ${setClauses} WHERE service_tag = $1 RETURNING service_tag`,
+        [service_tag, ...values],
+      );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      return res.json({ message: "System PPID fields updated successfully" });
+    } finally {
+      client.release();
     }
-
-    res.json({ message: "System PPID fields updated successfully" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to update PPID data" });
+    if (
+      typeof err?.message === "string" &&
+      (err.message.startsWith("Unknown DPN:") ||
+        err.message.includes("has no configured Dell customers") ||
+        err.message.startsWith("Dell customer selection required") ||
+        err.message.startsWith("Invalid Dell customer") ||
+        err.message.includes("assigned to multiple configs"))
+    ) {
+      return res.status(400).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "Failed to update PPID data" });
   }
 });
 

@@ -271,15 +271,19 @@ function TrackingPage() {
       .slice(3, 8);
 
   const getAllowedDellCustomersForDpn = (dpnName) => {
-    const dpnEntry = (dpnCatalog || []).find(
-      (d) => String(d?.name || "").trim().toUpperCase() === String(dpnName || "").trim().toUpperCase(),
+    const matches = (dpnCatalog || []).filter(
+      (d) =>
+        String(d?.name || "").trim().toUpperCase() ===
+        String(dpnName || "").trim().toUpperCase(),
     );
-    if (!dpnEntry) return null;
-    const mapped = Array.isArray(dpnEntry.dell_customers)
-      ? dpnEntry.dell_customers
-          .map((c) => String(c?.name || "").trim())
-          .filter(Boolean)
-      : [];
+    if (matches.length === 0) return null;
+    const mapped = matches.flatMap((entry) =>
+      Array.isArray(entry.dell_customers)
+        ? entry.dell_customers
+            .map((c) => String(c?.name || "").trim())
+            .filter(Boolean)
+        : [],
+    );
     return [...new Set(mapped)];
   };
 
@@ -298,7 +302,7 @@ function TrackingPage() {
       if (rowType !== "active") {
         if (!options) {
           rowType = "skip";
-          skipReason = "No DPN match - skipped";
+          skipReason = "DPN does not exist in system";
         } else if (options.length === 0) {
           rowType = "skip";
           skipReason = "No Dell customer configured - skipped";
