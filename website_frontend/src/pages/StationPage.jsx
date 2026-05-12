@@ -165,6 +165,12 @@ function StationPage() {
                   tableNumber={7}
                   link={true}
                 />
+                <Table
+                  stations={stations}
+                  stationNumbers={[21, 22]}
+                  tableNumber={9}
+                  link={true}
+                />
               </div>
 
               {/* Right Column */}
@@ -185,6 +191,12 @@ function StationPage() {
                   stations={stations}
                   stationNumbers={[15, 16, 17, 18]}
                   tableNumber={6}
+                  link={true}
+                />
+                <Table
+                  stations={stations}
+                  stationNumbers={[23, 24]}
+                  tableNumber={8}
                   link={true}
                 />
               </div>
