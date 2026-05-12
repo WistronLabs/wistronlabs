@@ -1,4 +1,4 @@
-import React, { useContext, useState, useEffect, useCallback } from "react";
+import React, { useContext, useState, useEffect, useCallback, useRef } from "react";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
 import LoadingSkeleton from "../components/LoadingSkeleton.jsx";
 import SystemInOutChart from "../components/SystemInOutChart.jsx";
@@ -25,6 +25,12 @@ import useIsMobile from "../hooks/useIsMobile.jsx";
 import useApi from "../hooks/useApi.jsx";
 import { useSystemsFetch } from "../hooks/useSystemsFetch.jsx";
 import { useHistoryFetch } from "../hooks/useHistoryFetch.jsx";
+
+const DEFAULT_BATCH_EXPORT_OPTIONS = {
+  include_l11_logs: true,
+  include_support_photos: true,
+  include_l10_test_folders: true,
+};
 
 function TrackingPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
@@ -58,6 +64,9 @@ function TrackingPage() {
   const [bulkRetryWarning, setBulkRetryWarning] = useState(null);
   const [isBatchExportModalOpen, setIsBatchExportModalOpen] = useState(false);
   const [batchExportCsv, setBatchExportCsv] = useState("");
+  const [batchExportOptions, setBatchExportOptions] = useState(
+    DEFAULT_BATCH_EXPORT_OPTIONS,
+  );
   const [batchExportPreview, setBatchExportPreview] = useState(null);
   const [batchExports, setBatchExports] = useState([]);
   const [batchExportsLoading, setBatchExportsLoading] = useState(false);
@@ -71,6 +80,7 @@ function TrackingPage() {
   const [serverTime, setServerTime] = useState([]);
 
   const [reportMode, setReportMode] = useState("perday");
+  const batchExportOptionsChangeSourceRef = useRef("external");
 
   const { token } = useContext(AuthContext);
 
@@ -959,27 +969,51 @@ function TrackingPage() {
     }
   }
 
-  async function handleBatchExportPreview() {
-    if (!batchExportCsv.trim()) {
-      showToast("Paste at least one service tag", "error", 3000, "top-right");
-      return;
-    }
+  const runBatchExportPreview = useCallback(
+    async (options = {}) => {
+      const {
+        csvText = batchExportCsv,
+        exportOptions = batchExportOptions,
+        keepReviewVisible = false,
+      } = options;
 
-    setBatchExportPreviewLoading(true);
-    try {
-      const data = await previewBatchExportUnitData(batchExportCsv);
-      setBatchExportPreview(data);
-    } catch (err) {
-      console.error("Failed to preview batch export", err);
-      showToast(
-        err?.body?.error || err?.message || "Failed to preview batch export",
-        "error",
-        3500,
-        "top-right",
-      );
-    } finally {
-      setBatchExportPreviewLoading(false);
-    }
+      if (!csvText.trim()) {
+        showToast("Paste at least one service tag", "error", 3000, "top-right");
+        return;
+      }
+
+      if (!Object.values(exportOptions).some(Boolean)) {
+        showToast("Select at least one export option", "error", 3500, "top-right");
+        return;
+      }
+
+      setBatchExportPreviewLoading(true);
+      try {
+        const data = await previewBatchExportUnitData(
+          csvText,
+          exportOptions,
+        );
+        setBatchExportPreview(data);
+      } catch (err) {
+        console.error("Failed to preview batch export", err);
+        if (!keepReviewVisible) {
+          setBatchExportPreview(null);
+        }
+        showToast(
+          err?.body?.error || err?.message || "Failed to preview batch export",
+          "error",
+          3500,
+          "top-right",
+        );
+      } finally {
+        setBatchExportPreviewLoading(false);
+      }
+    },
+    [batchExportCsv, batchExportOptions, previewBatchExportUnitData, showToast],
+  );
+
+  async function handleBatchExportPreview() {
+    await runBatchExportPreview();
   }
 
   async function handleStartBatchExport() {
@@ -995,7 +1029,10 @@ function TrackingPage() {
 
     setBatchExportStartLoading(true);
     try {
-      const job = await createBatchExportUnitData(batchExportCsv);
+      const job = await createBatchExportUnitData(
+        batchExportCsv,
+        batchExportOptions,
+      );
       setActiveBatchExportJobId(job?.job_id || null);
       setBatchExportPreview(null);
       setBatchExportCsv("");
@@ -1047,6 +1084,31 @@ function TrackingPage() {
     },
     [showActive, showInactive, serverTime],
   );
+
+  useEffect(() => {
+    if (!isBatchExportModalOpen || !batchExportPreview || !batchExportCsv.trim()) {
+      return;
+    }
+
+    if (batchExportOptionsChangeSourceRef.current !== "user") {
+      return;
+    }
+
+    batchExportOptionsChangeSourceRef.current = "effect";
+    runBatchExportPreview({
+      csvText: batchExportCsv,
+      exportOptions: batchExportOptions,
+      keepReviewVisible: true,
+    }).finally(() => {
+      batchExportOptionsChangeSourceRef.current = "external";
+    });
+  }, [
+    isBatchExportModalOpen,
+    batchExportPreview,
+    batchExportCsv,
+    batchExportOptions,
+    runBatchExportPreview,
+  ]);
 
   return (
     <>
@@ -1296,10 +1358,20 @@ function TrackingPage() {
             onClose={() => {
               setIsBatchExportModalOpen(false);
               setBatchExportPreview(null);
+              setBatchExportOptions(DEFAULT_BATCH_EXPORT_OPTIONS);
             }}
             canCreateBatchExport={!!token}
             csvText={batchExportCsv}
             setCsvText={setBatchExportCsv}
+            exportOptions={batchExportOptions}
+            setExportOptions={(updater) => {
+              batchExportOptionsChangeSourceRef.current = "user";
+              setBatchExportOptions((prev) => {
+                const next =
+                  typeof updater === "function" ? updater(prev) : updater;
+                return next;
+              });
+            }}
             onPreview={handleBatchExportPreview}
             onBackToEdit={() => setBatchExportPreview(null)}
             previewLoading={batchExportPreviewLoading}
