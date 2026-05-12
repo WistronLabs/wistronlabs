@@ -87,6 +87,8 @@ export default function BatchExportSystemFilesModal({
   canCreateBatchExport,
   csvText,
   setCsvText,
+  exportOptions,
+  setExportOptions,
   onPreview,
   onBackToEdit,
   previewLoading,
@@ -123,6 +125,13 @@ export default function BatchExportSystemFilesModal({
     setOpenTooltipJobId((prev) => (prev === jobId ? null : jobId));
   };
 
+  const updateOption = (key) => {
+    setExportOptions((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }));
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
       <div className="flex h-[68vh] w-full max-w-4xl flex-col rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
@@ -132,6 +141,38 @@ export default function BatchExportSystemFilesModal({
             <p className="mt-1 text-sm text-gray-500">
               Paste one service tag per line. Batch files stay available for 24 hours.
             </p>
+            <div className="mt-2 rounded-lg border border-gray-200 bg-white px-3 py-2">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-700">
+                <span className="font-medium text-gray-800">Include in each system folder</span>
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={!!exportOptions?.include_l11_logs}
+                    onChange={() => updateOption("include_l11_logs")}
+                    disabled={!canCreateBatchExport}
+                  />
+                  L11 log tgzs
+                </label>
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={!!exportOptions?.include_support_photos}
+                    onChange={() => updateOption("include_support_photos")}
+                    disabled={!canCreateBatchExport}
+                  />
+                  Support photos
+                </label>
+                <label className="flex items-center gap-1.5">
+                  <input
+                    type="checkbox"
+                    checked={!!exportOptions?.include_l10_test_folders}
+                    onChange={() => updateOption("include_l10_test_folders")}
+                    disabled={!canCreateBatchExport}
+                  />
+                  L10 test folders
+                </label>
+              </div>
+            </div>
           </div>
           <button
             type="button"
@@ -178,7 +219,7 @@ export default function BatchExportSystemFilesModal({
                 </div>
               </>
               ) : (
-              <div className="mt-4 flex min-h-0 flex-1 flex-col space-y-3">
+              <div className="flex min-h-0 flex-1 flex-col space-y-3">
                 <div className="text-sm font-semibold text-gray-800">Review Batch Export</div>
                 <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
                   {previewData.total_count} unique service tags reviewed.
@@ -192,9 +233,14 @@ export default function BatchExportSystemFilesModal({
                           key={`${row.service_tag}-${row.status}`}
                           className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
                         >
-                          <span className="min-w-0 truncate font-mono text-gray-800">
-                            {row.service_tag}
-                          </span>
+                          <div className="min-w-0">
+                            <div className="truncate font-mono text-gray-800">
+                              {row.service_tag}
+                            </div>
+                            <div className="truncate text-xs text-gray-500">
+                              {row.details || ""}
+                            </div>
+                          </div>
                           <ReviewStatusPill status={row.status} />
                         </div>
                       ))}
@@ -234,7 +280,11 @@ export default function BatchExportSystemFilesModal({
             </div>
 
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-              {jobs.length ? (
+              {jobsLoading ? (
+                <div className="rounded-lg border border-dashed border-gray-300 bg-white p-4 text-sm text-gray-500">
+                  Loading batch exports...
+                </div>
+              ) : jobs.length ? (
                 jobs.map((job) => {
                   const isActive = activeJobId && job.job_id === activeJobId;
                   const isExpanded = openTooltipJobId === job.job_id;

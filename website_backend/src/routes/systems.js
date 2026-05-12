@@ -421,6 +421,156 @@ function parseBatchExportCsv(raw) {
   return tags;
 }
 
+function normalizeBatchExportOptions(raw) {
+  const defaults = {
+    include_l11_logs: true,
+    include_support_photos: true,
+    include_l10_test_folders: true,
+  };
+
+  if (!raw || typeof raw !== "object") return defaults;
+
+  return {
+    include_l11_logs:
+      raw.include_l11_logs == null
+        ? defaults.include_l11_logs
+        : Boolean(raw.include_l11_logs),
+    include_support_photos:
+      raw.include_support_photos == null
+        ? defaults.include_support_photos
+        : Boolean(raw.include_support_photos),
+    include_l10_test_folders:
+      raw.include_l10_test_folders == null
+        ? defaults.include_l10_test_folders
+        : Boolean(raw.include_l10_test_folders),
+  };
+}
+
+function hasSelectedBatchExportOption(options = {}) {
+  return Boolean(
+    options.include_l11_logs ||
+      options.include_support_photos ||
+      options.include_l10_test_folders,
+  );
+}
+
+function isL11ArchiveName(fileName, serviceTag) {
+  return new RegExp(
+    `^L11_logs_ST_${escapeRegExp(serviceTag)}_RT_.+\\.tgz$`,
+    "i",
+  ).test(String(fileName || ""));
+}
+
+async function hasAnyFilesInDir(dirPath) {
+  if (!dirPath) return false;
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return false;
+    throw err;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isFile()) return true;
+    if (entry.isDirectory()) {
+      if (await hasAnyFilesInDir(fullPath)) return true;
+    }
+  }
+
+  return false;
+}
+
+async function collectBatchExportEntries(serviceTag, options = {}) {
+  const normalizedOptions = normalizeBatchExportOptions(options);
+  const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+  const foundTypes = {
+    include_l11_logs: false,
+    include_support_photos: false,
+    include_l10_test_folders: false,
+  };
+  const entriesToCopy = [];
+
+  let serviceEntries = [];
+  try {
+    serviceEntries = await fs.readdir(serviceDir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return {
+        has_any: false,
+        found_types: foundTypes,
+        entries_to_copy: [],
+      };
+    }
+    throw err;
+  }
+
+  if (normalizedOptions.include_l11_logs) {
+    const l11Entries = serviceEntries.filter(
+      (entry) => entry.isFile() && isL11ArchiveName(entry.name, serviceTag),
+    );
+    if (l11Entries.length) {
+      foundTypes.include_l11_logs = true;
+      entriesToCopy.push(
+        ...l11Entries.map((entry) => ({
+          source_path: path.join(serviceDir, entry.name),
+          relative_path: entry.name,
+        })),
+      );
+    }
+  }
+
+  if (normalizedOptions.include_support_photos) {
+    const photosDir = path.join(serviceDir, "photos");
+    if (await hasAnyFilesInDir(photosDir)) {
+      foundTypes.include_support_photos = true;
+      entriesToCopy.push({
+        source_path: photosDir,
+        relative_path: "photos",
+      });
+    }
+  }
+
+  if (normalizedOptions.include_l10_test_folders) {
+    const l10Directories = [];
+    for (const entry of serviceEntries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.toLowerCase() === "photos") continue;
+
+      const fullPath = path.join(serviceDir, entry.name);
+      if (await hasAnyFilesInDir(fullPath)) {
+        l10Directories.push(entry.name);
+      }
+    }
+
+    if (l10Directories.length) {
+      foundTypes.include_l10_test_folders = true;
+      entriesToCopy.push(
+        ...l10Directories.map((dirName) => ({
+          source_path: path.join(serviceDir, dirName),
+          relative_path: dirName,
+        })),
+      );
+    }
+  }
+
+  return {
+    has_any: entriesToCopy.length > 0,
+    found_types: foundTypes,
+    entries_to_copy: entriesToCopy,
+  };
+}
+
+function formatBatchExportFoundTypes(foundTypes = {}) {
+  const labels = [];
+  if (foundTypes.include_l11_logs) labels.push("L11 log tgzs");
+  if (foundTypes.include_support_photos) labels.push("support photos");
+  if (foundTypes.include_l10_test_folders) labels.push("L10 test folders");
+  return labels;
+}
+
 async function removeBatchExportArtifacts(meta) {
   if (meta?.archive_path) {
     await fs.rm(meta.archive_path, { force: true }).catch(() => {});
@@ -451,6 +601,7 @@ function serializeBatchExport(meta) {
     ttl_ms_remaining: ttlMsRemaining,
     total_count: meta.total_count || 0,
     processed_count: meta.processed_count || 0,
+    export_options: normalizeBatchExportOptions(meta.export_options),
     service_tags: Array.isArray(meta.service_tags) ? meta.service_tags : [],
     skipped_not_found: Array.isArray(meta.skipped_not_found)
       ? meta.skipped_not_found
@@ -535,18 +686,41 @@ async function cleanupExpiredBatchExports() {
   );
 }
 
-async function validateBatchExportServiceTags(serviceTags = []) {
+async function validateBatchExportServiceTags(serviceTags = [], options = {}) {
   const normalizedTags = [
     ...new Set(
       serviceTags.map((tag) => safeServiceTagSegment(tag)).filter(Boolean),
     ),
   ];
+  const normalizedOptions = normalizeBatchExportOptions(options);
 
   if (!normalizedTags.length) {
     return {
       will_export: [],
       skipped_not_found: [],
       skipped_internal_error: [],
+      availability_by_tag: {},
+    };
+  }
+
+  if (!hasSelectedBatchExportOption(normalizedOptions)) {
+    return {
+      will_export: [],
+      skipped_not_found: normalizedTags,
+      skipped_internal_error: [],
+      availability_by_tag: Object.fromEntries(
+        normalizedTags.map((serviceTag) => [
+          serviceTag,
+          {
+            found_types: {
+              include_l11_logs: false,
+              include_support_photos: false,
+              include_l10_test_folders: false,
+            },
+            has_any: false,
+          },
+        ]),
+      ),
     };
   }
 
@@ -561,27 +735,45 @@ async function validateBatchExportServiceTags(serviceTags = []) {
   const willExport = [];
   const skippedNotFound = [];
   const skippedInternalError = [];
+  const availabilityByTag = {};
 
   for (const serviceTag of normalizedTags) {
     if (!existing.has(serviceTag)) {
       skippedNotFound.push(serviceTag);
+      availabilityByTag[serviceTag] = {
+        found_types: {
+          include_l11_logs: false,
+          include_support_photos: false,
+          include_l10_test_folders: false,
+        },
+        has_any: false,
+      };
       continue;
     }
 
     try {
-      const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
-      const stat = await fs.stat(serviceDir);
-      if (!stat.isDirectory()) {
-        skippedInternalError.push(serviceTag);
+      const selection = await collectBatchExportEntries(
+        serviceTag,
+        normalizedOptions,
+      );
+      availabilityByTag[serviceTag] = selection;
+
+      if (!selection.has_any) {
+        skippedNotFound.push(serviceTag);
         continue;
       }
+
       willExport.push(serviceTag);
     } catch (err) {
-      if (err?.code === "ENOENT") {
-        skippedInternalError.push(serviceTag);
-        continue;
-      }
       skippedInternalError.push(serviceTag);
+      availabilityByTag[serviceTag] = {
+        found_types: {
+          include_l11_logs: false,
+          include_support_photos: false,
+          include_l10_test_folders: false,
+        },
+        has_any: false,
+      };
     }
   }
 
@@ -589,6 +781,7 @@ async function validateBatchExportServiceTags(serviceTags = []) {
     will_export: willExport,
     skipped_not_found: skippedNotFound,
     skipped_internal_error: skippedInternalError,
+    availability_by_tag: availabilityByTag,
   };
 }
 
@@ -596,6 +789,7 @@ function buildBatchExportReviewRows(serviceTags = [], preview = {}) {
   const willExport = new Set(preview.will_export || []);
   const skippedNotFound = new Set(preview.skipped_not_found || []);
   const skippedInternalError = new Set(preview.skipped_internal_error || []);
+  const availabilityByTag = preview.availability_by_tag || {};
 
   return serviceTags.map((serviceTag) => ({
     service_tag: serviceTag,
@@ -606,10 +800,17 @@ function buildBatchExportReviewRows(serviceTags = [], preview = {}) {
         : skippedInternalError.has(serviceTag)
           ? "Internal Error"
           : "Internal Error",
+    details: willExport.has(serviceTag)
+      ? formatBatchExportFoundTypes(
+          availabilityByTag[serviceTag]?.found_types || {},
+        ).join(", ")
+      : skippedNotFound.has(serviceTag)
+        ? "No selected files or folders found"
+        : "Failed to inspect export contents",
   }));
 }
 
-async function runBatchExportJob(jobId, serviceTags = []) {
+async function runBatchExportJob(jobId, serviceTags = [], options = {}) {
   let meta = await readBatchExportMeta(jobId);
   let tempDir = null;
 
@@ -634,10 +835,16 @@ async function runBatchExportJob(jobId, serviceTags = []) {
       }
 
       const serviceTag = serviceTags[i];
-      const archiveName = `system_folder_${serviceTag}.tgz`;
-      const archivePath = path.join(batchDir, archiveName);
+      const selection = await collectBatchExportEntries(serviceTag, options);
+      if (selection.has_any) {
+        const targetServiceDir = path.join(batchDir, serviceTag);
+        await fs.mkdir(targetServiceDir, { recursive: true });
 
-      await runTar(["-czf", archivePath, "-C", PHOTO_UPLOAD_ROOT, serviceTag]);
+        for (const entry of selection.entries_to_copy) {
+          const targetPath = path.join(targetServiceDir, entry.relative_path);
+          await fs.cp(entry.source_path, targetPath, { recursive: true });
+        }
+      }
 
       meta = await persistBatchExportMeta({
         ...meta,
@@ -3467,15 +3674,25 @@ router.post(
   async (req, res) => {
     try {
       const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+      const exportOptions = normalizeBatchExportOptions(req.body?.export_options);
       if (!serviceTags.length) {
         return res
           .status(400)
           .json({ error: "Provide at least one service tag" });
       }
+      if (!hasSelectedBatchExportOption(exportOptions)) {
+        return res.status(400).json({
+          error: "Select at least one export option",
+        });
+      }
 
-      const preview = await validateBatchExportServiceTags(serviceTags);
+      const preview = await validateBatchExportServiceTags(
+        serviceTags,
+        exportOptions,
+      );
       return res.json({
         ...preview,
+        export_options: exportOptions,
         total_count: serviceTags.length,
         review_rows: buildBatchExportReviewRows(serviceTags, preview),
       });
@@ -3491,17 +3708,27 @@ router.post("/batch-export-unit-data", authenticateToken, async (req, res) => {
     await cleanupExpiredBatchExports();
 
     const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+    const exportOptions = normalizeBatchExportOptions(req.body?.export_options);
     if (!serviceTags.length) {
       return res
         .status(400)
         .json({ error: "Provide at least one service tag" });
     }
+    if (!hasSelectedBatchExportOption(exportOptions)) {
+      return res.status(400).json({
+        error: "Select at least one export option",
+      });
+    }
 
-    const preview = await validateBatchExportServiceTags(serviceTags);
+    const preview = await validateBatchExportServiceTags(
+      serviceTags,
+      exportOptions,
+    );
     if (!preview.will_export.length) {
       return res.status(400).json({
         error: "No valid systems available for export",
         ...preview,
+        export_options: exportOptions,
         total_count: serviceTags.length,
       });
     }
@@ -3516,6 +3743,7 @@ router.post("/batch-export-unit-data", authenticateToken, async (req, res) => {
       archive_path: null,
       total_count: preview.will_export.length,
       processed_count: 0,
+      export_options: exportOptions,
       service_tags: preview.will_export,
       skipped_not_found: preview.skipped_not_found,
       skipped_internal_error: preview.skipped_internal_error,
@@ -3524,7 +3752,7 @@ router.post("/batch-export-unit-data", authenticateToken, async (req, res) => {
     };
 
     meta = await persistBatchExportMeta(meta);
-    runBatchExportJob(meta.job_id, preview.will_export).catch((err) => {
+    runBatchExportJob(meta.job_id, preview.will_export, exportOptions).catch((err) => {
       console.error("Failed to start batch export job:", err);
     });
 

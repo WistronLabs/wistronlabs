@@ -2,6 +2,7 @@ import { useContext } from "react";
 import { AuthContext } from "../context/AuthContext";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL;
+const DATA_FETCH_EVENT_NAME = "wistronlabs:data-fetch-success";
 
 function useApi() {
   const { token, refreshToken } = useContext(AuthContext);
@@ -30,6 +31,8 @@ function useApi() {
   }
 
   async function fetchJSON(endpoint, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+
     const request = async (authToken) => {
       const headers = {
         ...(options.headers || {}),
@@ -79,6 +82,23 @@ function useApi() {
     }
 
     // Handle no content
+    if (
+      method === "GET" &&
+      typeof window !== "undefined" &&
+      typeof window.dispatchEvent === "function"
+    ) {
+      window.dispatchEvent(
+        new CustomEvent(DATA_FETCH_EVENT_NAME, {
+          detail: {
+            endpoint,
+            method,
+            pathname: window.location.pathname,
+            timestamp: Date.now(),
+          },
+        }),
+      );
+    }
+
     if (res.status === 204) return null;
     return data;
   }
@@ -605,7 +625,7 @@ function useApi() {
     const disposition = res.headers.get("content-disposition") || "";
     const filenameMatch =
       disposition.match(/filename\*=UTF-8''([^;]+)/i) ||
-      disposition.match(/filename=\"?([^\";]+)\"?/i);
+      disposition.match(/filename="?([^";]+)"?/i);
     const filename = filenameMatch?.[1]
       ? decodeURIComponent(filenameMatch[1])
       : `system_folder_${service_tag}.tgz`;
@@ -616,18 +636,18 @@ function useApi() {
     };
   };
 
-  const previewBatchExportUnitData = (csv_text) =>
+  const previewBatchExportUnitData = (csv_text, export_options) =>
     fetchJSON(`/systems/batch-export-unit-data/preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ csv_text }),
+      body: JSON.stringify({ csv_text, export_options }),
     });
 
-  const createBatchExportUnitData = (csv_text) =>
+  const createBatchExportUnitData = (csv_text, export_options) =>
     fetchJSON(`/systems/batch-export-unit-data`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ csv_text }),
+      body: JSON.stringify({ csv_text, export_options }),
     });
 
   const listBatchExportUnitData = () =>
