@@ -236,6 +236,8 @@ fi
 ipmi() {
   if [[ "${CONFIG:-}" == "F" ]]; then
     ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
+  elif [[ "${CONFIG:-}" == "D" ]]; then
+    ipmitool -I lanplus -H "$BMC_IP" -U root -P calvin "$@"
   else
     ipmitool -I lanplus -H "$BMC_IP" -U admin -P admin "$@"
   fi
@@ -412,6 +414,52 @@ CONFIG_H_MASTER_MODULE_LIST=(
   "DmesgLogAERCheck"
 )
 
+CONFIG_D_MASTER_MODULE_LIST=(
+  "inforom"
+  "Checkinforom"
+  "Inventory"
+  "CxPcieProperties_Gen5"
+  "BfPcieProperties"
+  "BfMgmtPcieProperties"
+  "SsdPciePropertiesE1S"
+  "SsdPciePropertiesM2"
+  "UsbPcieProperties"
+  "TegraCpu"
+  "TegraMemory"
+  "CpuMemorySweep"
+  "TegraClink"
+  "Gpustress"
+  "Gpumem"
+  "PerfBenchmark_GEMM"
+  "Pcie"
+  "Connectivity"
+  "NvlBwStress"
+  "NvlBwStressBg610"
+  "C2C"
+  "CpuGpuSyncPulsePower"
+  "ThermalSteadyState"
+  "CxeyegradeStart"
+  "CxeyegradeStop"
+  "DisableAcs"
+  "Cx8GpuDirectLoopback_ETH"
+  "Cx8GpuDirectExtLoopback_ETH"
+  "Cx8GpuDirectCrossNIC_ETH"
+  "Cx8GpuDirectCrossNIC_IB"
+  "Cx8CpuCrissCrossNIC_ETH"
+  "Cx8CpuCrossNIC_ETH"
+  "Cx8CpuCrossNIC_IB"
+  "Cx8CpuLoopback"
+  "BF3PcieInterfaceTraffic"
+  "Ssd"
+  "DimmStress"
+  "SyslogErrorCheck"
+  "KernLogErrorCheck"
+  "DmesgLogErrorCheck"
+  "SyslogAERCheck"
+  "KernLogAERCheck"
+  "DmesgLogAERCheck"
+)
+
 
 if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
@@ -427,6 +475,9 @@ elif [[ "$CONFIG" == "F" ]]; then
     DIAG_FILE="629-24059-0000-FLD-50611-rev1.tgz"
 elif [[ "$CONFIG" == "H1" ]]; then
     MASTER_MODULE_LIST=("${CONFIG_H_MASTER_MODULE_LIST[@]}")
+    DIAG_FILE="629-24059-0000-FLD-60002-rev3.tgz"
+elif [[ "$CONFIG" == "D" ]]; then
+    MASTER_MODULE_LIST=("${CONFIG_D_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-60002-rev3.tgz"
 else
     err "This config ($CONFIG) has not been implemented at L10 yet."
@@ -539,6 +590,18 @@ case "$CONFIG" in
         SKIPPED_MODULES=(
             "PerfBenchmark_GEMM"
             "Cx8GpuDirectCrossNIC_IB"
+            "Cx8CpuCrossNIC_IB"
+            #"Cx8CpuLoopback"
+            "BF3PcieInterfaceTraffic"
+        );;
+    D)
+        SKIPPED_MODULES=(
+            "Cx8GpuDirectLoopback_ETH"
+            "Cx8GpuDirectExtLoopback_ETH"
+            "Cx8GpuDirectCrossNIC_ETH"
+            "Cx8GpuDirectCrossNIC_IB"
+            "Cx8CpuCrissCrossNIC_ETH"
+            "Cx8CpuCrossNIC_ETH"
             "Cx8CpuCrossNIC_IB"
             "Cx8CpuLoopback"
             "BF3PcieInterfaceTraffic"
@@ -658,13 +721,26 @@ menuentry "${WIS_FOLDER}L10 Image" {
 }
 EOF
     ;;
-  2|4|6|A|B|H1|B1)
+  2|4|6|A|B|B1)
     tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
 menuentry "Configs 2-6 A,B Wistron Image (RAM)" {
         linux   (http,192.168.1.2:8080)/wis_vmlinuz ip=dhcp root=/dev/nfs nfsroot=192.168.1.2:/srv/tftp/wis_rootfs_copy
         initrd  (http,192.168.1.2:8080)/wis_initrd_1
+}
+EOF
+    ;;
+  D|H1)
+    tee "$OUT" >/dev/null <<EOF
+set timeout=5
+
+menuentry "config_F L10 Image" {
+    linux (http,192.168.1.2:8080)/config_F/vmlinuz \
+        boot=live root=/dev/ram0 live-netdev=enP5p9s0 \
+        fetch=http://192.168.1.2:8080/config_F/config_F.iso \
+        console=ttyS0,115200 console=tty1 fsck.mode=skip ip=dhcp rw vga=0x314 nomodeset ---
+    initrd (http,192.168.1.2:8080)/config_F/initrd.img
 }
 EOF
     ;;

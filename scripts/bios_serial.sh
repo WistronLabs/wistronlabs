@@ -168,7 +168,10 @@ elif timeout 4 ipmitool -I lanplus -U "root" -P "0penBmc" -H "$IP" -C 17 chassis
     IPMI_USER="root"
     IPMI_PASS="0penBmc"
     IPMI_CIPHER="-C 17"
-
+elif timeout 4 ipmitool -I lanplus -U "root" -P "calvin" -H "$IP" chassis power status >/dev/null 2>&1; then
+    IPMI_USER="root"
+    IPMI_PASS="calvin"
+    IPMI_CIPHER=""
 else
     IPMI_USER=""
     IPMI_PASS=""

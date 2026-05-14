@@ -282,6 +282,9 @@ case "$CONFIG" in
   F)
     exec ipmitool -U root -P 0penBmc -I lanplus -H "$BMC_IP" -C 17 "${IPMI_ARGS[@]}"
     ;;
+  D)
+    exec ipmitool -U root -P calvin -I lanplus -H "$BMC_IP" "${IPMI_ARGS[@]}"
+    ;;
   *)
     exec ipmitool -U admin -P admin -I lanplus -H "$BMC_IP" "${IPMI_ARGS[@]}"
     ;;
