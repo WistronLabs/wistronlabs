@@ -4927,6 +4927,49 @@ router.patch("/:service_tag/issue", authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/v1/systems/:service_tag/note
+router.post("/:service_tag/note", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const note = String(req.body?.note || "").trim();
+
+  if (!note) {
+    return res.status(400).json({ error: "note is required" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    const systemRes = await client.query(
+      `SELECT id, location_id FROM system WHERE service_tag = $1 LIMIT 1`,
+      [service_tag],
+    );
+
+    if (!systemRes.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const { id: system_id, location_id } = systemRes.rows[0];
+
+    await client.query(
+      `INSERT INTO system_location_history
+         (system_id, from_location_id, to_location_id, note, moved_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [system_id, location_id, location_id, note, req.user.userId],
+    );
+
+    await client.query("COMMIT");
+    return res.json({ message: "Note added" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    return res.status(500).json({ error: "Failed to add note" });
+  } finally {
+    client.release();
+  }
+});
+
 // PATCH /api/v1/systems/:service_tag/rack
 router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
   const { service_tag } = req.params;

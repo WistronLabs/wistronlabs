@@ -236,6 +236,13 @@ function useApi() {
       body: JSON.stringify(payload),
     });
 
+  const addSystemNote = (tag, note) =>
+    fetchJSON(`/systems/${encodeURIComponent(tag)}/note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+
   // list all categories
   const getRootCauses = () => fetchJSON(`/systems/root-cause`);
 
@@ -1012,6 +1019,7 @@ function useApi() {
     createPartItem,
     updatePartItem,
     deletePartItem,
+    addSystemNote,
     getRootCauses,
     getRootCauseSubCategories,
     getTags,

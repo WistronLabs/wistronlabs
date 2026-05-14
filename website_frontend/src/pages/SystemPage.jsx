@@ -244,6 +244,8 @@ function SystemPage() {
       return Number.isFinite(photoMs) && photoMs > latestReceivedMs;
     });
   }, [latestReceivedAt, photos]);
+  const hasSystemFolderEvidence =
+    Number(system?.l10_logs_total_size_bytes || 0) > 0;
 
   const { token } = useContext(AuthContext);
   const canAddPhoto = !isResolved && !!token;
@@ -278,6 +280,7 @@ function SystemPage() {
     getSystemHistory,
     deleteSystem,
     getSystems,
+    addSystemNote,
     updateSystemLocation,
     deleteLastHistoryEntry,
     getStations,
@@ -387,7 +390,7 @@ function SystemPage() {
   ];
   const ROOT_CAUSE_CATEGORY_RULES_BY_LOCATION = {
     "RMA PID": {
-      allowedCategoryIds: ["14", "15", "9", "3", "2", "16"],
+      allowedCategoryIds: ["14", "15", "9", "3", "2", "16", "19", "20"],
     },
   };
   const ROOT_CAUSE_SUBCATEGORY_RULES_BY_LOCATION = {
@@ -403,6 +406,11 @@ function SystemPage() {
         allowedSubCategoryIds: ["2", "3", "5"],
       },
     ],
+  };
+  const ROOT_CAUSE_SUBCATEGORY_RULES_BY_ROOT_CAUSE = {
+    8: {
+      allowedSubCategoryIds: ["1", "4"],
+    },
   };
 
   const applyRootCauseCategoryLocationRule = (options, locationName) => {
@@ -427,6 +435,17 @@ function SystemPage() {
     if (!matchedRule?.allowedSubCategoryIds?.length) return options;
 
     const allowedIds = new Set(matchedRule.allowedSubCategoryIds.map(String));
+    return options.filter((opt) => allowedIds.has(String(opt.value)));
+  };
+
+  const applyRootCauseSubCategoryRootCauseRule = (options, categoryId) => {
+    if (categoryId == null) return options;
+
+    const rule =
+      ROOT_CAUSE_SUBCATEGORY_RULES_BY_ROOT_CAUSE[String(categoryId)] || null;
+    if (!rule?.allowedSubCategoryIds?.length) return options;
+
+    const allowedIds = new Set(rule.allowedSubCategoryIds.map(String));
     return options.filter((opt) => allowedIds.has(String(opt.value)));
   };
 
@@ -730,6 +749,10 @@ function SystemPage() {
           toLocationName,
           selectedRootCauseId,
         );
+        subOpts = applyRootCauseSubCategoryRootCauseRule(
+          subOpts,
+          selectedRootCauseId,
+        );
 
         // Clear selections if they’re no longer valid
         if (
@@ -912,9 +935,7 @@ function SystemPage() {
       try {
         const res = await getL11LogReconciliationMode();
         if (!cancelled) {
-          setL11LogReconciliationMode(
-            !!res?.l11_log_reconciliation_mode,
-          );
+          setL11LogReconciliationMode(!!res?.l11_log_reconciliation_mode);
         }
       } catch {
         if (!cancelled) setL11LogReconciliationMode(false);
@@ -1535,6 +1556,10 @@ function SystemPage() {
 
   useEffect(() => {
     fetchData();
+  }, [serviceTag]);
+
+  useEffect(() => {
+    setLogsDir("");
   }, [serviceTag]);
 
   useEffect(() => {
@@ -2626,30 +2651,15 @@ function SystemPage() {
       }
 
       // D) For any donor systems involved in unit↔unit part moves, write a note
-      // using their current location as the "to" location (no actual move).
+      // without changing their location or pallet assignment.
       if (Object.keys(donorLocationNotes).length > 0) {
         await Promise.all(
           Object.entries(donorLocationNotes).map(async ([donorTag, lines]) => {
-            const donor = donorSystems.find(
-              (u) =>
-                (u.service_tag || "").toUpperCase() === donorTag.toUpperCase(),
-            );
-
-            const donorLocName = donor?.location || "Received";
-            const donorLocId =
-              locations.find((l) => l.name === donorLocName)?.id ||
-              locations.find((l) => l.name === "Received")?.id;
-
-            if (!donorLocId) return;
-
             const donorNote =
               `Parts transaction with ${system.service_tag}:\n` +
               lines.join(" ");
 
-            await updateSystemLocation(donorTag, {
-              to_location_id: donorLocId,
-              note: donorNote,
-            });
+            await addSystemNote(donorTag, donorNote);
           }),
         );
       }
@@ -3245,6 +3255,13 @@ function SystemPage() {
                         ).map((loc) => {
                           const isRMA = RMA_LOCATION_IDS.includes(loc.id);
                           const isRmaCid = loc.name === "RMA CID";
+                          const evidenceRequiredBlockedDestinations = new Set([
+                            "RMA VID",
+                            "RMA PID",
+                            "Sent to L11",
+                          ]);
+                          const isEvidenceRequiredDestination =
+                            evidenceRequiredBlockedDestinations.has(loc.name);
                           const isL10 = L10_LOCATION_ID
                             ? loc.id === L10_LOCATION_ID
                             : loc.name === "In L10";
@@ -3254,6 +3271,9 @@ function SystemPage() {
                           const rmaBlocked = isRMA && willHaveGoodAfterSubmit;
                           const cidPhotoBlocked =
                             isRmaCid && !hasFreshPhotoEvidenceForCid;
+                          const evidenceBlocked =
+                            isEvidenceRequiredDestination &&
+                            !hasSystemFolderEvidence;
                           const pendingL11GoodPartsBlocked =
                             isPendingL11Destination && willHaveGoodAfterSubmit;
                           // Allow In L10 when at least one bad has a Replacement PPID chosen
@@ -3267,6 +3287,7 @@ function SystemPage() {
                             isResolved ||
                             rmaBlocked ||
                             cidPhotoBlocked ||
+                            evidenceBlocked ||
                             l10Blocked ||
                             l11Blocked ||
                             pendingL11GoodPartsBlocked;
@@ -3277,13 +3298,15 @@ function SystemPage() {
                               ? "Remove/return all good parts before moving to an RMA location."
                               : cidPhotoBlocked
                                 ? "Photo evidence of the damage must be uploaded before moving to RMA CID."
-                                : pendingL11GoodPartsBlocked
-                                  ? "Return/remove all good parts before moving to Pending L11 Logs"
-                                  : l10Blocked
-                                    ? "Add a Replacement PPID for at least one defective part to move to In L10."
-                                    : isResolved
-                                      ? "Resolved units can’t be moved."
-                                      : undefined;
+                                : evidenceBlocked
+                                  ? "Evidence must be added before moving to this location."
+                                  : pendingL11GoodPartsBlocked
+                                    ? "Return/remove all good parts before moving to Pending L11 Logs"
+                                    : l10Blocked
+                                      ? "Add a Replacement PPID for at least one defective part to move to In L10."
+                                      : isResolved
+                                        ? "Resolved units can’t be moved."
+                                        : undefined;
 
                           return (
                             <Tooltip
@@ -4500,12 +4523,12 @@ function SystemPage() {
                                       </p>
                                     )}
 
-                                    {showSingleUnitMsgActive && (
+                                    {/* {showSingleUnitMsgActive && (
                                       <p className="italic">
                                         Original part will be moved back into
                                         this unit when you submit.
                                       </p>
-                                    )}
+                                    )} */}
 
                                     {showSingleUnitMsgInactive && (
                                       <p className="italic">
@@ -4664,7 +4687,7 @@ function SystemPage() {
                       <div
                         className={`w-full lg:w-3/5 rounded border border-gray-300`}
                       >
-                        <table className="rounded w-full bg-white  shadow-sm overflow-hidden ">
+                        <table className="rounded w-full bg-white  shadow-sm ">
                           <thead>
                             <tr>
                               <th className="bg-gray-50 font-semibold uppercase text-xs text-gray-600 p-3">

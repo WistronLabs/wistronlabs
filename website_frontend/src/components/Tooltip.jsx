@@ -6,7 +6,7 @@ export default function Tooltip({
   position = "top",
   show = false,
   maxWidthClassName = "max-w-xs",
-  zIndexClassName = "z-0",
+  zIndexClassName = "z-5",
   autoFlip = true,
   topViewportOffset = 0,
   bottomViewportOffset = 0,
@@ -83,7 +83,15 @@ export default function Tooltip({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [autoFlip, bottomViewportOffset, open, position, show, text, topViewportOffset]);
+  }, [
+    autoFlip,
+    bottomViewportOffset,
+    open,
+    position,
+    show,
+    text,
+    topViewportOffset,
+  ]);
 
   if (!show || !text) {
     return <>{children}</>;

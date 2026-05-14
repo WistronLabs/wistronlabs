@@ -75,11 +75,24 @@ function Footer({ className = "" }) {
     import.meta.env.VITE_BUILD_NUMBER ||
     import.meta.env.BUILD_NUMBER ||
     "unknown";
+  const clearPendingRefresh = () => {
+    refreshPendingRef.current = false;
+    setRefreshPending(false);
+    logAutoRefresh(
+      AUTO_REFRESH_DEBUG_LOGGING,
+      "refresh-queue-cleared",
+      {
+        reason: "page-context-reset",
+        timestamp: new Date().toISOString(),
+      },
+    );
+  };
 
   useEffect(() => {
     const storageKey = buildLastUpdateStorageKey(location.pathname);
     const stored = Number(sessionStorage.getItem(storageKey));
     setLastUpdatedAt(Number.isFinite(stored) && stored > 0 ? stored : null);
+    clearPendingRefresh();
   }, [location.pathname]);
 
   // 1) Get server timezone once
@@ -120,6 +133,7 @@ function Footer({ className = "" }) {
         String(timestamp),
       );
       setLastUpdatedAt(timestamp);
+      clearPendingRefresh();
       logAutoRefresh(AUTO_REFRESH_DEBUG_LOGGING, "page-data-updated", {
         pathname: location.pathname,
         endpoint: detail.endpoint || null,
@@ -162,6 +176,7 @@ function Footer({ className = "" }) {
   }, []);
 
   // 4) Refresh the app on a timer, but only once the user has been idle.
+  // The 5-minute timer is anchored to the last successful data fetch.
   useEffect(() => {
     const setPendingRefresh = (value) => {
       refreshPendingRef.current = value;
@@ -217,11 +232,23 @@ function Footer({ className = "" }) {
       auto_refresh_ms: AUTO_REFRESH_MS,
       user_idle_ms: USER_IDLE_MS,
       retry_ms: REFRESH_RETRY_MS,
+      last_updated_at: lastUpdatedAt
+        ? new Date(lastUpdatedAt).toISOString()
+        : null,
     });
 
-    const autoRefreshId = setInterval(
-      () => refreshIfIdle("auto-interval"),
-      AUTO_REFRESH_MS,
+    const msUntilNextRefresh = Number.isFinite(lastUpdatedAt) && lastUpdatedAt > 0
+      ? Math.max(0, lastUpdatedAt + AUTO_REFRESH_MS - Date.now())
+      : AUTO_REFRESH_MS;
+
+    logAutoRefresh(AUTO_REFRESH_DEBUG_LOGGING, "refresh-scheduled", {
+      delay_ms: msUntilNextRefresh,
+      based_on_last_updated: Number.isFinite(lastUpdatedAt) && lastUpdatedAt > 0,
+    });
+
+    const autoRefreshId = setTimeout(
+      () => refreshIfIdle("auto-timeout"),
+      msUntilNextRefresh,
     );
     const retryId = setInterval(() => {
       if (refreshPendingRef.current) {
@@ -230,13 +257,13 @@ function Footer({ className = "" }) {
     }, REFRESH_RETRY_MS);
 
     return () => {
-      clearInterval(autoRefreshId);
+      clearTimeout(autoRefreshId);
       clearInterval(retryId);
       logAutoRefresh(AUTO_REFRESH_DEBUG_LOGGING, "refresh-system-stopped", {
         timestamp: new Date().toISOString(),
       });
     };
-  }, []);
+  }, [lastUpdatedAt]);
 
   // 5) Compute display time from client's UTC -> server zone.
   // Reading tick keeps these values moving once per second.

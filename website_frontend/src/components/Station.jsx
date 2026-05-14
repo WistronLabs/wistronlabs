@@ -99,7 +99,6 @@ function Station({
         show={!!tooltip}
         text={<span className="whitespace-pre-line">{tooltip}</span>}
         maxWidthClassName="max-w-[22rem] sm:max-w-sm"
-        zIndexClassName="z-1"
         topViewportOffset={110}
       >
         {statusBadge}
