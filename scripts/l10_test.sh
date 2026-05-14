@@ -243,6 +243,16 @@ ipmi() {
   fi
 }
 
+curl_auth() {
+  if [[ "${CONFIG:-}" == "F" ]]; then
+    curl -u root:0penBmc "$@"
+  elif [[ "${CONFIG:-}" == "D" ]]; then
+    curl -u root:calvin "$@"
+  else
+    curl -u admin:admin "$@"
+  fi
+}
+
 GB300_MASTER_MODULE_LIST=(
   "Inventory"
   "CxPcieProperties"
@@ -467,7 +477,7 @@ if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
 elif [[ "$CONFIG" == "7" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
      DIAG_FILE="diag_629-24975-0000-FLD-43749_rev13.tgz"
-elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "B1" ]]; then
+elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "I" ]]; then
     MASTER_MODULE_LIST=("${GB300_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-43538.tgz"
 elif [[ "$CONFIG" == "F" ]]; then
@@ -559,7 +569,7 @@ case "$CONFIG" in
             "Cx8GpuDirectCrossGpu_IB"
         )
         ;;
-    B1)
+    I)
         SKIPPED_MODULES=(
             "BF3PcieInterfaceTraffic"
             "CxeyegradeStop"
@@ -721,7 +731,7 @@ menuentry "${WIS_FOLDER}L10 Image" {
 }
 EOF
     ;;
-  2|4|6|A|B|B1)
+  2|4|6|A|B|I)
     tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
@@ -850,6 +860,14 @@ done
 
 
 echo "INFO - IPMI response received!"
+echo ""
+
+echo "INFO - Clearing HMC Logs"
+if ! curl_auth -skL -H 'Expect:' -H 'Content-Length:0' \
+  --request POST \
+  "https://$BMC_IP/redfish/v1/Systems/HGX_Baseboard_0/LogServices/EventLog/Actions/LogService.ClearLog" | jq; then
+  echo "WARN - failed to clear HMC Logs, continuing"
+fi
 echo ""
 
 
@@ -1020,6 +1038,14 @@ fi
 
 echo "INFO - Recording FRU Data"
 ipmi fru print
+
+HMC_LOG_FILE="$LOG_DIR/hmc_logs_${SERVICE_TAG}_${START_TS}.json"
+echo "INFO - saving HMC logs to file - hmc_logs_${SERVICE_TAG}_${START_TS}.json""
+if ! curl_auth -k -X GET \
+  "https://$BMC_IP/redfish/v1/Systems/HGX_Baseboard_0/LogServices/EventLog/Entries" | jq >"$HMC_LOG_FILE"; then
+  echo "WARN - failed to save HMC logs to file, continuing"
+  rm -f -- "$HMC_LOG_FILE"
+fi
 echo ""
 
 if [[ "$FRU_ONLY_MODE" -eq 1 ]]; then

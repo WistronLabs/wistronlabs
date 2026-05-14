@@ -4165,8 +4165,12 @@ router.get("/:service_tag/logs/download", async (req, res) => {
         .json({ error: "Requested log path is not a file" });
     }
 
-    if (/\.log$/i.test(fullPath)) {
+    if (/\.(log|json)$/i.test(fullPath)) {
+      const isJson = /\.json$/i.test(fullPath);
       res.type("text/plain; charset=utf-8");
+      if (isJson) {
+        res.type("application/json; charset=utf-8");
+      }
       res.setHeader(
         "Content-Disposition",
         `inline; filename="${path.basename(fullPath)}"`,
