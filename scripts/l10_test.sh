@@ -63,7 +63,7 @@ FRU_ONLY_MODE=0
 KEEP_POWER_ON=0
 SERVICE_TAG=""
 
-while getopts ":mofp" opt; do
+while getopts ":mMoOfFpP" opt; do
   case "$opt" in
     m | M) SKIP_BACKEND_MAC_PULL=1 ;;
     o | O) RUN_OPTION_PICKER=1 ;;
@@ -641,25 +641,29 @@ done
 # if the -o (option) flaag is set, it will set up an interactive prompt where you can pick the module(s) you would like to test
 if [[ "$RUN_OPTION_PICKER" -eq 1 ]]; then
 
-    while true; do
-        selected=$(printf "%s\n" "${CONFIG_LIST[@]}" | fzf --multi \
-        --prompt="Select options: " \
-        --bind "tab:toggle" \
-        --header="Below are the options for config '"$CONFIG"' TAB to toggle, ENTER to confirm")
-        if [[ -z "$selected" ]]; then
-            echo "Error - you must pick at least ONE module to run"
-        else
+	    while true; do
+	        selected=$(printf "%s\n" "${CONFIG_LIST[@]}" | fzf --multi \
+	        --prompt="Select options: " \
+	        --bind "tab:toggle" \
+	        --header="Below are the options for config '${CONFIG}' TAB to toggle, ENTER to confirm")
+	        if [[ -z "$selected" ]]; then
+	            echo "Error - you must pick at least ONE module to run"
+	        else
             echo "INFO - Only running:"
             echo "$selected"
             break
         fi
-    done
-
-    #creates the formatted added modules string (one liner, comma separated, comma a beginning, no comma a beginning if empty)
-    SELECTED_MODULES_FORMATTED=$( [ -n "$selected" ] && printf ",%s" $(printf "%s\n" $selected | paste -sd, -) | sed "s/^,//g" | sed "s/^inforom,//g")
-else
-    SELECTED_MODULES_FORMATTED=""
-fi
+	    done
+	
+	    #creates the formatted added modules string (one liner, comma separated, comma a beginning, no comma a beginning if empty)
+	    SELECTED_MODULES_FORMATTED=$(
+	        if [ -n "$selected" ]; then
+	            printf "%s\n" "$selected" | paste -sd, - | sed "s/^inforom,//g"
+	        fi
+	    )
+	else
+	    SELECTED_MODULES_FORMATTED=""
+	fi
 
 #creates the formatted added modules string (one liner, comma separated)
 SKIPPED_MODULES_FORMATTED=$(IFS=,; echo "${SKIPPED_MODULES[*]}")
@@ -1040,7 +1044,7 @@ echo "INFO - Recording FRU Data"
 ipmi fru print
 
 HMC_LOG_FILE="$LOG_DIR/hmc_logs_${SERVICE_TAG}_${START_TS}.json"
-echo "INFO - saving HMC logs to file - hmc_logs_${SERVICE_TAG}_${START_TS}.json""
+echo "INFO - saving HMC logs to file - hmc_logs_${SERVICE_TAG}_${START_TS}.json"
 if ! curl_auth -k -X GET \
   "https://$BMC_IP/redfish/v1/Systems/HGX_Baseboard_0/LogServices/EventLog/Entries" | jq >"$HMC_LOG_FILE"; then
   echo "WARN - failed to save HMC logs to file, continuing"
