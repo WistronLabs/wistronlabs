@@ -56,10 +56,10 @@ function App() {
   }, [location.pathname, location.search, location.hash]);
 
   return (
-    <>
-      <div className="bg-gray-100 min-h-screen text-gray-800 font-roboto pb-10">
-        {/* <ScrollToTop /> */}
-        <Header />
+    <div className="bg-gray-100 min-h-screen overflow-hidden text-gray-800 font-roboto">
+      {/* <ScrollToTop /> */}
+      <Header />
+      <div className="pb-10">
         <Routes>
           <Route path="/" element={<TrackingPage />} />
           <Route path="/stations" element={<StationPage />} />
@@ -89,7 +89,7 @@ function App() {
         </Routes>
       </div>
       <Footer className="mt-10" />
-    </>
+    </div>
   );
 }
 
