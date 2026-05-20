@@ -25,7 +25,7 @@ import { AuthContext } from "../context/AuthContext.jsx";
 
 function SystemBox({
   serviceTag,
-  dpn,
+  rmaType,
   dellCustomer,
   onClick,
   highlightMissing,
@@ -44,8 +44,8 @@ function SystemBox({
       }`}
     >
       <div className="font-semibold truncate">{serviceTag}</div>
-      <div className="text-[11px] text-neutral-600 truncate">
-        {dpn || "No DPN"}
+      <div className="text-[11px] font-semibold text-neutral-600 truncate">
+        {rmaType || "PID/VID/CID"}
         {dellCustomer ? ` - ${dellCustomer}` : ""}
       </div>
     </button>
@@ -84,7 +84,7 @@ function DraggableSystem({
     >
       <SystemBox
         serviceTag={system.service_tag}
-        dpn={system.dpn}
+        rmaType={system.rma_type}
         dellCustomer={system.dell_customer}
         onClick={() => onSelectDOA(system)}
         highlightMissing={highlightMissing}
@@ -491,6 +491,72 @@ export default function ShippingPage() {
     updateSystemDOA,
   } = useApi();
 
+  const getRmaTypeFromLocation = (location) => {
+    const match = String(location || "")
+      .trim()
+      .match(/^RMA\s+(PID|VID|CID)\b/i);
+    return match ? match[1].toUpperCase() : "";
+  };
+
+  const enrichPalletsWithRmaTypes = async (rawPallets = []) => {
+    const serviceTags = [
+      ...new Set(
+        rawPallets
+          .flatMap((p) => p?.active_systems ?? p?.systems ?? [])
+          .map((system) => String(system?.service_tag || "").trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    ];
+
+    const rmaTypeByTag = new Map();
+    await Promise.all(
+      serviceTags.map(async (serviceTag) => {
+        try {
+          const systemDetails = await getSystem(serviceTag);
+          rmaTypeByTag.set(
+            serviceTag,
+            getRmaTypeFromLocation(systemDetails?.location),
+          );
+        } catch {
+          rmaTypeByTag.set(serviceTag, "");
+        }
+      }),
+    );
+
+    const patchSystems = (systems = []) =>
+      systems.map((system) => {
+        if (!system?.service_tag) return system;
+        const key = String(system.service_tag).trim().toUpperCase();
+        return {
+          ...system,
+          rma_type: rmaTypeByTag.get(key) || "",
+        };
+      });
+
+    return rawPallets.map((pallet) => ({
+      ...pallet,
+      active_systems: patchSystems(pallet.active_systems),
+      systems: patchSystems(pallet.systems),
+    }));
+  };
+
+  const loadOpenPallets = async () => {
+    const data = await getPallets({
+      filters: {
+        conditions: [{ field: "status", op: "=", values: ["open"] }],
+      },
+    });
+
+    const result = Array.isArray(data?.data) ? data.data : [];
+    const normalized = result.map((p) => ({
+      ...p,
+      active_systems: p.active_systems ?? p.systems ?? [],
+      systems: p.systems ?? p.active_systems ?? [],
+    }));
+
+    return enrichPalletsWithRmaTypes(normalized);
+  };
+
   const handleSelectDOA = (palletId, unit) => {
     // Any DOA edit interaction should require re-marking release.
     setReleaseFlags((prev) => {
@@ -691,20 +757,7 @@ export default function ShippingPage() {
   useEffect(() => {
     const loadPallets = async () => {
       try {
-        const data = await getPallets({
-          filters: {
-            conditions: [{ field: "status", op: "=", values: ["open"] }],
-          },
-        });
-
-        const result = Array.isArray(data?.data) ? data.data : [];
-        // Normalize both fields for DnD + unified reads
-        const normalized = result.map((p) => ({
-          ...p,
-          active_systems: p.active_systems ?? p.systems ?? [],
-          systems: p.systems ?? p.active_systems ?? [],
-        }));
-
+        const normalized = await loadOpenPallets();
         setPallets(normalized);
         setInitialPallets(structuredClone(normalized));
       } catch (err) {
@@ -717,15 +770,7 @@ export default function ShippingPage() {
   }, []);
 
   const reloadOpenPallets = async () => {
-    const data = await getPallets({
-      filters: { conditions: [{ field: "status", op: "=", values: ["open"] }] },
-    });
-    const refreshed = Array.isArray(data?.data) ? data.data : [];
-    const normalized = refreshed.map((p) => ({
-      ...p,
-      active_systems: p.active_systems ?? p.systems ?? [],
-      systems: p.systems ?? p.active_systems ?? [],
-    }));
+    const normalized = await loadOpenPallets();
     setPallets(normalized);
     setInitialPallets(structuredClone(normalized));
     setReleaseFlags({});
@@ -1485,17 +1530,7 @@ export default function ShippingPage() {
 
     // STEP 5: Refetch pallets (normalize again)
     try {
-      const data = await getPallets({
-        filters: {
-          conditions: [{ field: "status", op: "=", values: ["open"] }],
-        },
-      });
-      const refreshed = Array.isArray(data?.data) ? data.data : [];
-      const normalized = refreshed.map((p) => ({
-        ...p,
-        active_systems: p.active_systems ?? p.systems ?? [],
-        systems: p.systems ?? p.active_systems ?? [],
-      }));
+      const normalized = await loadOpenPallets();
       setPallets(normalized);
       setInitialPallets(structuredClone(normalized));
       setReleaseFlags({});
@@ -1839,7 +1874,7 @@ export default function ShippingPage() {
                 {activeDragData?.system ? (
                   <SystemBox
                     serviceTag={activeDragData.system.service_tag}
-                    dpn={activeDragData.system.dpn}
+                    rmaType={activeDragData.system.rma_type}
                     dellCustomer={activeDragData.system.dell_customer}
                   />
                 ) : null}
