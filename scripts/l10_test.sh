@@ -796,6 +796,19 @@ echo "System $SERVICE_TAG: Config $CONFIG"
 log_off() {  exec 1>&3 2>&4; }   # to terminal only (no file)
 log_on()  {  exec 1>&5 2>&5; }   # back through tee (file + terminal)
 
+save_hmc_logs() {
+  local hmc_log_file="$1"
+  local hmc_log_name
+
+  hmc_log_name="$(basename "$hmc_log_file")"
+  echo "INFO - saving HMC logs to file - $hmc_log_name"
+  if ! curl_auth -k -X GET \
+    "https://$BMC_IP/redfish/v1/Systems/HGX_Baseboard_0/LogServices/EventLog/Entries" | jq >"$hmc_log_file"; then
+    echo "WARN - failed to save HMC logs to file, continuing"
+    rm -f -- "$hmc_log_file"
+  fi
+}
+
 BMC_ASSIGNMENT_TIMEOUT=$((5 * 60)) #10 minutes timeout
 BMC_ASSIGNMENT_START_TIME=$(date +%s)
 
@@ -864,6 +877,10 @@ done
 
 
 echo "INFO - IPMI response received!"
+echo ""
+
+HMC_PRE_CLEAR_LOG_FILE="$LOG_DIR/hmc_logs_pre_clear_${SERVICE_TAG}_${START_TS}.json"
+save_hmc_logs "$HMC_PRE_CLEAR_LOG_FILE"
 echo ""
 
 echo "INFO - Clearing HMC Logs"
@@ -1043,13 +1060,8 @@ fi
 echo "INFO - Recording FRU Data"
 ipmi fru print
 
-HMC_LOG_FILE="$LOG_DIR/hmc_logs_${SERVICE_TAG}_${START_TS}.json"
-echo "INFO - saving HMC logs to file - hmc_logs_${SERVICE_TAG}_${START_TS}.json"
-if ! curl_auth -k -X GET \
-  "https://$BMC_IP/redfish/v1/Systems/HGX_Baseboard_0/LogServices/EventLog/Entries" | jq >"$HMC_LOG_FILE"; then
-  echo "WARN - failed to save HMC logs to file, continuing"
-  rm -f -- "$HMC_LOG_FILE"
-fi
+HMC_POST_CLEAR_LOG_FILE="$LOG_DIR/hmc_logs_post_clear_${SERVICE_TAG}_${START_TS}.json"
+save_hmc_logs "$HMC_POST_CLEAR_LOG_FILE"
 echo ""
 
 if [[ "$FRU_ONLY_MODE" -eq 1 ]]; then
