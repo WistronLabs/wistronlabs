@@ -25,11 +25,12 @@ usage() {
   cat <<EOF
 Usage:
   $0 list
-  $0 <DEV_BACKEND_NAME>
+  $0 <DEV_BACKEND_NAME> [--clean-install]
 
 Examples:
   $0 TSS_DEV
   $0 FRK_DEV
+  $0 TSS_DEV --clean-install
 
 This will:
   - Map DEV backend -> source prod (e.g. TSS_DEV -> TSS)
@@ -37,6 +38,7 @@ This will:
       VITE_BACKEND_URL=https://devbackend.<site>.wistronlabs.com/api/v1
       VITE_URL=<prod frontend url from conf>
       VITE_LOCATION=<site>
+  - Optionally remove node_modules and rerun npm install using --clean-install
   - Run: npm run dev
 EOF
   exit 1
@@ -44,6 +46,21 @@ EOF
 
 cmd="${1:-}"
 [[ -n "$cmd" ]] || usage
+shift || true
+
+CLEAN_INSTALL=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clean-install)
+      CLEAN_INSTALL=1
+      shift
+      ;;
+    *)
+      die "Unknown option '$1'"
+      ;;
+  esac
+done
 
 # Load config (supports optional 9th field: source_prod)
 declare -A HOST FRONTEND IS_DEV SOURCE_PROD
@@ -101,6 +118,7 @@ echo "  VITE_BACKEND_URL   : $DEV_BACKEND_URL"
 echo "  VITE_URL           : $PROD_FRONTEND_URL"
 echo "  VITE_LOCATION      : $SITE"
 echo "  BUILD_NUMBER       : $BUILD_NUMBER"
+echo "  CLEAN_INSTALL      : $CLEAN_INSTALL"
 echo "============================================================"
 
 mkdir -p "$FRONTEND_DIR"
@@ -133,6 +151,14 @@ echo "Wrote:"
 grep -E '^(VITE_BACKEND_URL|VITE_URL|VITE_LOCATION|BUILD_NUMBER|VITE_BUILD_NUMBER)=' "$ENV_FILE" || true
 
 echo ""
-echo "Starting Vite dev server..."
 cd "$FRONTEND_DIR"
+
+if [[ "$CLEAN_INSTALL" == "1" ]]; then
+  echo "Running clean install..."
+  rm -rf node_modules
+  npm install
+  echo ""
+fi
+
+echo "Starting Vite dev server..."
 npm run dev -- --host 0.0.0.0

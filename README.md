@@ -75,42 +75,45 @@ For the SSH password, please contact **giovanni_leon@wistron.com**.
 
 # `bios_serial.sh`
 
-This script connects to the system’s **BIOS serial console** using *Serial over LAN (SoL)* via the BMC, removing the need to physically connect to the BIOS serial USB port on the front of the system.  
-
-Accessing the BIOS serial console is useful for advanced troubleshooting during host power-on.
+This script opens the system BIOS or serial console using the BMC. It is useful for troubleshooting boot issues and monitoring host power-on behavior.
 
 ## Usage
 
 ```bash
-./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS>
+./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
 ```
 
 ## Required Options (choose one)
 
 - `-i IP_ADDRESS` — Specify the BMC by its **IP address**.
 - `-m MAC_ADDRESS` — Specify the BMC by its **MAC address**.
+- `-t SERVICE_TAG` — Specify the system by **service tag** and pull the BMC MAC from backend.
 
 ---
 
-# `chassis_power.sh`
+# `boot.sh`
 
-This script remotely controls the host system’s power state or checks its current power status.
+This script prepares PXE boot configuration, waits for BMC and host readiness, and boots a unit into the Wistron PXE OS.
 
 ## Usage
 
 ```bash
-./chassis_power.sh <on|off|status> <-i IP_ADDRESS | -m MAC_ADDRESS>
+./boot.sh [options]
 ```
 
-## Commands
-- `on` — Power on the system.
-- `off` — Power off the system.
-- `status` — Display the system’s current power status.
-  
-## Required Options (choose one)
+## Common Options
 
-- `-i IP_ADDRESS` — Specify the BMC by its **IP address**.
-- `-m MAC_ADDRESS` — Specify the BMC by its **MAC address**.
+- `-t, --tag [SERVICE_TAG]` — Pull BMC MAC, host MAC, and config from backend. If omitted, you will be prompted for the service tag.
+- `-b, --bmc-mac BMC_MAC` — Manual BMC MAC input.
+- `-s, --sys-mac SYS_MAC` — Manual host MAC input.
+- `-c CONFIG` — Manual config value when booting by MAC.
+- `-l, --live` — Split the current station tmux pane and show BIOS serial on the right.
+
+## Notes
+
+- Must be run from a valid station tmux session such as `stn_<n>`.
+- If neither `-t`, `-b`, nor `-s` is given, the script prompts for manual MAC/config input.
+- If only one of `-b` or `-s` is given, the other will be prompted.
 
 ---
 
@@ -126,17 +129,14 @@ The status can be one of the following:
 ## Usage
 
 ```bash
-./check_station.sh <station_number>
+./check_station.sh <station_name>
 ```
 
 ---
 
 # `clear_dhcp.sh`
 
-This script clears all DHCP leases on the DHCP server running on the L10 server.  
-**Note:** This script must be run as `root`.
-
-This is useful if systems are receiving incorrect or inconsistent IP addresses.
+This script clears DHCP leases and restarts the DHCP service.
 
 ## Usage
 
@@ -148,10 +148,7 @@ sudo ./clear_dhcp.sh
 
 # `clear_known_hosts.sh`
 
-This script clears all **known SSH hosts** entries on the server.
-
-This is useful when the DHCP server reassigns IP addresses to different systems, which can cause a  
-**"Host Key Verification Failed"** error when attempting to SSH.
+This script clears the local SSH `known_hosts` file.
 
 ## Usage
 
@@ -168,7 +165,7 @@ This script retrieves the current IP address assigned to a given MAC address, if
 ## Usage
 
 ```bash
-./get_ip.sh <mac_address>
+./get_ip.sh [MAC_ADDRESS]
 ```
 
 ---
@@ -188,75 +185,91 @@ This session appears as a green bar at the bottom of your terminal, labeled with
 
 ```bash
 ./join_station.sh <station_number>
+./join_station.sh -l
+```
+
+---
+
+# `ipmi.sh`
+
+This is the main user-facing IPMI wrapper. It resolves a BMC from service tag, IP, or MAC input, then runs either a raw `ipmitool` command or a supported shortcut code.
+
+## Usage
+
+```bash
+./ipmi.sh [target flags] [modifier flags] [ipmi arguments...]
+./ipmi.sh [target flags] [modifier flags] -n CODE [ARG]
+./ipmi.sh [target flags] [modifier flags] [SHORTCUT_FLAG] [ARG]
+```
+
+## Target Flags
+
+- `-t SERVICE_TAG` — Resolve target from service tag.
+- `-i BMC_IP` — Resolve target from BMC IP.
+- `-m BMC_MAC` — Resolve target from BMC MAC.
+
+## Modifier Flags
+
+- `-c CONFIG` — Set the system config used to choose IPMI credentials.
+- `-n CODE` — Use a numbered legacy shortcut command.
+- `-l` — List enabled shortcut codes and flags.
+- `-h` — Show help.
+
+## Examples
+
+```bash
+./ipmi.sh -t TESTYB4 chassis power on
+./ipmi.sh -i 192.168.1.50 -c F chassis power status
+./ipmi.sh -m aabbccddeeff -c 7 --fru-print
+./ipmi.sh -l
+```
+
+---
+
+# `ipmitool.sh`
+
+This is the older legacy IPMI utility script. It is still present for compatibility, but `ipmi.sh` is the preferred user-facing command for current workflows.
+
+## Usage
+
+```bash
+bash ipmitool.sh [BMC_IP/RACK_ID] [CMD]
 ```
 
 ---
 
 # `l10_test.sh`
 
-This script automatically runs the L10 test.  
+This script runs the L10 diagnostic workflow for the system currently assigned to the active station in backend.
+
 Before running, ensure the system is properly set up:
 - Power connected
 - Coolant connected
 - Ethernet connected
 
-You will also need to scan the following, as found on the system label:
-- BMC MAC address
-- HOST MAC address
-- Service Tag
-- Configuration Number
-
-If you add the `-o` flag to the end of the command, the script will display a module selection menu after scanning the system information.  
-You can then choose which specific module(s) you would like to run.
-
-Once the system boots, a second TMUX session is automatically created between the L10 server and the Gaines system under test.  
-This session appears as a second green bar at the bottom of your terminal, labeled with the `[SERVICE TAG]` on the left.
-
-**Note:** This script must be run inside a TMUX session.  
-To join a TMUX session, use [`join_station.sh`](#join_stationsh).
+Must be run inside a valid station tmux session. To join one, use [`join_station.sh`](#join_stationsh).
 
 ## Usage
 
 ```bash
-./l10_test.sh [-o]
+./l10_test.sh [options]
 ```
 
 ### Options
 
-- `-o` — Prompt to select which module(s) to run.
-## Usage
+- `-m, --manual` — Skip backend MAC pull and prompt for any missing MACs.
+- `-b, --bmc-mac BMC_MAC` — Manual mode only: provide BMC MAC.
+- `-s, --sys-mac SYS_MAC` — Manual mode only: provide host MAC.
+- `-l, --live` — Show BIOS serial in the right pane until SSH is fully up.
+- `-o, --options` — Open the interactive module picker.
+- `-f, --fru-only` — Skip diag upload and L10 validation run.
+- `-p, --power-on` — Keep the unit powered on after the script ends.
 
----
+## Notes
 
-# `list_stations.sh`
-
-This script lists all stations that currently have an associated TMUX session.  
-This is useful for getting a quick CLI view of which stations are active.
-
-## Usage
-
-```bash
-./list_stations.sh
-```
-
----
-
-# `restart_pxe_services.sh`
-
-If the system starts behaving unexpectedly (e.g., IP addresses not being assigned, PXE OS not loading), it may be due to one or more PXE-related services on the L10 server being in a non-working state.  
-
-This script restarts the following services to restore PXE functionality:
-1. TFTP Server
-2. DHCP Server
-3. HTTP Server
-
-**Note:** This script must be run as the `root` user.
-
-## Usage
-
-```bash
-sudo ./restart_pxe_services.sh
-```
+- The script always uses the service tag and config assigned to the current station in backend.
+- Without `-m`, BMC and host MACs are pulled from backend when available.
+- With `-m`, you can provide `-b` and/or `-s`, and the script prompts for any missing MAC.
 
 ---
 
@@ -270,5 +283,29 @@ If a TMUX station becomes unresponsive, you can detach from the station using `C
 
 ```bash
 ./restart_station.sh <session_number>
+./restart_station.sh -l
 ```
 
+---
+
+# `restart_pxe_services.sh`
+
+This script restarts the PXE-related services.
+
+## Usage
+
+```bash
+sudo ./restart_pxe_services.sh
+```
+
+---
+
+# `station_status_json_gen.sh`
+
+This script collects JSON status from each station and PATCHes the latest state back to backend.
+
+## Usage
+
+```bash
+./station_status_json_gen.sh
+```

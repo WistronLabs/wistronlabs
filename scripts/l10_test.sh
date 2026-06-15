@@ -1,31 +1,148 @@
 #!/bin/bash
+# About:
+#   Runs the L10 diagnostic workflow for a selected system from the current station tmux session.
+#
+# Usage:
+#   ./l10_test.sh [options]
+#
 
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/.lib"
 
-err() {
-    echo -e "${RED}Error:${NC} $*" >&2
-}
+# shellcheck disable=SC1091
+source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_cmd.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_server_location.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_internal_api_key.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_station_list.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/curl_auth.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/normalize_mac_colon.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/ipmi.sh"
+
+LIVE_MODE=0
+LIVE_RIGHT_PANE_ID=""
+LIVE_SSH_READY=0
+MANUAL_MODE=0
+SERVICE_TAG=""
+BMC_MAC=""
+HOST_MAC=""
+CONFIG=""
 
 print_help() {
   cat <<'EOF'
 Usage:
   ./l10_test.sh [options]
+  Must be run inside a valid station tmux session.
 
 Options:
-  -m                                  Skip backend MAC pull; prompt for MACs manually
-  -o                                  Open interactive module picker
-  -f                                  FRU only mode; skip diag upload and L10 validation run
-  -p                                  Keep the unit powered on after the script ends
-  -h                                  Show this help and exit
+  -m, --manual
+      Manual MAC mode: skip backend MAC pull and prompt for any missing MACs.
+  -b, --bmc-mac BMC_MAC
+      Manual mode only: provide the BMC MAC instead of being prompted.
+  -s, --sys-mac SYS_MAC
+      Manual mode only: provide the system MAC instead of being prompted.
+  -l, --live
+      Show BIOS serial on the right until SSH is fully up, then return to one pane.
+  -o, --options
+      Open interactive module picker.
+  -f, --fru-only
+      FRU only mode; skip diag upload and L10 validation run.
+  -p, --power-on
+      Keep the unit powered on after the script ends.
+  -h, --help
+      Show this help and exit.
+
+Behavior:
+  - This script always uses the system currently assigned to the active station in backend.
+  - SERVICE_TAG and CONFIG are always pulled from backend for that station.
+  - Without -m, the script also pulls BMC and system MACs from backend.
+  - With -m, you may provide -b and/or -s, and any missing MAC will be prompted.
 
 Examples:
   ./l10_test.sh
+  ./l10_test.sh -l
   ./l10_test.sh -m
+  ./l10_test.sh -m -b 001a2b3c4d5e
+  ./l10_test.sh -m -s 00aa11bb22cc
+  ./l10_test.sh -m -b 001a2b3c4d5e -s 00aa11bb22cc
   ./l10_test.sh -o
   ./l10_test.sh -f
   ./l10_test.sh -p
 EOF
+}
+
+close_live_right_pane() {
+  if [[ -n "$LIVE_RIGHT_PANE_ID" ]]; then
+    tmux kill-pane -t "$LIVE_RIGHT_PANE_ID" 2>/dev/null || true
+    LIVE_RIGHT_PANE_ID=""
+  fi
+}
+
+live_pre_ssh_exit_cleanup() {
+  if [[ "$LIVE_MODE" == "1" && "$LIVE_SSH_READY" == "0" ]]; then
+    close_live_right_pane
+  fi
+}
+
+live_terminate_signal_trap() {
+  local signal="$1"
+
+  close_live_right_pane
+  trap - EXIT INT TERM HUP QUIT TSTP
+  kill -s "$signal" "$$"
+}
+
+live_tstp_signal_trap() {
+  close_live_right_pane
+  trap - TSTP
+  kill -s TSTP "$$"
+  trap 'live_tstp_signal_trap' TSTP
+}
+
+start_live_bios_pane() {
+  local script_dir current_pane_id window_target pane_count right_cmd
+
+  require_cmd tmux
+
+  pane_count="$(tmux display-message -p '#{window_panes}')"
+  if ((pane_count != 1)); then
+    err "Live mode requires the current station window to have exactly one pane. Close extra panes and try again."
+    exit 1
+  fi
+
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ ! -x "$script_dir/bios_serial.sh" ]]; then
+    err "Expected executable BIOS serial script at $script_dir/bios_serial.sh"
+    exit 1
+  fi
+
+  current_pane_id="$(tmux display-message -p '#{pane_id}')"
+  window_target="$(tmux display-message -p '#S:#I')"
+  right_cmd="cd '$script_dir' && env -u TMUX SERVER_LOCATION='$SERVER_LOCATION' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
+
+  LIVE_RIGHT_PANE_ID="$(tmux split-window -h -P -F '#{pane_id}' -t "$current_pane_id" "$right_cmd")"
+  tmux select-layout -t "$window_target" even-horizontal
+  tmux select-pane -t "$current_pane_id"
+
+  trap 'live_pre_ssh_exit_cleanup' EXIT
+  trap 'live_terminate_signal_trap INT' INT
+  trap 'live_terminate_signal_trap TERM' TERM
+  trap 'live_terminate_signal_trap HUP' HUP
+  trap 'live_terminate_signal_trap QUIT' QUIT
+  trap 'live_tstp_signal_trap' TSTP
+}
+
+finish_live_pre_ssh_phase() {
+  LIVE_SSH_READY=1
+  close_live_right_pane
+  trap - EXIT INT TERM HUP QUIT TSTP
 }
 
 # Allow help output before any env validation.
@@ -36,63 +153,72 @@ for arg in "$@"; do
   fi
 done
 
-# Check if SERVER_LOCATION environment variable is set
-if [[ -z "${SERVER_LOCATION:-}" ]]; then
-  err "Environment variable SERVER_LOCATION is not set." >&2
-  echo "       Please export SERVER_LOCATION in your shell (e.g. in ~/.bashrc)." >&2
-  exit 1
-fi
+require_server_location
+require_internal_api_key
 
-# Check if SERVER_LOCATION environment variable is set
-if [[ -z "${INTERNAL_API_KEY:-}" ]]; then
-  echo "Error: environment variable INTERNAL_API_KEY is not set." >&2
-  echo "       Please export INTERNAL_API_KEY in your shell (e.g. in ~/.bashrc)." >&2
-  exit 1
-fi
+require_cmd jq
+require_cmd curl
 
-# Fetch station names
-# Require jq
-if ! command -v jq >/dev/null 2>&1; then
-  err "jq is required but not installed." >&2
-  exit 1
-fi
-
-SKIP_BACKEND_MAC_PULL=0
 RUN_OPTION_PICKER=0
 FRU_ONLY_MODE=0
 KEEP_POWER_ON=0
-SERVICE_TAG=""
 
-while getopts ":mMoOfFpP" opt; do
-  case "$opt" in
-    m | M) SKIP_BACKEND_MAC_PULL=1 ;;
-    o | O) RUN_OPTION_PICKER=1 ;;
-    f | F) FRU_ONLY_MODE=1 ;;
-    p | P) KEEP_POWER_ON=1 ;;
-    \?) err "Unknown option: -$OPTARG"; print_help; exit 1 ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -m|-M|--manual)
+      MANUAL_MODE=1
+      shift
+      ;;
+    -b|--bmc-mac)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "-b requires a BMC MAC value."
+        exit 1
+      fi
+      BMC_MAC="$1"
+      shift
+      ;;
+    -s|--sys-mac)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "-s requires a system MAC value."
+        exit 1
+      fi
+      HOST_MAC="$1"
+      shift
+      ;;
+    -o|-O|--options)
+      RUN_OPTION_PICKER=1
+      shift
+      ;;
+    -f|-F|--fru-only)
+      FRU_ONLY_MODE=1
+      shift
+      ;;
+    -p|-P|--power-on)
+      KEEP_POWER_ON=1
+      shift
+      ;;
+    -l|-L)
+      LIVE_MODE=1
+      shift
+      ;;
+    \?|-*)
+      err "Unknown option: $1"
+      print_help
+      exit 1
+      ;;
+    *)
+      err "Unexpected argument(s): $*"
+      print_help
+      exit 1
+      ;;
   esac
 done
-shift $((OPTIND - 1))
-
-# Reject any remaining non-option args.
-if [[ $# -gt 0 ]]; then
-  err "Unexpected argument(s): $*"
-  print_help
-  exit 1
-fi
 
 api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
 
 api_auth_hdr=(-H "Authorization: Bearer $INTERNAL_API_KEY")
-
-normalize_mac_colon() {
-  # input: AABBCCDDEEFF or aa:bb:... or aa-bb-...
-  # output: aa:bb:cc:dd:ee:ff
-  local raw
-  raw="$(echo "${1:-}" | tr -d ':-' | tr '[:upper:]' '[:lower:]')"
-  [[ ${#raw} -eq 12 ]] || return 1
-  echo "$raw" | sed 's/\(..\)/\1:/g; s/:$//'
-}
 
 backend_get_system() {
   # prints JSON on stdout; returns nonzero on failure
@@ -112,20 +238,7 @@ backend_patch_mac() {
     -d "$payload"
 }
 
-# Get JSON from API
-if ! json=$(curl -fsS --max-time 5 "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations"); then
-  err "Unable to reach backend" >&2
-  exit 1
-fi
-
-# Parse station_name into a bash array
-mapfile -t STATIONS < <(printf '%s\n' "$json" | jq -r '.[].station_name')
-
-# Sanity check
-if ((${#STATIONS[@]} == 0)); then
-  err "No stations found in API response." >&2
-  exit 1
-fi
+mapfile -t STATIONS < <(fetch_station_list)
 
 # convert to tmux stations names (stn_<number>)
 STATION_NAMES=()
@@ -142,7 +255,6 @@ fi
 
 SESSION_NAME=$(tmux display-message -p '#S')
 SESSION_NUMBER="${SESSION_NAME#stn_}"
-
 found=0
 for name in "${STATION_NAMES[@]}"; do
     if [[ "$SESSION_NAME" == "$name" ]]; then
@@ -156,30 +268,34 @@ if [[ $found -eq 0 ]]; then
     exit 1
 fi
 
-# First: check if endpoint is reachable and returns 200
-http_code=$(curl -s -o /dev/null -w "%{http_code}" \
-    "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER")
+http_code="$(curl -s -o /dev/null -w "%{http_code}" \
+  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER")"
 
 if [[ "$http_code" != "200" ]]; then
-    err "Backend API returned HTTP $http_code for station $SESSION_NUMBER"
-    exit 1
-fi 
-
-# Second: fetch the body and extract system_service_tag
-CURRENT_REMOTE_SERVICE_TAG=$(curl -s \
-    "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')
-SERVICE_TAG="$CURRENT_REMOTE_SERVICE_TAG"
-
-if [[ -z "$SERVICE_TAG" || "$SERVICE_TAG" == "null" ]]; then
-    err "No system is currently assigned to Station $SESSION_NUMBER. Assign a unit to this station and re-run."
-    exit 1
+  err "Backend API returned HTTP $http_code for station $SESSION_NUMBER"
+  exit 1
 fi
 
+STATION_SERVICE_TAG="$(curl -s \
+  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')"
 
-CONFIG_TMP=$(mktemp)
+if [[ -z "$STATION_SERVICE_TAG" || "$STATION_SERVICE_TAG" == "null" ]]; then
+  err "No system is currently assigned to Station $SESSION_NUMBER. Assign a unit to this station and re-run."
+  exit 1
+fi
 
-HTTP_CODE=$(curl -sS -w "%{http_code}" -o "$CONFIG_TMP" \
-  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG") || {
+SERVICE_TAG="$STATION_SERVICE_TAG"
+
+if [[ "$MANUAL_MODE" != "1" && (-n "$BMC_MAC" || -n "$HOST_MAC") ]]; then
+  err "-b/--bmc-mac and -s/--sys-mac require -m manual mode."
+  print_help
+  exit 1
+fi
+
+CONFIG_TMP="$(mktemp)"
+
+HTTP_CODE="$(curl -sS -w "%{http_code}" -o "$CONFIG_TMP" \
+  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG")" || {
     err "Failed to reach backend when fetching config for $SERVICE_TAG."
     rm -f "$CONFIG_TMP"
     exit 1
@@ -198,7 +314,7 @@ if [[ "$HTTP_CODE" != "200" ]]; then
   exit 1
 fi
 
-CONFIG=$(jq -r '.config // empty' < "$CONFIG_TMP")
+CONFIG="$(jq -r '.config // empty' < "$CONFIG_TMP")"
 rm -f "$CONFIG_TMP"
 
 if [[ -z "$CONFIG" || "$CONFIG" == "null" ]]; then
@@ -208,50 +324,30 @@ fi
 
 echo "INFO - SERVICE TAG FROM STATION $SESSION_NUMBER: $SERVICE_TAG"
 
-
-BMC_MAC=""
-HOST_MAC=""
-
-if [[ "$SKIP_BACKEND_MAC_PULL" -eq 0 ]]; then
+if [[ "$MANUAL_MODE" == "1" ]]; then
+  if [[ -z "$BMC_MAC" ]]; then
+    read -r -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
+  fi
+  if [[ -z "$HOST_MAC" ]]; then
+    read -r -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
+  fi
+else
   if sys_json="$(backend_get_system 2>/dev/null)"; then
-    # backend values may be null
-    bmc_raw="$(echo "$sys_json" | jq -r '.bmc_mac // empty')"
-    host_raw="$(echo "$sys_json" | jq -r '.host_mac // empty')"
+    bmc_raw="$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')"
+    host_raw="$(printf '%s' "$sys_json" | jq -r '.host_mac // empty')"
 
     if [[ -n "$bmc_raw" && -n "$host_raw" && "$bmc_raw" != "null" && "$host_raw" != "null" ]]; then
-      # Accept backend values; normalize later to colon format
       BMC_MAC="$bmc_raw"
       HOST_MAC="$host_raw"
       echo "INFO - Using BMC/HOST MAC from backend for $SERVICE_TAG"
     fi
   fi
-fi
 
-# If either missing, fall back to old prompts
-if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
-  read -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
-  read -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
-fi
-
-ipmi() {
-  if [[ "${CONFIG:-}" == "F" ]]; then
-    ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
-  elif [[ "${CONFIG:-}" == "D" ]]; then
-    ipmitool -I lanplus -H "$BMC_IP" -U root -P calvin "$@"
-  else
-    ipmitool -I lanplus -H "$BMC_IP" -U admin -P admin "$@"
+  if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
+    read -r -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
+    read -r -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
   fi
-}
-
-curl_auth() {
-  if [[ "${CONFIG:-}" == "F" ]]; then
-    curl -u root:0penBmc "$@"
-  elif [[ "${CONFIG:-}" == "D" ]]; then
-    curl -u root:calvin "$@"
-  else
-    curl -u admin:admin "$@"
-  fi
-}
+fi
 
 GB300_MASTER_MODULE_LIST=(
   "Inventory"
@@ -698,6 +794,10 @@ fi
 echo "INFO - Updated BMC/HOST MAC in tracking website"
 echo ""
 
+if [[ "$LIVE_MODE" == "1" ]]; then
+  start_live_bios_pane
+fi
+
 
 # Normalize MAC:
 # - remove separators if present (: or -)
@@ -1033,6 +1133,10 @@ done
 
 echo "INFO - SSH is fully up on $HOST_IP"
 
+if [[ "$LIVE_MODE" == "1" ]]; then
+  finish_live_pre_ssh_phase
+fi
+
 
 echo ""
 echo "INFO - Adding SSH host to known_hosts file"
@@ -1072,10 +1176,11 @@ else
     echo ""
     scp "/var/www/html/l10_diags/$DIAG_FILE" nvidia@"$HOST_IP":~/ >/dev/null
 
-    echo ""
-    echo "INFO - Extracting diag bundle on DUT and cleaning up archive..."
-    echo ""
-    ssh nvidia@"$HOST_IP" "tar -xzf ~/$DIAG_FILE && rm ~/$DIAG_FILE"
+	    echo ""
+	    echo "INFO - Extracting diag bundle on DUT and cleaning up archive..."
+	    echo ""
+	    # shellcheck disable=SC2029
+	    ssh nvidia@"$HOST_IP" "tar -xzf ~/$DIAG_FILE && rm ~/$DIAG_FILE"
 
     DIAG_FOLDER="/home/nvidia/$(basename "$DIAG_FILE" .tgz)/"
     echo ""
@@ -1135,3 +1240,7 @@ log_off
 rm -f -- "$LOG_DIR/diag_output.log"
 rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
+
+# Authors:
+#   Giovanni Leon - giovanni_leon@wistron.com
+#   Philip Phan - philip_phan@wistron.com
