@@ -1,59 +1,98 @@
 #!/bin/bash
+# About:
+#   Prepares PXE boot configuration, waits for BMC and host readiness, and boots a unit into the Wistron PXE OS.
+#
+# Usage:
+#   ./boot.sh [options]
+#   Must be run inside a valid station tmux session.
+#
 
 set -euo pipefail
 
-RED='\033[0;31m'
-NC='\033[0m'
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/.lib"
+
+# shellcheck disable=SC1091
+source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_cmd.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/mac_colon.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/normalize_mac_hex12.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/prompt_service_tag.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_server_location.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/pick_config_from_backend.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_system_from_backend.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_station_list.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/ipmi.sh"
 
 LIVE_MODE=0
 LIVE_CHILD=0
 LIVE_BIOS_CHILD=0
-AUTO_MODE=0
+TAG_MODE=0
 SERVICE_TAG=""
-
-err() {
-  echo -e "${RED}Error:${NC} $*" >&2
-}
+BMC_MAC="${BMC_MAC:-}"
+HOST_MAC="${HOST_MAC:-}"
+CONFIG="${CONFIG:-}"
+STATION_SESSION_NAME=""
+STATION_SESSION_NUMBER=""
+LIVE_RIGHT_PANE_ID=""
+LIVE_CHILD_PID=""
+LIVE_WAIT_INTERRUPTED=0
 
 print_help() {
   cat <<'EOF'
 Usage:
   ./boot.sh [options]
+  Must be ran inside a valid station tmux session.
 
 Options:
-  -a, --auto [SERVICE_TAG]
-                 Auto mode: pull BMC MAC, Host MAC, and config from backend.
-                 If SERVICE_TAG is omitted, you will be prompted for it.
-  -l, --live     Live mode: show boot progress and BIOS serial side by side in tmux
-  -h, --help     Show this help and exit
+  -t, --tag [SERVICE_TAG]
+      Pull BMC MAC, Host MAC, and config from backend.
+      If SERVICE_TAG is omitted, you will be prompted for it.
+  -b, --bmc-mac BMC_MAC
+      The BMC MAC used when booting via MAC address.
+  -s, --sys-mac SYS_MAC
+      The System MAC used when booting via MAC address.
+  -c CONFIG
+      Config of the unit, needed when booting via MAC address.
+  -l, --live
+      Split the current station tmux pane and show BIOS serial on the right.
+  -h, --help
+      Show this help and exit.
 
 What it does:
-  - Prompts for BMC MAC and Host MAC as 12 hex characters with no separators
-  - Fetches unique configs from the backend and lets you pick one with fzf
-  - Writes the matching PXE grub config
-  - Waits for BMC and host networking
-  - Boots the unit into the Wistron PXE OS
-  - Verifies SSH key auth as nvidia
+  - Collects BMC, host, and config inputs.
+  - Writes the matching PXE grub config.
+  - Waits for BMC, host IP, and SSH readiness.
+  - Boots the unit into the Wistron PXE OS.
+  - SSHes into the host when ready.
 
-Default mode:
-  SSHs into nvidia@HOST_IP when boot is ready.
+Mode rules:
+  - You must choose either tag mode or manual MAC mode.
+    -t/--tag cannot be used with -b/--bmc-mac, -s/--sys-mac, or -c and vice versa.
+  - If neither -t, -b, nor -s is provided, the script defaults to prompts for MACs and config.
 
 Live mode:
-  Opens tmux with boot progress on the left and BIOS serial on the right.
+  Keeps the current station pane on the left, opens BIOS serial on the right,
+  and switches to the bs_<BMC_MAC> session when boot completes successfully.
 
 Examples:
   ./boot.sh
   ./boot.sh -l
-  ./boot.sh -a ABC1234
-  ./boot.sh -l -a ABC1234
+  ./boot.sh -t ABC1234
+  ./boot.sh -l -t ABC1234
+  ./boot.sh -b 001a2b3c4d5e -s 00aa11bb22cc -c F
+  ./boot.sh -b 001a2b3c4d5e -s 00aa11bb22cc
 EOF
-}
-
-require_cmd() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    err "$1 is required but not installed."
-    exit 1
-  fi
 }
 
 prompt_mac() {
@@ -71,51 +110,12 @@ prompt_mac() {
   done
 }
 
-mac_colon() {
-  printf '%s' "$1" | sed 's/\(..\)/\1:/g; s/:$//'
-}
-
 mac_dash() {
   printf '%s' "$1" | sed 's/\(..\)/\1-/g; s/-$//'
 }
 
-normalize_mac_hex12() {
-  local raw
-  raw="$(
-    printf '%s' "${1:-}" |
-      tr -d '[:space:]' |
-      tr -d ':' |
-      tr -d '-' |
-      tr '[:upper:]' '[:lower:]'
-  )"
-  [[ "$raw" =~ ^[0-9a-f]{12}$ ]] || return 1
-  printf '%s\n' "$raw"
-}
-
-prompt_service_tag() {
-  local value
-
-  while true; do
-    read -r -p "Service Tag: " value
-    value="$(printf '%s' "$value" | tr '[:lower:]' '[:upper:]' | xargs)"
-    if [[ -n "$value" ]]; then
-      printf '%s\n' "$value"
-      return 0
-    fi
-    err "Service Tag cannot be empty."
-  done
-}
-
-check_environment() {
-  if [[ -z "${SERVER_LOCATION:-}" ]]; then
-    err "Environment variable SERVER_LOCATION is not set."
-    echo "       Please export SERVER_LOCATION in your shell, for example: export SERVER_LOCATION=frk" >&2
-    exit 1
-  fi
-}
-
 load_auto_inputs() {
-  local api_base tmp_json http_code sys_json bmc_raw host_raw config_raw
+  local sys_json bmc_raw host_raw config_raw
 
   require_cmd curl
   require_cmd jq
@@ -126,22 +126,8 @@ load_auto_inputs() {
     SERVICE_TAG="$(printf '%s' "$SERVICE_TAG" | tr '[:lower:]' '[:upper:]' | xargs)"
   fi
 
-  api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
-  tmp_json="$(mktemp)"
-  http_code="$(curl -sS --max-time 5 -o "$tmp_json" -w "%{http_code}" \
-    "$api_base/systems/$SERVICE_TAG" 2>/dev/null || true)"
-
-  if [[ "$http_code" != "200" ]]; then
-    rm -f "$tmp_json"
-    case "$http_code" in
-      404) err "System $SERVICE_TAG not found in tracking website." ;;
-      *) err "Backend returned HTTP $http_code when fetching $SERVICE_TAG." ;;
-    esac
-    exit 1
-  fi
-
-  sys_json="$(cat "$tmp_json")"
-  rm -f "$tmp_json"
+  require_server_location
+  sys_json="$(fetch_system_from_backend "$SERVICE_TAG")"
 
   bmc_raw="$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')"
   host_raw="$(printf '%s' "$sys_json" | jq -r '.host_mac // empty')"
@@ -173,26 +159,58 @@ load_auto_inputs() {
 }
 
 load_inputs() {
-  local api_base dpn_json
+  local config_found api_base dpn_json
 
   require_cmd curl
   require_cmd jq
-  require_cmd fzf
 
-  api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
+  if [[ -z "$BMC_MAC" ]]; then
+    BMC_MAC="$(prompt_mac "BMC")"
+  else
+    if ! BMC_MAC="$(normalize_mac_hex12 "$BMC_MAC")"; then
+      err "Invalid BMC MAC. Enter exactly 12 hex characters, with or without : or - separators."
+      exit 1
+    fi
+  fi
 
-  BMC_MAC="$(prompt_mac "BMC")"
-  HOST_MAC="$(prompt_mac "Host")"
+  if [[ -z "$HOST_MAC" ]]; then
+    HOST_MAC="$(prompt_mac "Host")"
+  else
+    if ! HOST_MAC="$(normalize_mac_hex12 "$HOST_MAC")"; then
+      err "Invalid system MAC. Enter exactly 12 hex characters, with or without : or - separators."
+      exit 1
+    fi
+  fi
 
-  dpn_json="$(curl -fsS --max-time 10 "$api_base/systems/dpn")"
+  require_server_location
+  if [[ -z "$CONFIG" ]]; then
+    require_cmd fzf
+    CONFIG="$(pick_config_from_backend)"
+  else
+    CONFIG="$(printf '%s' "$CONFIG" | tr '[:lower:]' '[:upper:]')"
 
-  CONFIG="$(
-    printf '%s\n' "$dpn_json" |
-      jq -r '.[].config // empty' |
-      awk 'NF' |
-      sort -u |
-      fzf --prompt='Config> ' --height=10 --border
-  )"
+    api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
+    dpn_json="$(curl -fsS --max-time 10 "$api_base/systems/dpn")"
+    config_found=0
+
+    while IFS= read -r backend_config; do
+      if [[ "$backend_config" == "$CONFIG" ]]; then
+        config_found=1
+        break
+      fi
+    done < <(
+      printf '%s\n' "$dpn_json" |
+        jq -r '.[].config // empty' |
+        awk 'NF' |
+        tr '[:lower:]' '[:upper:]' |
+        sort -u
+    )
+
+    if [[ "$config_found" -eq 0 ]]; then
+      err "Config $CONFIG is not present in the backend config list."
+      exit 1
+    fi
+  fi
 
   if [[ -z "$CONFIG" ]]; then
     err "No config selected."
@@ -226,12 +244,99 @@ validate_child_inputs() {
   export BMC_MAC HOST_MAC CONFIG
 }
 
+require_station_tmux_session() {
+  local found
+  local -a station_names
+
+  require_cmd tmux
+  require_cmd curl
+  require_cmd jq
+
+  if [[ -z "${TMUX:-}" ]]; then
+    err "This script must be run inside a station tmux session."
+    echo "Run './join_station <#>' and try again"
+    exit 1
+  fi
+
+  mapfile -t station_names < <(fetch_station_list)
+
+  STATION_SESSION_NAME="$(tmux display-message -p '#S')"
+  STATION_SESSION_NUMBER="${STATION_SESSION_NAME#stn_}"
+
+  found=0
+  for name in "${station_names[@]}"; do
+    if [[ "$STATION_SESSION_NAME" == "$name" || "$STATION_SESSION_NUMBER" == "$name" || "stn_$name" == "$STATION_SESSION_NAME" ]]; then
+      found=1
+      break
+    fi
+  done
+
+  if [[ "$found" -eq 0 ]]; then
+    err "This script must be run from a valid station tmux session. Use ./join_station first."
+    exit 1
+  fi
+}
+
+report_live_status() {
+  local boot_status="$1"
+  local bios_session_name
+
+  if [[ -n "$LIVE_RIGHT_PANE_ID" ]]; then
+    tmux kill-pane -t "$LIVE_RIGHT_PANE_ID" 2>/dev/null || true
+    LIVE_RIGHT_PANE_ID=""
+  fi
+
+  echo
+  if [[ "$boot_status" -eq 0 ]]; then
+    echo "Boot status: complete"
+    bios_session_name="bs_${BMC_MAC}"
+    if tmux has-session -t "$bios_session_name" 2>/dev/null; then
+      tmux switch-client -t "$bios_session_name"
+    else
+      echo "INFO - No BIOS session found; staying in $STATION_SESSION_NAME."
+    fi
+  else
+    echo "Boot status: incomplete"
+  fi
+}
+
+close_live_right_pane() {
+  if [[ -n "$LIVE_RIGHT_PANE_ID" ]]; then
+    tmux kill-pane -t "$LIVE_RIGHT_PANE_ID" 2>/dev/null || true
+    LIVE_RIGHT_PANE_ID=""
+  fi
+}
+
+live_terminate_signal_trap() {
+  local signal="$1"
+
+  close_live_right_pane
+  if [[ -n "$LIVE_CHILD_PID" ]]; then
+    kill -s "$signal" "$LIVE_CHILD_PID" 2>/dev/null || true
+  fi
+  trap - INT TERM HUP QUIT TSTP
+  kill -s "$signal" "$$"
+}
+
+live_tstp_signal_trap() {
+  LIVE_WAIT_INTERRUPTED=1
+  close_live_right_pane
+  if [[ -n "$LIVE_CHILD_PID" ]]; then
+    kill -s TSTP "$LIVE_CHILD_PID" 2>/dev/null || true
+  fi
+  trap - TSTP
+  kill -s TSTP "$$"
+  trap 'live_tstp_signal_trap' TSTP
+}
+
 start_live_tmux() {
-  local session_name script_dir left_cmd right_cmd pane_count boot_done boot_pane_text
+  local script_dir current_pane_id window_target pane_count right_cmd boot_status status_file
 
   require_cmd tmux
   require_cmd ssh
   require_cmd ssh-keyscan
+
+  require_station_tmux_session
 
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ ! -x "$script_dir/bios_serial.sh" ]]; then
@@ -239,43 +344,58 @@ start_live_tmux() {
     exit 1
   fi
 
-  session_name="boot_${HOST_MAC}"
-
-  if tmux has-session -t "$session_name" 2>/dev/null; then
-    pane_count="$(tmux list-panes -t "$session_name:0" 2>/dev/null | wc -l | xargs)"
-    boot_done="$(tmux show-option -qv -t "$session_name" @boot_done 2>/dev/null || true)"
-    boot_pane_text="$(tmux capture-pane -p -t "$session_name:0.0" -S -80 2>/dev/null || true)"
-
-    if ((pane_count >= 2)) &&
-      [[ "$boot_done" != "1" ]] &&
-      [[ "$boot_pane_text" != *"Boot pane finished. Press Enter to close..."* ]]; then
-      tmux attach -t "$session_name"
-      exit 0
-    fi
-
-    if [[ "$boot_done" == "1" ]] ||
-      [[ "$boot_pane_text" == *"Boot pane finished. Press Enter to close..."* ]]; then
-      echo "INFO - Existing $session_name boot pane already finished; recreating live layout."
-    else
-      echo "INFO - Existing $session_name session has only $pane_count pane; recreating live layout."
-    fi
-    tmux kill-session -t "$session_name"
+  pane_count="$(tmux display-message -p '#{window_panes}')"
+  if ((pane_count != 1)); then
+    err "Live boot requires the current station window to have exactly one pane. Close extra panes and try again."
+    exit 1
   fi
 
-  if tmux has-session -t "$session_name" 2>/dev/null; then
-    tmux attach -t "$session_name"
-    exit 0
+  current_pane_id="$(tmux display-message -p '#{pane_id}')"
+  window_target="$(tmux display-message -p '#S:#I')"
+  right_cmd="cd '$script_dir' && SERVER_LOCATION='$SERVER_LOCATION' BMC_MAC='$BMC_MAC' ./boot.sh --live-bios-child"
+  status_file="$(mktemp)"
+
+  LIVE_RIGHT_PANE_ID="$(tmux split-window -h -P -F '#{pane_id}' -t "$current_pane_id" "$right_cmd")"
+  tmux select-layout -t "$window_target" even-horizontal
+  tmux select-pane -t "$current_pane_id"
+
+  trap 'live_terminate_signal_trap INT' INT
+  trap 'live_terminate_signal_trap TERM' TERM
+  trap 'live_terminate_signal_trap HUP' HUP
+  trap 'live_terminate_signal_trap QUIT' QUIT
+  trap 'live_tstp_signal_trap' TSTP
+
+  LIVE_WAIT_INTERRUPTED=0
+  (
+    trap 'printf "%s\n" "$?" > "$status_file"' EXIT
+    trap - INT TERM HUP QUIT TSTP
+    set +e
+    LIVE_CHILD=1
+    run_boot_flow
+  ) &
+  LIVE_CHILD_PID=$!
+
+  while true; do
+    if wait "$LIVE_CHILD_PID"; then
+      boot_status=0
+      break
+    fi
+
+    boot_status=$?
+    if [[ "$LIVE_WAIT_INTERRUPTED" == "1" ]] && kill -0 "$LIVE_CHILD_PID" 2>/dev/null; then
+      LIVE_WAIT_INTERRUPTED=0
+      continue
+    fi
+    break
+  done
+
+  LIVE_CHILD_PID=""
+  trap - INT TERM HUP QUIT TSTP
+  if [[ -s "$status_file" ]]; then
+    boot_status="$(<"$status_file")"
   fi
-
-  left_cmd="cd '$script_dir' && SERVER_LOCATION='$SERVER_LOCATION' BMC_MAC='$BMC_MAC' HOST_MAC='$HOST_MAC' CONFIG='$CONFIG' ./boot.sh --live-child; tmux set-option -t '$session_name' @boot_done 1; echo; read -r -p 'Boot pane finished. Press Enter to close...'"
-  right_cmd="cd '$script_dir' && SERVER_LOCATION='$SERVER_LOCATION' BMC_MAC='$BMC_MAC' ./boot.sh --live-bios-child; echo; read -r -p 'BIOS pane finished. Press Enter to close...'"
-
-  tmux new-session -d -s "$session_name" -n boot "$left_cmd"
-  tmux set-option -t "$session_name" @boot_done 0
-  tmux split-window -h -t "$session_name:0" "$right_cmd"
-  tmux select-layout -t "$session_name:0" even-horizontal
-  tmux select-pane -t "$session_name:0.0"
-  tmux attach -t "$session_name"
+  rm -f "$status_file"
+  report_live_status "$boot_status"
 }
 
 run_live_bios_child() {
@@ -349,14 +469,6 @@ EOF
 
   chmod 0644 "$out"
   echo "Wrote: $out"
-}
-
-ipmi() {
-  if [[ "${CONFIG:-}" == "F" ]]; then
-    ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
-  else
-    ipmitool -I lanplus -H "$BMC_IP" -U admin -P admin "$@"
-  fi
 }
 
 bmc_check_cmd() {
@@ -459,13 +571,6 @@ wait_for_host_ip() {
     elapsed=$((current - start))
 
     if ((elapsed > 10 * 60)); then
-      echo
-      echo "INFO - Recording FRU Data"
-      if [[ "${CONFIG:-}" != "7" ]]; then
-        ipmi fru print
-      fi
-      echo
-
       err "It is taking too long to get a HOST IP, please check if the host is on"
       echo "Recommended Action:"
       echo "  - Re-run this boot.sh while monitoring the system via BIOS serial to confirm the system is booting correctly."
@@ -514,13 +619,6 @@ wait_for_ssh_ready() {
     elapsed=$((now - start))
 
     if ((elapsed > 15 * 60)); then
-      echo
-      echo "INFO - Recording FRU Data"
-      if [[ "${CONFIG:-}" != "7" ]]; then
-        ipmi fru print
-      fi
-      echo
-
       err "SSH is not fully up (handshake/command) on $HOST_IP after 900 seconds."
       echo "Note: port 22 may be open before sshd is ready (banner exchange timeouts)."
       exit 1
@@ -614,13 +712,40 @@ run_boot_flow() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -a|--auto)
-      AUTO_MODE=1
+    -t|--tag)
+      TAG_MODE=1
       shift
       if [[ $# -gt 0 && "$1" != -* ]]; then
         SERVICE_TAG="$1"
         shift
       fi
+      ;;
+    -b|--bmc-mac)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "-b requires a BMC MAC value."
+        exit 1
+      fi
+      BMC_MAC="$1"
+      shift
+      ;;
+    -s|--sys-mac)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "-s requires a system MAC value."
+        exit 1
+      fi
+      HOST_MAC="$1"
+      shift
+      ;;
+    -c)
+      shift
+      if [[ $# -eq 0 || "$1" == -* ]]; then
+        err "-c requires a config value."
+        exit 1
+      fi
+      CONFIG="$1"
+      shift
       ;;
     -l|--live)
       LIVE_MODE=1
@@ -646,7 +771,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-check_environment
+  require_server_location
 
 if [[ "$LIVE_BIOS_CHILD" == "1" ]]; then
   run_live_bios_child
@@ -659,7 +784,15 @@ if [[ "$LIVE_CHILD" == "1" ]]; then
   exit 0
 fi
 
-if [[ "$AUTO_MODE" == "1" ]]; then
+require_station_tmux_session
+
+if [[ "$TAG_MODE" == "1" && (-n "$BMC_MAC" || -n "$HOST_MAC" || -n "$CONFIG") ]]; then
+  err "-t/--tag cannot be combined with -b/--bmc-mac, -s/--sys-mac, or -c."
+  print_help
+  exit 1
+fi
+
+if [[ "$TAG_MODE" == "1" ]]; then
   load_auto_inputs
 else
   load_inputs
@@ -671,3 +804,6 @@ if [[ "$LIVE_MODE" == "1" ]]; then
 fi
 
 run_boot_flow
+
+# Authors:
+#   Giovanni Leon - giovanni_leon@wistron.com

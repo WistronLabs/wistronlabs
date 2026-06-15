@@ -1,47 +1,31 @@
 #!/bin/bash
+# About:
+#   Restarts a station tmux session after validating the station against the backend list.
+#
+# Usage:
+#   ./restart_station.sh <session_number>
+#   ./restart_station.sh -l
+#
 
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/.lib"
 
-err() {
-    echo -e "${RED}Error:${NC} $*" >&2
-}
+# shellcheck disable=SC1091
+source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_server_location.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_internal_api_key.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_cmd.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_station_list.sh"
 
-# Check if SERVER_LOCATION environment variable is set
-if [[ -z "${SERVER_LOCATION:-}" ]]; then
-  err "Environment variable SERVER_LOCATION is not set." >&2
-  echo "       Please export SERVER_LOCATION in your shell (e.g. in ~/.bashrc)." >&2
-  exit 1
-fi
+require_server_location
+require_internal_api_key
+require_cmd jq
 
-# Check if INTERNAL_API_KEY environment variable is set
-if [[ -z "${INTERNAL_API_KEY:-}" ]]; then
-  echo "Error: environment variable INTERNAL_API_KEY is not set." >&2
-  echo "       Please export INTERNAL_API_KEY in your shell (e.g. in ~/.bashrc)." >&2
-  exit 1
-fi
-
-# Fetch station names
-# Require jq
-if ! command -v jq >/dev/null 2>&1; then
-  err "jq is required but not installed." >&2
-  exit 1
-fi
-
-# Get JSON from API
-if ! json=$(curl -fsS --max-time 5 "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations"); then
-  err "Unable to reach backend" >&2
-  exit 1
-fi
-
-# Parse station_name into a bash array
-mapfile -t STATIONS < <(printf '%s\n' "$json" | jq -r '.[].station_name')
-
-# Sanity check
-if ((${#STATIONS[@]} == 0)); then
-  err "No stations found in API response." >&2
-  exit 1
-fi
+mapfile -t STATIONS < <(fetch_station_list)
 
 SCRIPT_NAME="$(basename "$0")"
 
@@ -102,3 +86,6 @@ else
     printf '%s\n' "${valid_sessions[@]}"
   fi
 fi
+
+# Authors:
+#   Giovanni Leon - giovanni_leon@wistron.com

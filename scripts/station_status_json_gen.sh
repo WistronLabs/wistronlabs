@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
+# About:
+#   Collects JSON status from each station session and PATCHes the latest state back to the backend.
+#
+# Usage:
+#   ./station_status_json_gen.sh
+#
 
 
 #requires jq and curl
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/.lib"
 
-if [[ -z "${SERVER_LOCATION:-}" ]]; then
-  echo "Error: SERVER_LOCATION is not set." >&2
-  exit 1
-fi
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_server_location.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_cmd.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_station_list.sh"
+
+require_server_location
+require_cmd curl
+require_cmd jq
 
 API_URL="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations"
-
-if ! json=$(curl -fsS --max-time 8 "$API_URL"); then
-  echo "Error: unable to fetch stations from $API_URL" >&2
-  exit 1
-fi
-
-mapfile -t stations < <(printf '%s\n' "$json" | jq -r '.[].station_name')
-
-if ((${#stations[@]} == 0)); then
-  echo "Error: no stations returned by API." >&2
-  exit 1
-fi
+mapfile -t stations < <(fetch_station_list)
 
 for st in "${stations[@]}"; do
     echo "Checking station $st…"
@@ -43,3 +46,6 @@ for st in "${stations[@]}"; do
         -H "Content-Type: application/json" \
         -d "$payload"
 done
+
+# Authors:
+#   Giovanni Leon - giovanni_leon@wistron.com

@@ -1,4 +1,10 @@
 #!/bin/bash
+# About:
+#   Opens a BIOS serial or console session for a target BMC using IP, MAC, or service tag input.
+#
+# Usage:
+#   ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
+#
 set -euo pipefail
 
 IPMI_USER="admin"
@@ -7,12 +13,23 @@ IPMI_PASS="admin"
 SSH_USER="root"
 SSH_PASS="changeme"
 
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/.lib"
 
-err() {
-    echo -e "${RED}Error:${NC} $*" >&2
-}
+# shellcheck disable=SC1091
+source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/normalize_mac_hex12.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_server_location.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_cmd.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_system_from_backend.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/resolve_ip_from_mac.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/normalize_service_tag.sh"
 
 
 # Check if exactly two arguments are provided
@@ -26,15 +43,6 @@ fi
 
 ADDRESS_TYPE="$1"
 ADDRESS_VALUE="$2"
-
-normalize_mac_to_hex12() {
-    local raw="${1:-}"
-    raw=$(echo "$raw" | tr -d ':-[:space:]')
-    if [[ ! "$raw" =~ ^[A-Fa-f0-9]{12}$ ]]; then
-        return 1
-    fi
-    echo "$raw"
-}
 
 # Simple validation for IP address format
 if [[ "$ADDRESS_TYPE" = "-i" ]]; then
@@ -60,23 +68,15 @@ if [[ "$ADDRESS_TYPE" = "-i" ]]; then
 
 elif [[ "$ADDRESS_TYPE" = "-m" ]]; then
 
-    if ! [[ "$ADDRESS_VALUE" =~ ^[A-Fa-f0-9]{12}$ ]]; then
+    if ! mac_raw="$(normalize_mac_hex12 "$ADDRESS_VALUE")"; then
         err "Invalid MAC address format."
         echo "Needs to be in 001A2B3C4D5E format"
         exit 1
     fi
 
     # Normalize to aa:bb:cc:dd:ee:ff
-    ADDRESS_VALUE=$(echo "$ADDRESS_VALUE" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
-
-    IP=$(awk -v mac="$ADDRESS_VALUE" '
-        /lease/ {ip=$2}
-        /hardware ethernet/ {
-            gsub(";", "", $3)
-            if ($3 == mac) last_ip = ip
-        }
-        END { if (last_ip != "") print last_ip }
-    ' /var/lib/dhcp/dhcpd.leases)
+    ADDRESS_VALUE=$(printf '%s' "$mac_raw" | sed 's/\(..\)/\1:/g; s/:$//')
+    IP="$(resolve_ip_from_mac "$ADDRESS_VALUE")"
 
     if [[ -z "$IP" ]]; then
         err "The MAC Address given does not have a valid IP yet"
@@ -86,33 +86,15 @@ elif [[ "$ADDRESS_TYPE" = "-m" ]]; then
 
     MAC="$ADDRESS_VALUE"
 elif [[ "$ADDRESS_TYPE" = "-t" || "$ADDRESS_TYPE" = "-T" ]]; then
-    SERVICE_TAG=$(echo "$ADDRESS_VALUE" | tr '[:lower:]' '[:upper:]' | xargs)
+    SERVICE_TAG="$(normalize_service_tag "$ADDRESS_VALUE")"
     if [[ -z "$SERVICE_TAG" ]]; then
         err "Service Tag cannot be empty."
         exit 1
     fi
 
-    if [[ -z "${SERVER_LOCATION:-}" ]]; then
-        err "Environment variable SERVER_LOCATION is not set."
-        echo "Please export SERVER_LOCATION in your shell (e.g. in ~/.bashrc)."
-        exit 1
-    fi
-
-    if ! command -v jq >/dev/null 2>&1; then
-        err "jq is required but not installed."
-        exit 1
-    fi
-
-    tmp_json=$(mktemp)
-    http_code=$(curl -sS --max-time 5 -o "$tmp_json" -w "%{http_code}" \
-      "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG" 2>/dev/null || true)
-    if [[ "$http_code" != "200" ]]; then
-        rm -f "$tmp_json"
-        err "Service Tag $SERVICE_TAG not found"
-        exit 1
-    fi
-    sys_json=$(cat "$tmp_json")
-    rm -f "$tmp_json"
+    require_server_location
+    require_cmd jq
+    sys_json="$(fetch_system_from_backend "$SERVICE_TAG")"
 
     bmc_raw=$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')
     if [[ -z "$bmc_raw" || "$bmc_raw" == "null" ]]; then
@@ -127,15 +109,7 @@ elif [[ "$ADDRESS_TYPE" = "-t" || "$ADDRESS_TYPE" = "-T" ]]; then
 
     # Reuse existing MAC flow after backend lookup
     ADDRESS_VALUE=$(echo "$bmc_raw" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
-
-    IP=$(awk -v mac="$ADDRESS_VALUE" '
-        /lease/ {ip=$2}
-        /hardware ethernet/ {
-            gsub(";", "", $3)
-            if ($3 == mac) last_ip = ip
-        }
-        END { if (last_ip != "") print last_ip }
-    ' /var/lib/dhcp/dhcpd.leases)
+    IP="$(resolve_ip_from_mac "$ADDRESS_VALUE")"
 
     if [[ -z "$IP" ]]; then
         err "The MAC Address given does not have a valid IP yet"
@@ -205,3 +179,6 @@ fi
 
 
 tmux attach -t "$SESSION_NAME"
+
+# Authors:
+#   Giovanni Leon - giovanni_leon@wistron.com

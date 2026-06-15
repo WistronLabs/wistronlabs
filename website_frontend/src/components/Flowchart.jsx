@@ -27,15 +27,25 @@ export default function Flowchart({
 
   const layoutMap = filterByRepairsAllowed(
     [
+      // Received
       { id: 1, x: 0, y: 150 },
+      // In Debug - Wistron
       { id: 2, x: 200, y: 150 },
+      // Pending L11 Logs
       { id: 3, x: 200, y: 260 },
+      // In L10
       { id: 5, x: 400, y: 150 },
+      // Sent to L11
       { id: 9, x: 600, y: 0 },
+      // RMA VID
       { id: 6, x: 600, y: 100 },
+      // RMA PID
       { id: 8, x: 600, y: 200 },
+      // RMA CID
       { id: 7, x: 600, y: 300 },
+      // Pending Parts
       { id: 4, x: 200, y: 50 },
+      // Sent to Dell for Repair
       { id: 10, x: 200, y: 0 },
     ],
     locationsHiddenWhenRepairsDisabled,
