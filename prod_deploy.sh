@@ -97,7 +97,8 @@ EOF
 # Load config
 # -----------------------------------------------------------------------------
 declare -A HOST DIR PROJ PORT FRONTEND IS_DEV DEPLOY_MODE
-while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod deploy_mode extra; do
+# Keep a trailing throwaway field so unexpected extra columns do not break parsing.
+while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod deploy_mode _ignored_extra || [[ -n "${name:-}" ]]; do
   [[ -z "${name// }" ]] && continue
   [[ "$name" =~ ^# ]] && continue
 
@@ -281,7 +282,7 @@ REMOTE
 # -----------------------------------------------------------------------------
 default_bootstrap_from_conf() {
   local first=""
-  while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod; do
+  while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod || [[ -n "${name:-}" ]]; do
     [[ -z "${name// }" ]] && continue
     [[ "$name" =~ ^# ]] && continue
     is_dev="${is_dev//$'\r'/}"; is_dev="${is_dev//[[:space:]]/}"
@@ -306,7 +307,7 @@ pick_bootstrap_source_for_target() {
 
   local found_default=0
   local candidate=""
-  while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod; do
+  while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod || [[ -n "${name:-}" ]]; do
     [[ -z "${name// }" ]] && continue
     [[ "$name" =~ ^# ]] && continue
     is_dev="${is_dev//$'\r'/}"; is_dev="${is_dev//[[:space:]]/}"
