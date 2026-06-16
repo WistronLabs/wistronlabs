@@ -9,7 +9,14 @@
 # Notes:
 #   Standardized version for scripts that PATCH or otherwise authenticate.
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime_mode.sh"
+
 require_internal_api_key() {
+  if is_field_mode; then
+    return 0
+  fi
+
   if [[ -z "${INTERNAL_API_KEY:-}" ]]; then
     echo "Error: environment variable INTERNAL_API_KEY is not set." >&2
     echo "       Please export INTERNAL_API_KEY in your shell (e.g. in ~/.bashrc)." >&2

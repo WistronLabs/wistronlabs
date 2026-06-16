@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # About:
-#   Collects JSON status from each station session and PATCHes the latest state back to the backend.
+#   Collects JSON status from each station session and PATCHes the latest state
+#   back to the backend.
+#   This script is backend-mode only and is disabled in field mode.
 #
 # Usage:
-#   ./station_status_json_gen.sh
+#   WISTRON_MODE=backend ./station_status_json_gen.sh
 #
 
 
@@ -12,12 +14,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB_DIR="$SCRIPT_DIR/.lib"
 
 # shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
+# shellcheck disable=SC1091
 source "$LIB_DIR/require_server_location.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/require_cmd.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/fetch_station_list.sh"
 
+require_field_mode_disabled "$(basename "$0")"
 require_server_location
 require_cmd curl
 require_cmd jq

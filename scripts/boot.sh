@@ -1,10 +1,15 @@
 #!/bin/bash
 # About:
-#   Prepares PXE boot configuration, waits for BMC and host readiness, and boots a unit into the Wistron PXE OS.
+#   Prepares PXE boot configuration, waits for BMC and host readiness, and
+#   boots a unit into the Wistron PXE OS.
+#   Backend mode can pull unit data from the backend. Field mode uses local
+#   stations plus a single default config from FIELD_DEFAULT_CONFIG or
+#   scripts/config/field_stations.json.
 #
 # Usage:
-#   ./boot.sh [options]
-#   Must be run inside a valid station tmux session.
+#   WISTRON_MODE=backend ./boot.sh [options]
+#   WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./boot.sh [options]
+#   Must be run inside a valid station tmux session in both modes.
 #
 
 set -euo pipefail
@@ -15,6 +20,8 @@ LIB_DIR="$SCRIPT_DIR/.lib"
 
 # shellcheck disable=SC1091
 source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/require_cmd.sh"
 # shellcheck disable=SC1091
@@ -49,10 +56,39 @@ LIVE_CHILD_PID=""
 LIVE_WAIT_INTERRUPTED=0
 
 print_help() {
-  cat <<'EOF'
+  if is_field_mode; then
+    cat <<EOF
 Usage:
   ./boot.sh [options]
-  Must be ran inside a valid station tmux session.
+  Must be run inside a valid station tmux session.
+
+Options:
+  -b, --bmc-mac BMC_MAC
+      The BMC MAC used when booting via MAC address.
+  -s, --sys-mac SYS_MAC
+      The System MAC used when booting via MAC address.
+  -c CONFIG
+      Config of the unit. Field mode only supports ${FIELD_DEFAULT_CONFIG:-$(field_default_config)}.
+  -l, --live
+      Split the current station tmux pane and show BIOS serial on the right.
+  -h, --help
+      Show this help and exit.
+
+Field mode behavior:
+  - Uses local station definitions from FIELD_STATIONS_FILE.
+  - Uses FIELD_DEFAULT_CONFIG or the field stations JSON default_config.
+  - Manual MAC input only. Tag lookup is disabled.
+
+Examples:
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./boot.sh
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./boot.sh -l
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./boot.sh -b 001a2b3c4d5e -s 00aa11bb22cc
+EOF
+  else
+    cat <<'EOF'
+Usage:
+  ./boot.sh [options]
+  Must be run inside a valid station tmux session.
 
 Options:
   -t, --tag [SERVICE_TAG]
@@ -78,7 +114,7 @@ What it does:
 
 Mode rules:
   - You must choose either tag mode or manual MAC mode.
-    -t/--tag cannot be used with -b/--bmc-mac, -s/--sys-mac, or -c and vice versa.
+  - -t/--tag cannot be used with -b/--bmc-mac, -s/--sys-mac, or -c and vice versa.
   - If neither -t, -b, nor -s is provided, the script defaults to prompts for MACs and config.
 
 Live mode:
@@ -93,6 +129,7 @@ Examples:
   ./boot.sh -b 001a2b3c4d5e -s 00aa11bb22cc -c F
   ./boot.sh -b 001a2b3c4d5e -s 00aa11bb22cc
 EOF
+  fi
 }
 
 prompt_mac() {
@@ -116,6 +153,11 @@ mac_dash() {
 
 load_auto_inputs() {
   local sys_json bmc_raw host_raw config_raw
+
+  if is_field_mode; then
+    err "Tag mode is not available in field mode. Use manual MAC input."
+    exit 1
+  fi
 
   require_cmd curl
   require_cmd jq
@@ -161,9 +203,6 @@ load_auto_inputs() {
 load_inputs() {
   local config_found api_base dpn_json
 
-  require_cmd curl
-  require_cmd jq
-
   if [[ -z "$BMC_MAC" ]]; then
     BMC_MAC="$(prompt_mac "BMC")"
   else
@@ -182,33 +221,46 @@ load_inputs() {
     fi
   fi
 
-  require_server_location
   if [[ -z "$CONFIG" ]]; then
-    require_cmd fzf
-    CONFIG="$(pick_config_from_backend)"
+    if is_field_mode; then
+      CONFIG="$(field_default_config)"
+    else
+      require_cmd fzf
+      CONFIG="$(pick_config_from_backend)"
+    fi
   else
     CONFIG="$(printf '%s' "$CONFIG" | tr '[:lower:]' '[:upper:]')"
 
-    api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
-    dpn_json="$(curl -fsS --max-time 10 "$api_base/systems/dpn")"
-    config_found=0
-
-    while IFS= read -r backend_config; do
-      if [[ "$backend_config" == "$CONFIG" ]]; then
-        config_found=1
-        break
+    if is_field_mode; then
+      if [[ "$CONFIG" != "$(field_default_config | tr '[:lower:]' '[:upper:]')" ]]; then
+        err "Field mode only supports config $(field_default_config)."
+        exit 1
       fi
-    done < <(
-      printf '%s\n' "$dpn_json" |
-        jq -r '.[].config // empty' |
-        awk 'NF' |
-        tr '[:lower:]' '[:upper:]' |
-        sort -u
-    )
+    else
+      require_cmd curl
+      require_cmd jq
+      require_server_location
+      api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
+      dpn_json="$(curl -fsS --max-time 10 "$api_base/systems/dpn")"
+      config_found=0
 
-    if [[ "$config_found" -eq 0 ]]; then
-      err "Config $CONFIG is not present in the backend config list."
-      exit 1
+      while IFS= read -r backend_config; do
+        if [[ "$backend_config" == "$CONFIG" ]]; then
+          config_found=1
+          break
+        fi
+      done < <(
+        printf '%s\n' "$dpn_json" |
+          jq -r '.[].config // empty' |
+          awk 'NF' |
+          tr '[:lower:]' '[:upper:]' |
+          sort -u
+      )
+
+      if [[ "$config_found" -eq 0 ]]; then
+        err "Config $CONFIG is not present in the backend config list."
+        exit 1
+      fi
     fi
   fi
 
@@ -249,8 +301,6 @@ require_station_tmux_session() {
   local -a station_names
 
   require_cmd tmux
-  require_cmd curl
-  require_cmd jq
 
   if [[ -z "${TMUX:-}" ]]; then
     err "This script must be run inside a station tmux session."
@@ -352,7 +402,7 @@ start_live_tmux() {
 
   current_pane_id="$(tmux display-message -p '#{pane_id}')"
   window_target="$(tmux display-message -p '#S:#I')"
-  right_cmd="cd '$script_dir' && SERVER_LOCATION='$SERVER_LOCATION' BMC_MAC='$BMC_MAC' ./boot.sh --live-bios-child"
+  right_cmd="cd '$script_dir' && WISTRON_MODE='$WISTRON_MODE' FIELD_STATIONS_FILE='$FIELD_STATIONS_FILE' FIELD_DEFAULT_CONFIG='${FIELD_DEFAULT_CONFIG:-}' SERVER_LOCATION='${SERVER_LOCATION:-}' BMC_MAC='$BMC_MAC' ./boot.sh --live-bios-child"
   status_file="$(mktemp)"
 
   LIVE_RIGHT_PANE_ID="$(tmux split-window -h -P -F '#{pane_id}' -t "$current_pane_id" "$right_cmd")"
@@ -414,7 +464,7 @@ run_live_bios_child() {
 
   echo
   echo "==> Opening BIOS serial session for BMC $BMC_MAC"
-  exec env -u TMUX SERVER_LOCATION="$SERVER_LOCATION" "$script_dir/bios_serial.sh" -m "$BMC_MAC"
+  exec env -u TMUX WISTRON_MODE="$WISTRON_MODE" FIELD_STATIONS_FILE="$FIELD_STATIONS_FILE" FIELD_DEFAULT_CONFIG="${FIELD_DEFAULT_CONFIG:-}" SERVER_LOCATION="${SERVER_LOCATION:-}" "$script_dir/bios_serial.sh" -m "$BMC_MAC"
 }
 
 write_grub_config() {
@@ -770,8 +820,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-  require_server_location
 
 if [[ "$LIVE_BIOS_CHILD" == "1" ]]; then
   run_live_bios_child

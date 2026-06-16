@@ -10,8 +10,16 @@
 #   Requires SERVER_LOCATION, curl, jq, and fzf.
 #   Prints the selected config to stdout.
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime_mode.sh"
+
 pick_config_from_backend() {
   local api_base dpn_json
+
+  if is_field_mode; then
+    field_default_config
+    return 0
+  fi
 
   if [[ -z "${SERVER_LOCATION:-}" ]]; then
     echo "Error: environment variable SERVER_LOCATION is not set." >&2
