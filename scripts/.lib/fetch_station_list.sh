@@ -10,8 +10,28 @@
 #   Requires SERVER_LOCATION, curl, and jq.
 #   Exits with status 1 if the backend is unavailable or no stations exist.
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime_mode.sh"
+
 fetch_station_list() {
   local api_url json
+
+  if is_field_mode; then
+    require_field_stations_file
+
+    if ! command -v jq >/dev/null 2>&1; then
+      echo "Error: jq is required to read the field stations file." >&2
+      exit 1
+    fi
+
+    if ! jq -e '.stations | length > 0' "$FIELD_STATIONS_FILE" >/dev/null 2>&1; then
+      echo "Error: no stations defined in $FIELD_STATIONS_FILE." >&2
+      exit 1
+    fi
+
+    jq -r '.stations[] | select(.enabled != false) | .id' "$FIELD_STATIONS_FILE"
+    return 0
+  fi
 
   if [[ -z "${SERVER_LOCATION:-}" ]]; then
     echo "Error: environment variable SERVER_LOCATION is not set." >&2

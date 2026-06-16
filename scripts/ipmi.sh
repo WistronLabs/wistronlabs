@@ -3,11 +3,12 @@
 #   Resolves a BMC target from service tag, IP, or MAC input and runs either a
 #   raw ipmitool command or an enabled legacy shortcut code with config-based
 #   credentials.
+#   Backend mode supports service-tag lookup. Field mode supports IP or MAC
+#   targeting only and uses FIELD_DEFAULT_CONFIG when -c is omitted.
 #
 # Usage:
-#   ./ipmi.sh [target flags] [modifier flags] [ipmi arguments...]
-#   ./ipmi.sh [target flags] [modifier flags] -n CODE [ARG]
-#   ./ipmi.sh [target flags] [modifier flags] [SHORTCUT_FLAG] [ARG]
+#   WISTRON_MODE=backend ./ipmi.sh [target flags] [modifier flags] [ipmi arguments...]
+#   WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./ipmi.sh [target flags] [modifier flags] [ipmi arguments...]
 #
 set -euo pipefail
 
@@ -16,6 +17,8 @@ LIB_DIR="$SCRIPT_DIR/.lib"
 
 # shellcheck disable=SC1091
 source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/require_cmd.sh"
 # shellcheck disable=SC1091
@@ -78,7 +81,42 @@ BMC_REBOOT=$((CLEAR_SBIOS + 1))
 BMC_RESTORE=$((BMC_REBOOT + 1))
 
 print_help() {
-  cat <<'EOF'
+  if is_field_mode; then
+    cat <<EOF
+Usage:
+  ./ipmi.sh [target flags] [modifier flags] [ipmi arguments...]
+  ./ipmi.sh [target flags] [modifier flags] -n CODE [ARG]
+  ./ipmi.sh [target flags] [modifier flags] [SHORTCUT_FLAG] [ARG]
+
+Mode:
+  field
+
+Target Flags:
+  -i BMC_IP         Use BMC IP directly
+  -m BMC_MAC        Resolve BMC IP from DHCP lease using BMC MAC
+
+Modifier Flags:
+  -c CONFIG         Sets the target config used to choose IPMI credentials
+  -n CODE           Run the legacy shortcut codes instead of raw ipmitool args
+  -l                List available shortcut codes and string flags
+  -h                Show this help text
+
+Notes:
+  - If no -i/-m target is provided, the script prompts for a BMC MAC.
+  - Service tag lookup is disabled in field mode.
+  - If -c is omitted, config defaults to ${FIELD_DEFAULT_CONFIG:-$(field_default_config)}.
+  - -n flag cannot be used with raw ipmitool arguments.
+  - If no raw ipmitool arguments are provided, defaults to "chassis power status"
+
+Run ./ipmi.sh -l to list available shortcut codes and string flags.
+
+Examples:
+  ./ipmi.sh -i 192.168.1.50 -c F chassis power status
+  ./ipmi.sh -m aabbccddeeff chassis power status
+  ./ipmi.sh -l
+EOF
+  else
+    cat <<'EOF'
 Usage:
   ./ipmi.sh [target flags] [modifier flags] [ipmi arguments...]
   ./ipmi.sh [target flags] [modifier flags] -n CODE [ARG]
@@ -114,6 +152,7 @@ Examples:
   ./ipmi.sh -t TESTYB4 --sdr-elist fan
   ./ipmi.sh -l
 EOF
+  fi
 }
 
 print_shortcut_list() {
@@ -496,8 +535,6 @@ else
 fi
 
 require_cmd ipmitool
-require_cmd jq
-require_cmd curl
 
 target_count=0
 [[ -n "$SERVICE_TAG" ]] && target_count=$((target_count + 1))
@@ -509,16 +546,31 @@ if ((target_count > 1)); then
   exit 1
 fi
 
+if is_field_mode && [[ -n "$SERVICE_TAG" ]]; then
+  err "Service tag lookup is not available in field mode. Use -i or -m."
+  exit 1
+fi
+
 if [[ -n "$SERVICE_TAG" && -n "$CONFIG" ]]; then
   err "Do not use -c with -t. Service tag mode pulls config from backend."
   exit 1
 fi
 
 if ((target_count == 0)); then
-  SERVICE_TAG="$(prompt_service_tag)"
+  if is_field_mode; then
+    read -r -p "BMC MAC: " raw_bmc_mac
+    if ! BMC_MAC="$(normalize_mac_hex12 "$raw_bmc_mac")"; then
+      err "Invalid BMC MAC. Enter exactly 12 hex characters, with or without : or - separators."
+      exit 1
+    fi
+  else
+    SERVICE_TAG="$(prompt_service_tag)"
+  fi
 fi
 
 if [[ -n "$SERVICE_TAG" ]]; then
+  require_cmd jq
+  require_cmd curl
   require_server_location
   sys_json="$(fetch_system_from_backend "$SERVICE_TAG")"
   bmc_raw="$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')"
@@ -553,12 +605,16 @@ else
 fi
 
 if [[ -z "$CONFIG" ]]; then
-  require_server_location
-  require_cmd fzf
-  CONFIG="$(pick_config_from_backend)"
-  if [[ -z "$CONFIG" ]]; then
-    err "No config selected."
-    exit 1
+  if is_field_mode; then
+    CONFIG="$(field_default_config)"
+  else
+    require_server_location
+    require_cmd fzf
+    CONFIG="$(pick_config_from_backend)"
+    if [[ -z "$CONFIG" ]]; then
+      err "No config selected."
+      exit 1
+    fi
   fi
 fi
 

@@ -1,9 +1,12 @@
 #!/bin/bash
 # About:
-#   Opens a BIOS serial or console session for a target BMC using IP, MAC, or service tag input.
+#   Opens a BIOS serial or console session for a target BMC using IP, MAC, or
+#   service tag input.
+#   Backend mode supports -i, -m, and -t. Field mode supports -i and -m only.
 #
 # Usage:
-#   ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
+#   WISTRON_MODE=backend ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
+#   WISTRON_MODE=field   ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS>
 #
 set -euo pipefail
 
@@ -19,6 +22,8 @@ LIB_DIR="$SCRIPT_DIR/.lib"
 # shellcheck disable=SC1091
 source "$LIB_DIR/err.sh"
 # shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
+# shellcheck disable=SC1091
 source "$LIB_DIR/normalize_mac_hex12.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/require_server_location.sh"
@@ -31,13 +36,41 @@ source "$LIB_DIR/resolve_ip_from_mac.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/normalize_service_tag.sh"
 
+print_help() {
+    if is_field_mode; then
+        cat <<EOF
+Usage:
+  ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS>
+
+Mode:
+  field
+
+Options:
+  -i    Specify BMC using its IP address
+  -m    Specify BMC using its MAC address
+
+Notes:
+  - Service tag lookup is disabled in field mode.
+EOF
+    else
+        cat <<EOF
+Usage:
+  ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
+
+Mode:
+  backend
+
+Options:
+  -i    Specify BMC using its IP address
+  -m    Specify BMC using its MAC address
+  -t    Specify system by Service Tag (pull BMC MAC from backend)
+EOF
+    fi
+}
 
 # Check if exactly two arguments are provided
 if [ $# -ne 2 ]; then
-    echo "Usage: $0 <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>"
-    echo "  -i    Specify BMC using its IP address"
-    echo "  -m    Specify BMC using its MAC address"
-    echo "  -t    Specify system by Service Tag (pull BMC MAC from backend)"
+    print_help
     exit 1
 fi
 
@@ -86,6 +119,11 @@ elif [[ "$ADDRESS_TYPE" = "-m" ]]; then
 
     MAC="$ADDRESS_VALUE"
 elif [[ "$ADDRESS_TYPE" = "-t" || "$ADDRESS_TYPE" = "-T" ]]; then
+    if is_field_mode; then
+        err "Service tag lookup is not available in field mode. Use -i or -m."
+        exit 1
+    fi
+
     SERVICE_TAG="$(normalize_service_tag "$ADDRESS_VALUE")"
     if [[ -z "$SERVICE_TAG" ]]; then
         err "Service Tag cannot be empty."

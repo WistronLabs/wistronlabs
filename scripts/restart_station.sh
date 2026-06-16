@@ -1,9 +1,12 @@
 #!/bin/bash
 # About:
-#   Restarts a station tmux session after validating the station against the backend list.
+#   Restarts a station tmux session after validating the station.
+#   Backend mode validates stations against the backend. Field mode validates
+#   them against FIELD_STATIONS_FILE.
 #
 # Usage:
-#   ./restart_station.sh <session_number>
+#   WISTRON_MODE=backend ./restart_station.sh <session_number>
+#   WISTRON_MODE=field FIELD_STATIONS_FILE=... ./restart_station.sh <session_number>
 #   ./restart_station.sh -l
 #
 
@@ -12,6 +15,8 @@ LIB_DIR="$SCRIPT_DIR/.lib"
 
 # shellcheck disable=SC1091
 source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/require_server_location.sh"
 # shellcheck disable=SC1091
@@ -29,8 +34,27 @@ mapfile -t STATIONS < <(fetch_station_list)
 
 SCRIPT_NAME="$(basename "$0")"
 
+print_help() {
+  cat <<EOF
+Usage:
+  ./restart_station.sh <session_number>
+  ./restart_station.sh -l
+
+Mode:
+  ${WISTRON_MODE:-backend}
+
+Notes:
+  - Backend mode reads the station list from the backend.
+  - Field mode reads the station list from FIELD_STATIONS_FILE.
+EOF
+}
+
 if [[ "${1:-}" == "-l" ]]; then
-  echo "Available stations for $SERVER_LOCATION:"
+  if is_field_mode; then
+    echo "Available field stations:"
+  else
+    echo "Available stations for $SERVER_LOCATION:"
+  fi
   printf '%s\n' "${STATIONS[@]}" | nl -w2 -s') '
   echo
   echo "To join a station, run:"
@@ -40,9 +64,8 @@ fi
 
 # Ensure a session number was provided
 if [[ -z "${1:-}" ]]; then
-  echo "Usage: $SCRIPT_NAME <session_number>" >&2
+  print_help >&2
   echo "  session_number: ID of the station to join" >&2
-  echo "  To list stations, run $SCRIPT_NAME -l" >&2
   exit 1
 fi
 

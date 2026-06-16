@@ -1,0 +1,6 @@
+{
+  "default_config": "F",
+  "stations": [
+    { "id": 1, "enabled": true }
+  ]
+}

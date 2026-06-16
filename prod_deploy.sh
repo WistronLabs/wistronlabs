@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# prod_deploy.sh (CORRECTED)
+# prod_deploy.sh
 #
 # Deploys website_frontend (build -> upload) and website_backend (rsync -> build
 # -> migrations -> start) to PROD locations defined in backend_locations.conf.
@@ -23,12 +23,6 @@ set -euo pipefail
 #          - bootstrapping DB from another existing PROD site (pg_dump|psql stream)
 #          - WARNING: you must manually remove data when you’re done bootstrapping
 #     * applies migrations based on db_migrations/*.sql + schema_migrations table
-#
-# Fixes vs broken “working” paste:
-# - FIX: remote_psql_db_tab correctly passes SQL into remote shell (was undefined)
-# - FIX: bootstrap_db_from_site properly attaches the DST heredoc to the 2nd ssh
-# - FIX: remote_check_backend_bootstrap_prereqs avoids unquoted heredoc expansion
-# - FIX: set_env_kv uses safe sed replacement escaping
 # =============================================================================
 
 # Require bash 4+ (assoc arrays)
@@ -102,12 +96,14 @@ EOF
 # -----------------------------------------------------------------------------
 # Load config
 # -----------------------------------------------------------------------------
-declare -A HOST DIR PROJ PORT FRONTEND IS_DEV
-while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod; do
+declare -A HOST DIR PROJ PORT FRONTEND IS_DEV DEPLOY_MODE
+while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod deploy_mode extra; do
   [[ -z "${name// }" ]] && continue
   [[ "$name" =~ ^# ]] && continue
 
   is_dev="${is_dev//$'\r'/}"; is_dev="${is_dev//[[:space:]]/}"
+  deploy_mode="${deploy_mode//$'\r'/}"; deploy_mode="${deploy_mode//[[:space:]]/}"
+  [[ -n "$deploy_mode" ]] || deploy_mode="backend"
 
   HOST["$name"]="$host"
   DIR["$name"]="$dir"
@@ -115,10 +111,13 @@ while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile sourc
   PORT["$name"]="$port"
   FRONTEND["$name"]="$frontend_url"
   IS_DEV["$name"]="$is_dev"
+  DEPLOY_MODE["$name"]="$deploy_mode"
 done < "$CONF"
 
 is_known() { [[ -n "${HOST[$1]:-}" ]]; }
 is_prod_target() { [[ "${IS_DEV[$1]:-}" == "0" ]]; }
+is_field_deploy_target() { [[ "${DEPLOY_MODE[$1]:-backend}" == "field" ]]; }
+is_backend_deploy_target() { [[ "${DEPLOY_MODE[$1]:-backend}" != "field" ]]; }
 
 print_prod_locations() {
   echo ""
@@ -131,6 +130,7 @@ print_prod_locations() {
     echo "      proj: ${PROJ[$k]}"
     echo "      port: ${PORT[$k]}"
     echo "      fe:   ${FRONTEND[$k]}"
+    echo "      mode: ${DEPLOY_MODE[$k]:-backend}"
     echo ""
   done | sed '/^$/N;/^\n$/D'
 }
@@ -143,6 +143,10 @@ require_prod_targets() {
     [[ -n "${PROJ[$n]:-}" ]] || die "Config error: '$n' missing compose_project"
     [[ -n "${HOST[$n]:-}" ]] || die "Config error: '$n' missing host"
     [[ -n "${FRONTEND[$n]:-}" ]] || die "Config error: '$n' missing frontend_url"
+    case "${DEPLOY_MODE[$n]:-backend}" in
+      backend|field) ;;
+      *) die "Config error: '$n' has invalid deploy_mode '${DEPLOY_MODE[$n]}' (expected backend or field)" ;;
+    esac
   done
 }
 
@@ -349,6 +353,42 @@ deploy_scripts_to_site() {
     "$SCRIPTS_DIR/" "$USER@$host:$REMOTE_SCRIPTS_DIR/"
 
   echo "Scripts deployed: $site"
+}
+
+remote_seed_field_runtime_if_missing() {
+  local host="$1"
+
+  ssh -T $SSH_OPTS "$USER@$host" "REMOTE_HOME='$REMOTE_SCRIPTS_DIR' bash -s" <<'REMOTE'
+set -euo pipefail
+
+REMOTE_HOME="${REMOTE_HOME:?}"
+FIELD_ENV_FILE="$REMOTE_HOME/.wistronlabs_field.env"
+FIELD_CONFIG_DIR="$REMOTE_HOME/config"
+FIELD_STATIONS_FILE="$FIELD_CONFIG_DIR/field_stations.json"
+
+mkdir -p "$FIELD_CONFIG_DIR"
+
+if [[ ! -f "$FIELD_ENV_FILE" ]]; then
+  cat > "$FIELD_ENV_FILE" <<EOF
+export WISTRON_MODE=field
+export FIELD_STATIONS_FILE=$FIELD_STATIONS_FILE
+export FIELD_DEFAULT_CONFIG=F
+EOF
+  chmod 600 "$FIELD_ENV_FILE" 2>/dev/null || true
+fi
+
+if [[ ! -f "$FIELD_STATIONS_FILE" ]]; then
+  cat > "$FIELD_STATIONS_FILE" <<'EOF'
+{
+  "default_config": "F",
+  "stations": [
+    { "id": 1, "enabled": true }
+  ]
+}
+EOF
+  chmod 600 "$FIELD_STATIONS_FILE" 2>/dev/null || true
+fi
+REMOTE
 }
 
 
@@ -1011,16 +1051,20 @@ preflight_auth_and_prereqs() {
       continue
     fi
 
-    echo "Checking /var/www/html exists on $host ..."
-    if ! remote_check_var_www_html "$host" >/dev/null 2>&1; then
-      err "/var/www/html missing on $host"
-      failed+=("$site")
-    fi
+    if is_backend_deploy_target "$site"; then
+      echo "Checking /var/www/html exists on $host ..."
+      if ! remote_check_var_www_html "$host" >/dev/null 2>&1; then
+        err "/var/www/html missing on $host"
+        failed+=("$site")
+      fi
 
-    echo "Checking docker & docker compose runnable on $host ..."
-    if ! remote_check_docker_compose_runnable "$host" >/dev/null 2>&1; then
-      err "docker/compose not runnable for $USER@$host (need docker group or sudoers NOPASSWD)"
-      failed+=("$site")
+      echo "Checking docker & docker compose runnable on $host ..."
+      if ! remote_check_docker_compose_runnable "$host" >/dev/null 2>&1; then
+        err "docker/compose not runnable for $USER@$host (need docker group or sudoers NOPASSWD)"
+        failed+=("$site")
+      fi
+    else
+      echo "Field deploy target detected for $site; skipping frontend/backend host checks."
     fi
   done
 
@@ -1080,10 +1124,25 @@ preflight_auth_and_prereqs "${targets[@]}"
 print_prod_locations
 
 for site in "${targets[@]}"; do
-  frontend_build_for_site "$site"
-  frontend_upload_to_site "$site"
-  backend_deploy_one "$site"
-  deploy_scripts_to_site "$site"
+  if is_field_deploy_target "$site"; then
+    echo ""
+    echo "============================================================"
+    echo "FIELD DEPLOY"
+    echo "  Site : $site"
+    echo "  Host : ${USER}@${HOST[$site]}"
+    echo "  Mode : field"
+    echo "============================================================"
+    deploy_scripts_to_site "$site"
+    remote_seed_field_runtime_if_missing "${HOST[$site]}"
+    echo "Field runtime ensured:"
+    echo "  /home/$USER/.wistronlabs_field.env"
+    echo "  /home/$USER/config/field_stations.json"
+  else
+    frontend_build_for_site "$site"
+    frontend_upload_to_site "$site"
+    backend_deploy_one "$site"
+    deploy_scripts_to_site "$site"
+  fi
 
   echo ""
   echo "============================================================"

@@ -1,9 +1,14 @@
 #!/bin/bash
 # About:
-#   Runs the L10 diagnostic workflow for a selected system from the current station tmux session.
+#   Runs the L10 diagnostic workflow for a selected system from the current
+#   station tmux session.
+#   Backend mode uses the station's backend assignment. Field mode uses local
+#   stations, prompts for the service tag only for local log folder naming,
+#   and defaults to FIELD_DEFAULT_CONFIG or the field stations JSON default.
 #
 # Usage:
-#   ./l10_test.sh [options]
+#   WISTRON_MODE=backend ./l10_test.sh [options]
+#   WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./l10_test.sh [options]
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -12,6 +17,8 @@ LIB_DIR="$SCRIPT_DIR/.lib"
 # shellcheck disable=SC1091
 source "$LIB_DIR/err.sh"
 # shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
+# shellcheck disable=SC1091
 source "$LIB_DIR/require_cmd.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/require_server_location.sh"
@@ -19,6 +26,8 @@ source "$LIB_DIR/require_server_location.sh"
 source "$LIB_DIR/require_internal_api_key.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/fetch_station_list.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/prompt_service_tag.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/curl_auth.sh"
 # shellcheck disable=SC1091
@@ -36,7 +45,46 @@ HOST_MAC=""
 CONFIG=""
 
 print_help() {
-  cat <<'EOF'
+  if is_field_mode; then
+    cat <<EOF
+Usage:
+  ./l10_test.sh [options]
+  Must be run inside a valid station tmux session.
+
+Options:
+  -b, --bmc-mac BMC_MAC
+      Provide the BMC MAC instead of being prompted.
+  -s, --sys-mac SYS_MAC
+      Provide the system MAC instead of being prompted.
+  -l, --live
+      Show BIOS serial on the right until SSH is fully up, then return to one pane.
+  -o, --options
+      Open interactive module picker.
+  -f, --fru-only
+      FRU only mode; skip diag upload and L10 validation run.
+  -p, --power-on
+      Keep the unit powered on after the script ends.
+  -h, --help
+      Show this help and exit.
+
+Field mode behavior:
+  - The station only identifies the tmux collaboration session.
+  - You will be prompted for SERVICE_TAG to create l10_logs/<service_tag>/<run>.
+  - BMC and HOST MACs are entered manually unless provided with -b/-s.
+  - Config defaults to ${FIELD_DEFAULT_CONFIG:-$(field_default_config)}.
+  - Logs stay local; backend PATCHes and remote uploads are skipped.
+
+Examples:
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./l10_test.sh
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./l10_test.sh -l
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./l10_test.sh -b 001a2b3c4d5e
+  WISTRON_MODE=field FIELD_DEFAULT_CONFIG=F ./l10_test.sh -b 001a2b3c4d5e -s 00aa11bb22cc
+  ./l10_test.sh -o
+  ./l10_test.sh -f
+  ./l10_test.sh -p
+EOF
+  else
+    cat <<'EOF'
 Usage:
   ./l10_test.sh [options]
   Must be run inside a valid station tmux session.
@@ -76,6 +124,7 @@ Examples:
   ./l10_test.sh -f
   ./l10_test.sh -p
 EOF
+  fi
 }
 
 close_live_right_pane() {
@@ -125,7 +174,7 @@ start_live_bios_pane() {
 
   current_pane_id="$(tmux display-message -p '#{pane_id}')"
   window_target="$(tmux display-message -p '#S:#I')"
-  right_cmd="cd '$script_dir' && env -u TMUX SERVER_LOCATION='$SERVER_LOCATION' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
+  right_cmd="cd '$script_dir' && env -u TMUX WISTRON_MODE='$WISTRON_MODE' FIELD_STATIONS_FILE='$FIELD_STATIONS_FILE' FIELD_DEFAULT_CONFIG='${FIELD_DEFAULT_CONFIG:-}' SERVER_LOCATION='${SERVER_LOCATION:-}' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
 
   LIVE_RIGHT_PANE_ID="$(tmux split-window -h -P -F '#{pane_id}' -t "$current_pane_id" "$right_cmd")"
   tmux select-layout -t "$window_target" even-horizontal
@@ -153,8 +202,10 @@ for arg in "$@"; do
   fi
 done
 
-require_server_location
-require_internal_api_key
+if is_backend_mode; then
+  require_server_location
+  require_internal_api_key
+fi
 
 require_cmd jq
 require_cmd curl
@@ -216,9 +267,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
+api_base=""
+api_auth_hdr=()
 
-api_auth_hdr=(-H "Authorization: Bearer $INTERNAL_API_KEY")
+if is_backend_mode; then
+  api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
+  api_auth_hdr=(-H "Authorization: Bearer $INTERNAL_API_KEY")
+fi
 
 backend_get_system() {
   # prints JSON on stdout; returns nonzero on failure
@@ -268,83 +323,97 @@ if [[ $found -eq 0 ]]; then
     exit 1
 fi
 
-http_code="$(curl -s -o /dev/null -w "%{http_code}" \
-  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER")"
+if is_backend_mode; then
+  http_code="$(curl -s -o /dev/null -w "%{http_code}" \
+    "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER")"
 
-if [[ "$http_code" != "200" ]]; then
-  err "Backend API returned HTTP $http_code for station $SESSION_NUMBER"
-  exit 1
-fi
+  if [[ "$http_code" != "200" ]]; then
+    err "Backend API returned HTTP $http_code for station $SESSION_NUMBER"
+    exit 1
+  fi
 
-STATION_SERVICE_TAG="$(curl -s \
-  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')"
+  STATION_SERVICE_TAG="$(curl -s \
+    "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')"
 
-if [[ -z "$STATION_SERVICE_TAG" || "$STATION_SERVICE_TAG" == "null" ]]; then
-  err "No system is currently assigned to Station $SESSION_NUMBER. Assign a unit to this station and re-run."
-  exit 1
-fi
+  if [[ -z "$STATION_SERVICE_TAG" || "$STATION_SERVICE_TAG" == "null" ]]; then
+    err "No system is currently assigned to Station $SESSION_NUMBER. Assign a unit to this station and re-run."
+    exit 1
+  fi
 
-SERVICE_TAG="$STATION_SERVICE_TAG"
+  SERVICE_TAG="$STATION_SERVICE_TAG"
 
-if [[ "$MANUAL_MODE" != "1" && (-n "$BMC_MAC" || -n "$HOST_MAC") ]]; then
-  err "-b/--bmc-mac and -s/--sys-mac require -m manual mode."
-  print_help
-  exit 1
-fi
+  if [[ "$MANUAL_MODE" != "1" && (-n "$BMC_MAC" || -n "$HOST_MAC") ]]; then
+    err "-b/--bmc-mac and -s/--sys-mac require -m manual mode."
+    print_help
+    exit 1
+  fi
 
-CONFIG_TMP="$(mktemp)"
+  CONFIG_TMP="$(mktemp)"
 
-HTTP_CODE="$(curl -sS -w "%{http_code}" -o "$CONFIG_TMP" \
-  "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG")" || {
-    err "Failed to reach backend when fetching config for $SERVICE_TAG."
+  HTTP_CODE="$(curl -sS -w "%{http_code}" -o "$CONFIG_TMP" \
+    "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG")" || {
+      err "Failed to reach backend when fetching config for $SERVICE_TAG."
+      rm -f "$CONFIG_TMP"
+      exit 1
+  }
+
+  if [[ "$HTTP_CODE" != "200" ]]; then
+    case "$HTTP_CODE" in
+      404)
+        err "System $SERVICE_TAG not found in tracking website."
+        ;;
+      *)
+        err "Backend returned HTTP $HTTP_CODE when fetching config for $SERVICE_TAG."
+        ;;
+    esac
     rm -f "$CONFIG_TMP"
     exit 1
-}
+  fi
 
-if [[ "$HTTP_CODE" != "200" ]]; then
-  case "$HTTP_CODE" in
-    404)
-      err "System $SERVICE_TAG not found in tracking website."
-      ;;
-    *)
-      err "Backend returned HTTP $HTTP_CODE when fetching config for $SERVICE_TAG."
-      ;;
-  esac
+  CONFIG="$(jq -r '.config // empty' < "$CONFIG_TMP")"
   rm -f "$CONFIG_TMP"
-  exit 1
-fi
 
-CONFIG="$(jq -r '.config // empty' < "$CONFIG_TMP")"
-rm -f "$CONFIG_TMP"
+  if [[ -z "$CONFIG" || "$CONFIG" == "null" ]]; then
+    err "System $SERVICE_TAG has no known config in tracking website."
+    exit 1
+  fi
 
-if [[ -z "$CONFIG" || "$CONFIG" == "null" ]]; then
-  err "System $SERVICE_TAG has no known config in tracking website."
-  exit 1
-fi
+  echo "INFO - SERVICE TAG FROM STATION $SESSION_NUMBER: $SERVICE_TAG"
 
-echo "INFO - SERVICE TAG FROM STATION $SESSION_NUMBER: $SERVICE_TAG"
+  if [[ "$MANUAL_MODE" == "1" ]]; then
+    if [[ -z "$BMC_MAC" ]]; then
+      read -r -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
+    fi
+    if [[ -z "$HOST_MAC" ]]; then
+      read -r -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
+    fi
+  else
+    if sys_json="$(backend_get_system 2>/dev/null)"; then
+      bmc_raw="$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')"
+      host_raw="$(printf '%s' "$sys_json" | jq -r '.host_mac // empty')"
 
-if [[ "$MANUAL_MODE" == "1" ]]; then
+      if [[ -n "$bmc_raw" && -n "$host_raw" && "$bmc_raw" != "null" && "$host_raw" != "null" ]]; then
+        BMC_MAC="$bmc_raw"
+        HOST_MAC="$host_raw"
+        echo "INFO - Using BMC/HOST MAC from backend for $SERVICE_TAG"
+      fi
+    fi
+
+    if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
+      read -r -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
+      read -r -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
+    fi
+  fi
+else
+  MANUAL_MODE=1
+  CONFIG="$(field_default_config | tr '[:lower:]' '[:upper:]')"
+  SERVICE_TAG="$(prompt_service_tag)"
+  echo "INFO - Field mode using station $SESSION_NUMBER and config $CONFIG"
+
   if [[ -z "$BMC_MAC" ]]; then
     read -r -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
   fi
   if [[ -z "$HOST_MAC" ]]; then
-    read -r -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
-  fi
-else
-  if sys_json="$(backend_get_system 2>/dev/null)"; then
-    bmc_raw="$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')"
-    host_raw="$(printf '%s' "$sys_json" | jq -r '.host_mac // empty')"
-
-    if [[ -n "$bmc_raw" && -n "$host_raw" && "$bmc_raw" != "null" && "$host_raw" != "null" ]]; then
-      BMC_MAC="$bmc_raw"
-      HOST_MAC="$host_raw"
-      echo "INFO - Using BMC/HOST MAC from backend for $SERVICE_TAG"
-    fi
-  fi
-
-  if [[ -z "$BMC_MAC" || -z "$HOST_MAC" ]]; then
-    read -r -p "Enter BMC MAC address (e.g., 001A2B3C4D5E): " BMC_MAC
     read -r -p "Enter HOST MAC address (e.g., 001A2B3C4D5E): " HOST_MAC
   fi
 fi
@@ -774,25 +843,27 @@ fi
 BMC_MAC="$(normalize_mac_colon "$BMC_MAC")" || { err "Invalid BMC MAC"; exit 1; }
 HOST_MAC="$(normalize_mac_colon "$HOST_MAC")" || { err "Invalid HOST MAC"; exit 1; }
 
-# --- PATCH MACs to backend (always do this once we have them) ---
-resp_bmc="$(backend_patch_mac "bmc_mac" "$(echo "$BMC_MAC" | tr -d ':')" )"
-bmc_err="$(echo "$resp_bmc" | jq -r '.error // empty' 2>/dev/null || true)"
-if [[ -n "$bmc_err" ]]; then
-  err "Cannot update BMC MAC, $bmc_err"
-  echo ""
-  exit 1
-fi
+if is_backend_mode; then
+  # --- PATCH MACs to backend (always do this once we have them) ---
+  resp_bmc="$(backend_patch_mac "bmc_mac" "$(echo "$BMC_MAC" | tr -d ':')" )"
+  bmc_err="$(echo "$resp_bmc" | jq -r '.error // empty' 2>/dev/null || true)"
+  if [[ -n "$bmc_err" ]]; then
+    err "Cannot update BMC MAC, $bmc_err"
+    echo ""
+    exit 1
+  fi
 
-resp_host="$(backend_patch_mac "host_mac" "$(echo "$HOST_MAC" | tr -d ':')" )"
-host_err="$(echo "$resp_host" | jq -r '.error // empty' 2>/dev/null || true)"
-if [[ -n "$host_err" ]]; then
-  err "Cannot update HOST MAC, $host_err"
-  echo ""
-  exit 1
-fi
+  resp_host="$(backend_patch_mac "host_mac" "$(echo "$HOST_MAC" | tr -d ':')" )"
+  host_err="$(echo "$resp_host" | jq -r '.error // empty' 2>/dev/null || true)"
+  if [[ -n "$host_err" ]]; then
+    err "Cannot update HOST MAC, $host_err"
+    echo ""
+    exit 1
+  fi
 
-echo "INFO - Updated BMC/HOST MAC in tracking website"
-echo ""
+  echo "INFO - Updated BMC/HOST MAC in tracking website"
+  echo ""
+fi
 
 if [[ "$LIVE_MODE" == "1" ]]; then
   start_live_bios_pane
@@ -992,7 +1063,7 @@ fi
 echo ""
 
 
-if [[ "${CONFIG:-}" != "7" ]]; then
+if is_backend_mode && [[ "${CONFIG:-}" != "7" ]]; then
 
     echo "INFO - verifying system PPID"
     SYSTEM_PPID=$(ipmi fru print 0 | grep "Product Serial" | cut -d':' -f2 | xargs)
@@ -1191,6 +1262,23 @@ else
     # Runs the L10 validation test by SSHing into the remote system and attaching to a tmux session.
     # The tmux session runs partnerdiag + log copy and exits when finished.
     echo "Running config $CONFIG L10 Validation Tests"
+    if is_backend_mode; then
+      REMOTE_POST_RUN_CMD='
+        ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts 2>/dev/null || true
+        sleep 2
+        cd logs
+        LATEST=$(ls -1 logs-*.tgz | sort | tail -n1)
+        ssh falab@'"$SERVER_LOCATION"'.wistronlabs.com mkdir -p '"$LOG_DIR"'
+        scp -r '"$DIAG_FOLDER"'/logs/$LATEST falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/\$LATEST
+        scp /home/nvidia/output.log falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/diag_output.log
+        sleep 8
+      '
+    else
+      REMOTE_POST_RUN_CMD='
+        sleep 2
+      '
+    fi
+
     ssh -t nvidia@"$HOST_IP" 'tmux new-session -As '"$SERVICE_TAG"' "
         sleep 1
         cd '"$DIAG_FOLDER"'
@@ -1199,18 +1287,19 @@ else
             --run_on_error --no_bmc \
             '"$TEST_ARG"' \
             2>&1 | tee /home/nvidia/output.log
-        ssh-keyscan -H '"$SERVER_LOCATION"'.wistronlabs.com >> ~/.ssh/known_hosts 2>/dev/null || true
-        sleep 2
-        cd logs
-        LATEST=\$(ls -1 logs-*.tgz | sort | tail -n1)
-        ssh falab@'"$SERVER_LOCATION"'.wistronlabs.com mkdir -p '"$LOG_DIR"'
-        scp -r '"$DIAG_FOLDER"'/logs/\$LATEST falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/\$LATEST
-        scp /home/nvidia/output.log falab@'"$SERVER_LOCATION"'.wistronlabs.com:'"$LOG_DIR"'/diag_output.log
-        sleep 8
+        '"$REMOTE_POST_RUN_CMD"'
     "'
 
     sleep 1
     log_on
+
+    if is_field_mode; then
+        LATEST_REMOTE_LOG=$(ssh nvidia@"$HOST_IP" "cd '$DIAG_FOLDER/logs' && ls -1 logs-*.tgz | sort | tail -n1" 2>/dev/null || true)
+        if [[ -n "$LATEST_REMOTE_LOG" ]]; then
+            scp "nvidia@$HOST_IP:$DIAG_FOLDER/logs/$LATEST_REMOTE_LOG" "$LOG_DIR/$LATEST_REMOTE_LOG" >/dev/null
+        fi
+        scp "nvidia@$HOST_IP:/home/nvidia/output.log" "$LOG_DIR/diag_output.log" >/dev/null 2>&1 || true
+    fi
 
     if [[ -f "$LOG_DIR/diag_output.log" ]]; then
         cat "$LOG_DIR/diag_output.log"
@@ -1237,7 +1326,9 @@ fi
 
 
 log_off
-rm -f -- "$LOG_DIR/diag_output.log"
+if is_backend_mode; then
+    rm -f -- "$LOG_DIR/diag_output.log"
+fi
 rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
 
