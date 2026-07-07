@@ -1,0 +1,141 @@
+@import "tailwindcss";
+.flowchart {
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 1rem;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 2rem;
+}
+
+.node {
+  padding: 8px 12px;
+  background: #f9f9f9;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.arrow-horizontal {
+  width: 40px;
+  height: 2px;
+  background: black;
+}
+
+.arrow-horizontal.thick {
+  height: 4px;
+}
+
+.arrow-down {
+  width: 2px;
+  height: 40px;
+  background: black;
+  grid-column: 2;
+}
+
+.arrow-up {
+  width: 2px;
+  height: 40px;
+  background: black;
+  align-self: end;
+  grid-column: 2;
+}
+
+.arrow-down-right {
+  width: 30px;
+  height: 2px;
+  background: black;
+  position: relative;
+}
+
+.arrow-down-right::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 30px;
+  width: 2px;
+  height: 40px;
+  background: black;
+}
+
+/* Hide browser focus ring on Recharts interactive layers */
+.recharts-wrapper:focus,
+.recharts-wrapper:focus-visible,
+.recharts-surface:focus,
+.recharts-surface:focus-visible,
+.recharts-legend-item:focus,
+.recharts-legend-item:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* :root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  font-weight: 500;
+  color: #646cff;
+  text-decoration: inherit;
+}
+a:hover {
+  color: #535bf2;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  place-items: center;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+}
+
+button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+button:hover {
+  border-color: #646cff;
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff;
+  }
+  a:hover {
+    color: #747bff;
+  }
+  button {
+    background-color: #f9f9f9;
+  }
+} */

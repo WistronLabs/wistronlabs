@@ -1,0 +1,222 @@
+#!/bin/bash
+# About:
+#   Opens a BIOS serial or console session for a target BMC using IP, MAC, or
+#   service tag input.
+#   Backend mode supports -i, -m, and -t. Field mode supports -i and -m only.
+#
+# Usage:
+#   WISTRON_MODE=backend ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
+#   WISTRON_MODE=field   ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS>
+#
+set -euo pipefail
+
+IPMI_USER="admin"
+IPMI_PASS="admin"
+
+SSH_USER="root"
+SSH_PASS="changeme"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$SCRIPT_DIR/.lib"
+
+# shellcheck disable=SC1091
+source "$LIB_DIR/err.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/runtime_mode.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/normalize_mac_hex12.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_server_location.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/require_cmd.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/fetch_system_from_backend.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/resolve_ip_from_mac.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/normalize_service_tag.sh"
+
+print_help() {
+    if is_field_mode; then
+        cat <<EOF
+Usage:
+  ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS>
+
+Mode:
+  field
+
+Options:
+  -i    Specify BMC using its IP address
+  -m    Specify BMC using its MAC address
+
+Notes:
+  - Service tag lookup is disabled in field mode.
+EOF
+    else
+        cat <<EOF
+Usage:
+  ./bios_serial.sh <-i IP_ADDRESS | -m MAC_ADDRESS | -t SERVICE_TAG>
+
+Mode:
+  backend
+
+Options:
+  -i    Specify BMC using its IP address
+  -m    Specify BMC using its MAC address
+  -t    Specify system by Service Tag (pull BMC MAC from backend)
+EOF
+    fi
+}
+
+# Check if exactly two arguments are provided
+if [ $# -ne 2 ]; then
+    print_help
+    exit 1
+fi
+
+ADDRESS_TYPE="$1"
+ADDRESS_VALUE="$2"
+
+# Simple validation for IP address format
+if [[ "$ADDRESS_TYPE" = "-i" ]]; then
+
+    if ! [[ "$ADDRESS_VALUE" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        err "Invalid IP address format."
+        echo "Needs to be in 123.456.789.012 format"
+        exit 1
+    fi
+
+    IP="$ADDRESS_VALUE"
+
+    MAC=$(awk -v ip="$ADDRESS_VALUE" '
+        $1 == "lease" && $2 == ip {found=1}
+        found && /hardware ethernet/ {gsub(";", "", $3); print $3; exit}
+    ' /var/lib/dhcp/dhcpd.leases)
+
+    if [[ -z "$MAC" ]]; then
+        err "There is no system with that IP"
+        echo "Please check the IP address or wait for a lease to appear"
+        exit 1
+    fi
+
+elif [[ "$ADDRESS_TYPE" = "-m" ]]; then
+
+    if ! mac_raw="$(normalize_mac_hex12 "$ADDRESS_VALUE")"; then
+        err "Invalid MAC address format."
+        echo "Needs to be in 001A2B3C4D5E format"
+        exit 1
+    fi
+
+    # Normalize to aa:bb:cc:dd:ee:ff
+    ADDRESS_VALUE=$(printf '%s' "$mac_raw" | sed 's/\(..\)/\1:/g; s/:$//')
+    IP="$(resolve_ip_from_mac "$ADDRESS_VALUE")"
+
+    if [[ -z "$IP" ]]; then
+        err "The MAC Address given does not have a valid IP yet"
+        echo "please wait for an IP address to be assigned or recheck your mac"
+        exit 1
+    fi
+
+    MAC="$ADDRESS_VALUE"
+elif [[ "$ADDRESS_TYPE" = "-t" || "$ADDRESS_TYPE" = "-T" ]]; then
+    if is_field_mode; then
+        err "Service tag lookup is not available in field mode. Use -i or -m."
+        exit 1
+    fi
+
+    SERVICE_TAG="$(normalize_service_tag "$ADDRESS_VALUE")"
+    if [[ -z "$SERVICE_TAG" ]]; then
+        err "Service Tag cannot be empty."
+        exit 1
+    fi
+
+    require_server_location
+    require_cmd jq
+    sys_json="$(fetch_system_from_backend "$SERVICE_TAG")"
+
+    bmc_raw=$(printf '%s' "$sys_json" | jq -r '.bmc_mac // empty')
+    if [[ -z "$bmc_raw" || "$bmc_raw" == "null" ]]; then
+        err "BMC MAC has not been set for $SERVICE_TAG yet."
+        exit 1
+    fi
+
+     if ! [[ "$bmc_raw" =~ ^[A-Fa-f0-9]{12}$ ]]; then
+        err "Backend returned an invalid BMC MAC for $SERVICE_TAG: $bmc_raw"
+        exit 1
+    fi
+
+    # Reuse existing MAC flow after backend lookup
+    ADDRESS_VALUE=$(echo "$bmc_raw" | tr 'A-F' 'a-f' | sed 's/\(..\)/\1:/g' | sed 's/:$//')
+    IP="$(resolve_ip_from_mac "$ADDRESS_VALUE")"
+
+    if [[ -z "$IP" ]]; then
+        err "The MAC Address given does not have a valid IP yet"
+        echo "please wait for an IP address to be assigned or recheck your mac"
+        exit 1
+    fi
+
+    MAC="$ADDRESS_VALUE"
+else
+    err "Invalid type, must be -i (ip), -m (mac), or -t (service tag)"
+    exit 1
+fi
+
+MAC_NO_COLONS="${MAC//:/}"
+SESSION_NAME="bs_${MAC_NO_COLONS}"
+
+# If session already exists, just attach
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    tmux attach -t "$SESSION_NAME"
+    exit 0
+fi
+
+# Probe IPMI quickly (don’t hang forever) - try admin/admin first, then root/0penBmc with -C 17
+if timeout 4 ipmitool -I lanplus -U "admin" -P "admin" -H "$IP" chassis power status >/dev/null 2>&1; then
+    IPMI_USER="admin"
+    IPMI_PASS="admin"
+    IPMI_CIPHER=""   # none
+
+elif timeout 4 ipmitool -I lanplus -U "root" -P "0penBmc" -H "$IP" -C 17 chassis power status >/dev/null 2>&1; then
+    IPMI_USER="root"
+    IPMI_PASS="0penBmc"
+    IPMI_CIPHER="-C 17"
+elif timeout 4 ipmitool -I lanplus -U "root" -P "calvin" -H "$IP" chassis power status >/dev/null 2>&1; then
+    IPMI_USER="root"
+    IPMI_PASS="calvin"
+    IPMI_CIPHER=""
+else
+    IPMI_USER=""
+    IPMI_PASS=""
+    IPMI_CIPHER=""
+fi
+
+if [[ -n "$IPMI_USER" ]]; then
+    # IPMI works -> use SOL (with whatever cipher was selected)
+    ipmitool -I lanplus -U "$IPMI_USER" -P "$IPMI_PASS" -H "$IP" $IPMI_CIPHER sol deactivate >/dev/null 2>&1 || true
+
+    tmux new-session -s "$SESSION_NAME" \
+      "ipmitool -I lanplus -U '$IPMI_USER' -P '$IPMI_PASS' -H '$IP' $IPMI_CIPHER sol activate"
+else
+    sshpass -p "$SSH_PASS" ssh \
+      -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=10 \
+      "${SSH_USER}@${IP}" \
+      "stop -script HOST/console" >/dev/null 2>&1 || true
+
+    tmux new-session -s "$SESSION_NAME" \
+      "sshpass -p '$SSH_PASS' ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${SSH_USER}@${IP} 'start -script HOST/console'"
+
+    # If SSH failed immediately, tmux session won't exist -> show error
+    if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        err "Unable to connect to $IP via IPMI (admin/admin or root/0penBmc -C 17) or SSH console (Config 7)." >&2
+        echo "Please ensure the system is powered on and accessible." >&2
+        exit 2
+    fi
+fi
+
+
+tmux attach -t "$SESSION_NAME"
+
+# Authors:
+#   Giovanni Leon - giovanni_leon@wistron.com

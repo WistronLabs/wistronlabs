@@ -1,0 +1,5622 @@
+/**
+ * Filter Operators
+ *
+ * When defining a filter condition in `filters`, you can optionally specify an `op` (operator).
+ * If omitted, the default is usually `IN` for lists or `=` for single values.
+ *
+ * Supported operators for leaf conditions:
+ *
+ *   op             Meaning
+ *   =              Exact match
+ *   IN             Match any of the given values (default if values is an array)
+ *   ILIKE          Case-insensitive partial match (Postgres only; LIKE but case-insensitive)
+ *   LIKE           Case-sensitive partial match
+ *   >              Greater than
+ *   <              Less than
+ *   >=             Greater or equal
+ *   <=             Less or equal
+ *   <>             Not equal
+ *   NOT IN         Not in a list
+ *   IS NULL        Field is null (in this case, `values` is not required)
+ *   IS NOT NULL    Field is not null
+ *
+ * Supported logical operators for grouping conditions:
+ *
+ *   op             Meaning
+ *   AND            Combine conditions with logical AND
+ *   OR             Combine conditions with logical OR
+ *
+ * Notes:
+ * - Leaf conditions have `field`, `values`, and `op`.
+ * - Groups have `op` and `conditions` (array of Filter).
+ */
+
+const express = require("express");
+const fs = require("fs/promises");
+const path = require("path");
+const os = require("os");
+const { spawn } = require("child_process");
+const { DateTime } = require("luxon");
+const multer = require("multer");
+const db = require("../db");
+const { authenticateToken } = require("./auth");
+const { buildWhereClause } = require("../utils/buildWhereClause");
+const { systemOnLockedPallet } = require("../utils/systemOnLockedPallet");
+const { generatePalletNumber } = require("../utils/generatePalletNumber");
+const { ensureAdmin } = require("../utils/ensureAdmin");
+const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
+const { getServerTimeZone } = require("../utils/serverTimeZone");
+
+const NodeCache = require("node-cache");
+const snapshotCache = new NodeCache({ stdTTL: 8 * 60 * 60 }); // 8 hours
+
+const router = express.Router();
+const batchExportJobs = new Map();
+
+function escapeRegExp(str) {
+  return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function firstExistingDir(candidates = []) {
+  for (const dir of candidates) {
+    if (!dir) continue;
+    try {
+      await fs.access(dir);
+      return dir;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+async function getDirectorySizeBytes(dirPath) {
+  if (!dirPath) return 0;
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return 0;
+    throw err;
+  }
+
+  let total = 0;
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isFile()) {
+      try {
+        const stat = await fs.stat(fullPath);
+        total += stat.size || 0;
+      } catch {
+        // ignore unreadable file
+      }
+      continue;
+    }
+    if (entry.isDirectory()) {
+      try {
+        total += await getDirectorySizeBytes(fullPath);
+      } catch {
+        // ignore unreadable directory
+      }
+    }
+  }
+  return total;
+}
+
+async function hasAnyFileNewerThan(dirPath, threshold) {
+  if (!dirPath || !threshold || Number.isNaN(new Date(threshold).getTime())) {
+    return false;
+  }
+
+  const thresholdMs = new Date(threshold).getTime();
+  const queue = [dirPath];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    let entries = [];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === "ENOENT") continue;
+      throw err;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = await fs.stat(fullPath);
+        if ((stat?.mtime?.getTime?.() || 0) > thresholdMs) return true;
+      } catch {
+        // ignore unreadable file
+      }
+    }
+  }
+
+  return false;
+}
+
+async function hasL11ArchiveForServiceTagAndRack(
+  logsRoot,
+  serviceTag,
+  rackTag,
+  minCreatedAt = null,
+) {
+  if (!logsRoot || !serviceTag || !rackTag) return false;
+
+  const st = String(serviceTag || "").trim();
+  const rack = String(rackTag || "").trim();
+  if (!st || !rack) return false;
+
+  const matcher = new RegExp(
+    `^L11_logs_ST_${escapeRegExp(st)}_RT_${escapeRegExp(rack)}\\.tgz$`,
+    "i",
+  );
+  const serviceTagDir = path.join(logsRoot, st);
+
+  let topEntries = [];
+  try {
+    topEntries = await fs.readdir(serviceTagDir, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+
+  const queue = [{ dir: serviceTagDir, entries: topEntries, depth: 0 }];
+  while (queue.length > 0) {
+    const { dir, entries, depth } = queue.shift();
+    for (const entry of entries) {
+      if (entry.isFile() && matcher.test(entry.name)) {
+        if (!minCreatedAt) return true;
+        try {
+          const stat = await fs.stat(path.join(dir, entry.name));
+          const serverZone = getServerTimeZone();
+          const archiveMillis = DateTime.fromJSDate(stat.mtime, {
+            zone: serverZone,
+          }).toMillis();
+          const thresholdSource =
+            minCreatedAt instanceof Date
+              ? DateTime.fromJSDate(minCreatedAt, { zone: serverZone })
+              : DateTime.fromISO(String(minCreatedAt || ""), {
+                  zone: serverZone,
+                });
+          const thresholdMillis = thresholdSource.isValid
+            ? thresholdSource.toMillis()
+            : Number.NaN;
+
+          if (Number.isFinite(archiveMillis) && Number.isFinite(thresholdMillis)) {
+            return archiveMillis > thresholdMillis;
+          }
+        } catch {
+          // ignore unreadable archive and keep searching
+        }
+      }
+      if (entry.isDirectory() && depth < 2) {
+        const subdir = path.join(dir, entry.name);
+        try {
+          const subEntries = await fs.readdir(subdir, { withFileTypes: true });
+          queue.push({ dir: subdir, entries: subEntries, depth: depth + 1 });
+        } catch {
+          // ignore unreadable subdir
+        }
+      }
+    }
+  }
+  return false;
+}
+
+async function getLatestReceivedAt(client, systemId) {
+  if (!systemId) return null;
+  const { rows } = await client.query(
+    `
+    SELECT changed_at
+    FROM system_location_history
+    WHERE system_id = $1
+      AND to_location_id = $2
+    ORDER BY changed_at DESC
+    LIMIT 1
+    `,
+    [systemId, RECEIVED_LOCATION_ID],
+  );
+  return rows[0]?.changed_at || null;
+}
+
+function normalizePendingL11MoveRule(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const parsedMinutes = Number.parseInt(raw.minutes, 10);
+  const minutes = Number.isInteger(parsedMinutes) && parsedMinutes > 0
+    ? parsedMinutes
+    : DEFAULT_PENDING_L11_MOVE_RULE.minutes;
+
+  return {
+    enabled: !!raw.enabled,
+    minutes,
+  };
+}
+
+async function getPendingL11MoveRule(client) {
+  const { rows } = await client.query(
+    `SELECT value_json FROM global_settings WHERE key = $1 LIMIT 1`,
+    [PENDING_L11_MOVE_RULE_KEY],
+  );
+  return normalizePendingL11MoveRule(rows[0]?.value_json);
+}
+
+// Helper: fetch deleted user id
+async function getDeletedUserId() {
+  const result = await db.query(
+    `SELECT id FROM users WHERE username = 'deleted_user@example.com'`,
+  );
+  return result.rows[0]?.id;
+}
+
+// RMA location IDs (must match DB)
+const RMA_LOCATION_IDS = [6, 7, 8];
+const RMA_CID_LOCATION_ID = 7;
+const RESOLVED_LOCATION_IDS = [6, 7, 8, 9, 10];
+const RECEIVED_LOCATION_ID = 1;
+const PENDING_L11_LOGS_LOCATION_ID = 3;
+const PENDING_MRB_LOCATION_NAME = "Pending MRB";
+const PENDING_L11_MOVE_RULE_KEY = "pending_l11_move_rule";
+const DEFAULT_PENDING_L11_MOVE_RULE = {
+  enabled: false,
+  minutes: 30,
+};
+
+function isPendingMrbLocationName(name) {
+  return String(name || "").trim() === PENDING_MRB_LOCATION_NAME;
+}
+const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
+const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
+const MAX_L11_LOG_BYTES = 250 * 1024 * 1024; // 250MB per file
+const MAX_L11_LOG_FILES = 75;
+const ALLOWED_PHOTO_MIME = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+]);
+
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PHOTO_BYTES },
+  fileFilter: (_req, file, cb) => {
+    if (!ALLOWED_PHOTO_MIME.has(file.mimetype)) {
+      return cb(new Error("Unsupported photo type"));
+    }
+    cb(null, true);
+  },
+});
+
+const l11LogUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_L11_LOG_BYTES,
+    files: MAX_L11_LOG_FILES,
+  },
+});
+
+function requireMac12Hex(value, fieldName = "mac") {
+  const s = String(value ?? "")
+    .trim()
+    .toUpperCase();
+
+  // STRICT: must be exactly 12 hex chars, no separators
+  if (!/^[0-9A-F]{12}$/.test(s)) {
+    throw new Error(
+      `${fieldName} must be exactly 12 hex chars (example: A1B2C3D4E5F6)`,
+    );
+  }
+  return s;
+}
+
+function safeServiceTagSegment(v) {
+  return String(v || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, "");
+}
+
+function extensionFromMime(mime) {
+  switch ((mime || "").toLowerCase()) {
+    case "image/jpeg":
+      return ".jpg";
+    case "image/png":
+      return ".png";
+    case "image/webp":
+      return ".webp";
+    case "image/heic":
+      return ".heic";
+    case "image/heif":
+      return ".heif";
+    default:
+      return "";
+  }
+}
+
+function sanitizeBaseName(name) {
+  const raw = String(name || "")
+    .trim()
+    .replace(/\.[^/.]+$/, "");
+  const cleaned = raw
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return cleaned || "photo";
+}
+
+function timestampSuffix(d = new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_` +
+    `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  );
+}
+
+function sanitizeUploadFileName(name, fallbackBase = "file") {
+  const parsed = path.parse(String(name || ""));
+  const safeBase = sanitizeBaseName(parsed.name || fallbackBase);
+  const safeExt =
+    parsed.ext && /^[.][a-zA-Z0-9]+$/.test(parsed.ext)
+      ? parsed.ext.toLowerCase()
+      : "";
+  return `${safeBase}${safeExt}` || fallbackBase;
+}
+
+function normalizeRelativeLogsDir(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const normalized = raw.replace(/\\/g, "/").replace(/^\/+/, "");
+  const resolved = path.posix.normalize(normalized);
+  if (
+    resolved === ".." ||
+    resolved.startsWith("../") ||
+    path.posix.isAbsolute(resolved)
+  ) {
+    throw new Error("Invalid logs directory");
+  }
+
+  return resolved === "." ? "" : resolved.replace(/\/?$/, "/");
+}
+
+function uniqueFileName(desiredName, usedNames) {
+  const parsed = path.parse(desiredName);
+  const base = parsed.name || "file";
+  const ext = parsed.ext || "";
+  let candidate = `${base}${ext}`;
+  let counter = 2;
+
+  while (usedNames.has(candidate.toLowerCase())) {
+    candidate = `${base}_${counter}${ext}`;
+    counter += 1;
+  }
+
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+async function runTar(args = [], options = {}) {
+  return await new Promise((resolve, reject) => {
+    const child = spawn("tar", args, options);
+    let stderr = "";
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) return resolve();
+      return reject(new Error(stderr.trim() || `tar exited with code ${code}`));
+    });
+  });
+}
+
+const BATCH_EXPORT_ROOT =
+  process.env.BATCH_EXPORT_ROOT ||
+  path.join(os.tmpdir(), "wistron-batch-exports");
+const BATCH_EXPORT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const BATCH_EXPORT_CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // hourly
+
+async function ensureBatchExportRoot() {
+  await fs.mkdir(BATCH_EXPORT_ROOT, { recursive: true });
+}
+
+function buildBatchExportId() {
+  return `batch_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function batchExportMetaPath(jobId) {
+  return path.join(BATCH_EXPORT_ROOT, `${jobId}.json`);
+}
+
+function parseBatchExportCsv(raw) {
+  const seen = new Set();
+  const tags = [];
+
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    const firstCell = String(line || "")
+      .split(",")[0]
+      .trim();
+    const tag = safeServiceTagSegment(firstCell);
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    tags.push(tag);
+  }
+
+  return tags;
+}
+
+function normalizeBatchExportOptions(raw) {
+  const defaults = {
+    include_l11_logs: true,
+    include_support_photos: true,
+    include_l10_test_folders: true,
+  };
+
+  if (!raw || typeof raw !== "object") return defaults;
+
+  return {
+    include_l11_logs:
+      raw.include_l11_logs == null
+        ? defaults.include_l11_logs
+        : Boolean(raw.include_l11_logs),
+    include_support_photos:
+      raw.include_support_photos == null
+        ? defaults.include_support_photos
+        : Boolean(raw.include_support_photos),
+    include_l10_test_folders:
+      raw.include_l10_test_folders == null
+        ? defaults.include_l10_test_folders
+        : Boolean(raw.include_l10_test_folders),
+  };
+}
+
+function hasSelectedBatchExportOption(options = {}) {
+  return Boolean(
+    options.include_l11_logs ||
+      options.include_support_photos ||
+      options.include_l10_test_folders,
+  );
+}
+
+function isL11ArchiveName(fileName, serviceTag) {
+  return new RegExp(
+    `^L11_logs_ST_${escapeRegExp(serviceTag)}_RT_.+\\.tgz$`,
+    "i",
+  ).test(String(fileName || ""));
+}
+
+async function hasAnyFilesInDir(dirPath) {
+  if (!dirPath) return false;
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(dirPath, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") return false;
+    throw err;
+  }
+
+  for (const entry of entries) {
+    const fullPath = path.join(dirPath, entry.name);
+    if (entry.isFile()) return true;
+    if (entry.isDirectory()) {
+      if (await hasAnyFilesInDir(fullPath)) return true;
+    }
+  }
+
+  return false;
+}
+
+async function collectBatchExportEntries(serviceTag, options = {}) {
+  const normalizedOptions = normalizeBatchExportOptions(options);
+  const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+  const foundTypes = {
+    include_l11_logs: false,
+    include_support_photos: false,
+    include_l10_test_folders: false,
+  };
+  const entriesToCopy = [];
+
+  let serviceEntries = [];
+  try {
+    serviceEntries = await fs.readdir(serviceDir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return {
+        has_any: false,
+        found_types: foundTypes,
+        entries_to_copy: [],
+      };
+    }
+    throw err;
+  }
+
+  if (normalizedOptions.include_l11_logs) {
+    const l11Entries = serviceEntries.filter(
+      (entry) => entry.isFile() && isL11ArchiveName(entry.name, serviceTag),
+    );
+    if (l11Entries.length) {
+      foundTypes.include_l11_logs = true;
+      entriesToCopy.push(
+        ...l11Entries.map((entry) => ({
+          source_path: path.join(serviceDir, entry.name),
+          relative_path: entry.name,
+        })),
+      );
+    }
+  }
+
+  if (normalizedOptions.include_support_photos) {
+    const photosDir = path.join(serviceDir, "photos");
+    if (await hasAnyFilesInDir(photosDir)) {
+      foundTypes.include_support_photos = true;
+      entriesToCopy.push({
+        source_path: photosDir,
+        relative_path: "photos",
+      });
+    }
+  }
+
+  if (normalizedOptions.include_l10_test_folders) {
+    const l10Directories = [];
+    for (const entry of serviceEntries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.toLowerCase() === "photos") continue;
+
+      const fullPath = path.join(serviceDir, entry.name);
+      if (await hasAnyFilesInDir(fullPath)) {
+        l10Directories.push(entry.name);
+      }
+    }
+
+    if (l10Directories.length) {
+      foundTypes.include_l10_test_folders = true;
+      entriesToCopy.push(
+        ...l10Directories.map((dirName) => ({
+          source_path: path.join(serviceDir, dirName),
+          relative_path: dirName,
+        })),
+      );
+    }
+  }
+
+  return {
+    has_any: entriesToCopy.length > 0,
+    found_types: foundTypes,
+    entries_to_copy: entriesToCopy,
+  };
+}
+
+function formatBatchExportFoundTypes(foundTypes = {}) {
+  const labels = [];
+  if (foundTypes.include_l11_logs) labels.push("L11 log tgzs");
+  if (foundTypes.include_support_photos) labels.push("support photos");
+  if (foundTypes.include_l10_test_folders) labels.push("L10 test folders");
+  return labels;
+}
+
+async function removeBatchExportArtifacts(meta) {
+  if (meta?.archive_path) {
+    await fs.rm(meta.archive_path, { force: true }).catch(() => {});
+  }
+  if (meta?.meta_path) {
+    await fs.rm(meta.meta_path, { force: true }).catch(() => {});
+  }
+}
+
+function serializeBatchExport(meta) {
+  const expiresAt = meta?.expires_at || null;
+  const ttlMsRemaining = expiresAt
+    ? Math.max(0, new Date(expiresAt).getTime() - Date.now())
+    : null;
+  const fileSizeBytes =
+    Number.isFinite(meta?.file_size_bytes) && meta.file_size_bytes >= 0
+      ? meta.file_size_bytes
+      : null;
+
+  return {
+    job_id: meta.job_id,
+    status: meta.status,
+    file_name: meta.file_name || null,
+    file_size_bytes: fileSizeBytes,
+    created_at: meta.created_at || null,
+    updated_at: meta.updated_at || null,
+    expires_at: expiresAt,
+    ttl_ms_remaining: ttlMsRemaining,
+    total_count: meta.total_count || 0,
+    processed_count: meta.processed_count || 0,
+    export_options: normalizeBatchExportOptions(meta.export_options),
+    service_tags: Array.isArray(meta.service_tags) ? meta.service_tags : [],
+    skipped_not_found: Array.isArray(meta.skipped_not_found)
+      ? meta.skipped_not_found
+      : [],
+    skipped_internal_error: Array.isArray(meta.skipped_internal_error)
+      ? meta.skipped_internal_error
+      : [],
+    error: meta.error || null,
+  };
+}
+
+function isBatchExportCanceled(jobId) {
+  return batchExportJobs.get(jobId)?.canceled === true;
+}
+
+async function persistBatchExportMeta(meta) {
+  await ensureBatchExportRoot();
+  const next = {
+    ...meta,
+    meta_path: batchExportMetaPath(meta.job_id),
+    updated_at: new Date().toISOString(),
+  };
+  await fs.writeFile(next.meta_path, JSON.stringify(next, null, 2), "utf8");
+  batchExportJobs.set(next.job_id, next);
+  return next;
+}
+
+async function readBatchExportMeta(jobId) {
+  const cached = batchExportJobs.get(jobId);
+  if (cached) return cached;
+
+  const metaPath = batchExportMetaPath(jobId);
+  const raw = await fs.readFile(metaPath, "utf8");
+  const parsed = JSON.parse(raw);
+  batchExportJobs.set(jobId, parsed);
+  return parsed;
+}
+
+async function listBatchExportJobs() {
+  await ensureBatchExportRoot();
+  const entries = await fs.readdir(BATCH_EXPORT_ROOT, { withFileTypes: true });
+  const jobs = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    try {
+      const raw = await fs.readFile(
+        path.join(BATCH_EXPORT_ROOT, entry.name),
+        "utf8",
+      );
+      const parsed = JSON.parse(raw);
+      if (parsed?.status === "deleted") continue;
+      batchExportJobs.set(parsed.job_id, parsed);
+      jobs.push(parsed);
+    } catch {
+      // ignore unreadable metadata files
+    }
+  }
+
+  jobs.sort((a, b) => {
+    const aTs = new Date(a.created_at || 0).getTime();
+    const bTs = new Date(b.created_at || 0).getTime();
+    return bTs - aTs;
+  });
+
+  return jobs;
+}
+
+async function cleanupExpiredBatchExports() {
+  const jobs = await listBatchExportJobs().catch(() => []);
+  const now = Date.now();
+
+  await Promise.all(
+    jobs.map(async (job) => {
+      const expiresAt = job?.expires_at
+        ? new Date(job.expires_at).getTime()
+        : 0;
+      if (!expiresAt || expiresAt > now) return;
+      await removeBatchExportArtifacts(job);
+      batchExportJobs.delete(job.job_id);
+    }),
+  );
+}
+
+async function validateBatchExportServiceTags(serviceTags = [], options = {}) {
+  const normalizedTags = [
+    ...new Set(
+      serviceTags.map((tag) => safeServiceTagSegment(tag)).filter(Boolean),
+    ),
+  ];
+  const normalizedOptions = normalizeBatchExportOptions(options);
+
+  if (!normalizedTags.length) {
+    return {
+      will_export: [],
+      skipped_not_found: [],
+      skipped_internal_error: [],
+      availability_by_tag: {},
+    };
+  }
+
+  if (!hasSelectedBatchExportOption(normalizedOptions)) {
+    return {
+      will_export: [],
+      skipped_not_found: normalizedTags,
+      skipped_internal_error: [],
+      availability_by_tag: Object.fromEntries(
+        normalizedTags.map((serviceTag) => [
+          serviceTag,
+          {
+            found_types: {
+              include_l11_logs: false,
+              include_support_photos: false,
+              include_l10_test_folders: false,
+            },
+            has_any: false,
+          },
+        ]),
+      ),
+    };
+  }
+
+  const { rows } = await db.query(
+    `SELECT service_tag FROM system WHERE service_tag = ANY($1::text[])`,
+    [normalizedTags],
+  );
+  const existing = new Set(
+    rows.map((row) => safeServiceTagSegment(row.service_tag)).filter(Boolean),
+  );
+
+  const willExport = [];
+  const skippedNotFound = [];
+  const skippedInternalError = [];
+  const availabilityByTag = {};
+
+  for (const serviceTag of normalizedTags) {
+    if (!existing.has(serviceTag)) {
+      skippedNotFound.push(serviceTag);
+      availabilityByTag[serviceTag] = {
+        found_types: {
+          include_l11_logs: false,
+          include_support_photos: false,
+          include_l10_test_folders: false,
+        },
+        has_any: false,
+      };
+      continue;
+    }
+
+    try {
+      const selection = await collectBatchExportEntries(
+        serviceTag,
+        normalizedOptions,
+      );
+      availabilityByTag[serviceTag] = selection;
+
+      if (!selection.has_any) {
+        skippedNotFound.push(serviceTag);
+        continue;
+      }
+
+      willExport.push(serviceTag);
+    } catch (err) {
+      skippedInternalError.push(serviceTag);
+      availabilityByTag[serviceTag] = {
+        found_types: {
+          include_l11_logs: false,
+          include_support_photos: false,
+          include_l10_test_folders: false,
+        },
+        has_any: false,
+      };
+    }
+  }
+
+  return {
+    will_export: willExport,
+    skipped_not_found: skippedNotFound,
+    skipped_internal_error: skippedInternalError,
+    availability_by_tag: availabilityByTag,
+  };
+}
+
+function buildBatchExportReviewRows(serviceTags = [], preview = {}) {
+  const willExport = new Set(preview.will_export || []);
+  const skippedNotFound = new Set(preview.skipped_not_found || []);
+  const skippedInternalError = new Set(preview.skipped_internal_error || []);
+  const availabilityByTag = preview.availability_by_tag || {};
+
+  return serviceTags.map((serviceTag) => ({
+    service_tag: serviceTag,
+    status: willExport.has(serviceTag)
+      ? "Will Proceed"
+      : skippedNotFound.has(serviceTag)
+        ? "Not Found"
+        : skippedInternalError.has(serviceTag)
+          ? "Internal Error"
+          : "Internal Error",
+    details: willExport.has(serviceTag)
+      ? formatBatchExportFoundTypes(
+          availabilityByTag[serviceTag]?.found_types || {},
+        ).join(", ")
+      : skippedNotFound.has(serviceTag)
+        ? "No selected files or folders found"
+        : "Failed to inspect export contents",
+  }));
+}
+
+async function runBatchExportJob(jobId, serviceTags = [], options = {}) {
+  let meta = await readBatchExportMeta(jobId);
+  let tempDir = null;
+
+  try {
+    meta = await persistBatchExportMeta({
+      ...meta,
+      status: "running",
+      processed_count: 0,
+      error: null,
+    });
+
+    tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wistron-batch-export-"));
+    const batchDirName = `batch_system_files_${timestampSuffix(new Date())}`;
+    const batchDir = path.join(tempDir, batchDirName);
+    await fs.mkdir(batchDir, { recursive: true });
+
+    for (let i = 0; i < serviceTags.length; i += 1) {
+      if (isBatchExportCanceled(jobId)) {
+        const canceledError = new Error("Batch export canceled");
+        canceledError.code = "BATCH_EXPORT_CANCELED";
+        throw canceledError;
+      }
+
+      const serviceTag = serviceTags[i];
+      const selection = await collectBatchExportEntries(serviceTag, options);
+      if (selection.has_any) {
+        const targetServiceDir = path.join(batchDir, serviceTag);
+        await fs.mkdir(targetServiceDir, { recursive: true });
+
+        for (const entry of selection.entries_to_copy) {
+          const targetPath = path.join(targetServiceDir, entry.relative_path);
+          await fs.cp(entry.source_path, targetPath, { recursive: true });
+        }
+      }
+
+      meta = await persistBatchExportMeta({
+        ...meta,
+        processed_count: i + 1,
+      });
+    }
+
+    if (isBatchExportCanceled(jobId)) {
+      const canceledError = new Error("Batch export canceled");
+      canceledError.code = "BATCH_EXPORT_CANCELED";
+      throw canceledError;
+    }
+
+    await ensureBatchExportRoot();
+    const fileName = `${batchDirName}.tgz`;
+    const archivePath = path.join(BATCH_EXPORT_ROOT, `${jobId}_${fileName}`);
+    await runTar(["-czf", archivePath, "-C", tempDir, batchDirName]);
+    const archiveStat = await fs.stat(archivePath);
+
+    meta = await persistBatchExportMeta({
+      ...meta,
+      status: "ready",
+      file_name: fileName,
+      archive_path: archivePath,
+      file_size_bytes: archiveStat.size || 0,
+      expires_at: new Date(Date.now() + BATCH_EXPORT_TTL_MS).toISOString(),
+      processed_count: serviceTags.length,
+    });
+    return meta;
+  } catch (err) {
+    if (err?.code === "BATCH_EXPORT_CANCELED") {
+      try {
+        const currentMeta = await readBatchExportMeta(jobId);
+        await removeBatchExportArtifacts(currentMeta);
+      } catch {
+        // ignore cleanup read errors
+      }
+      batchExportJobs.delete(jobId);
+      return null;
+    }
+
+    console.error("Batch system export failed:", err);
+    meta = await persistBatchExportMeta({
+      ...meta,
+      status: "failed",
+      error: "Internal Error",
+      expires_at: new Date(Date.now() + BATCH_EXPORT_TTL_MS).toISOString(),
+    });
+    return meta;
+  } finally {
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+}
+
+setInterval(() => {
+  cleanupExpiredBatchExports().catch((err) => {
+    console.error("Failed to clean up expired batch exports:", err);
+  });
+}, BATCH_EXPORT_CLEANUP_INTERVAL_MS).unref();
+
+const HOST_RUNNER_URL = process.env.HOST_RUNNER_URL || "http://172.17.0.1:9000";
+
+async function submitL11ScanJob(
+  unitTag,
+  rackTag,
+  { wait = "ack", timeout = 0 } = {},
+) {
+  const controller = new AbortController();
+  const timeoutMs =
+    wait === "ack" || !timeout
+      ? 5000
+      : Math.max(1000, Math.round(timeout * 1000));
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(`${HOST_RUNNER_URL}/`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Auth-Token":
+          process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+      },
+      body: JSON.stringify({
+        script: "/opt/hooks/on-system-created.sh",
+        args: [unitTag, rackTag],
+        wait,
+        ...(timeout ? { timeout } : {}),
+      }),
+      signal: controller.signal,
+    });
+
+    const text = await resp.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+
+    if (!resp.ok) {
+      const error = new Error(
+        `host-runner returned ${resp.status}: ${
+          typeof data === "string" ? data : JSON.stringify(data)
+        }`,
+      );
+      error.status = resp.status;
+      error.body = data;
+      throw error;
+    }
+
+    return data;
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      const timeoutError = new Error(
+        `host-runner request timed out after ${timeoutMs}ms`,
+      );
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function getHostRunnerJob(jobId) {
+  const resp = await fetch(
+    `${HOST_RUNNER_URL}/jobs/${encodeURIComponent(jobId)}`,
+    {
+      headers: {
+        "X-Auth-Token":
+          process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
+      },
+    },
+  );
+
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!resp.ok) {
+    const error = new Error(
+      `host-runner returned ${resp.status}: ${
+        typeof data === "string" ? data : JSON.stringify(data)
+      }`,
+    );
+    error.status = resp.status;
+    error.body = data;
+    throw error;
+  }
+
+  return data;
+}
+
+function summarizeUpstreamError(err, fallbackMessage) {
+  const rawBody =
+    typeof err?.body === "string"
+      ? err.body
+      : err?.body && typeof err.body === "object"
+        ? err.body.description ||
+          err.body.error ||
+          err.body.message ||
+          JSON.stringify(err.body)
+        : "";
+
+  const details = rawBody || err?.message || fallbackMessage;
+  const upstreamStatus = Number.isInteger(err?.status) ? err.status : null;
+  const status =
+    upstreamStatus && upstreamStatus >= 400 && upstreamStatus < 500
+      ? 502
+      : upstreamStatus || 500;
+
+  return {
+    status,
+    details: upstreamStatus
+      ? `Upstream host-runner error (${upstreamStatus}): ${details}`
+      : details,
+  };
+}
+
+async function listLogsEntries(serviceTag, relativeDir = "") {
+  const cleanDir = normalizeRelativeLogsDir(relativeDir);
+  const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+  const targetDir = cleanDir
+    ? path.join(serviceDir, ...cleanDir.split("/").filter(Boolean))
+    : serviceDir;
+
+  let entries = [];
+  try {
+    entries = await fs.readdir(targetDir, { withFileTypes: true });
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return { entries: [], currentDir: cleanDir };
+    }
+    throw err;
+  }
+
+  const serverZone = getServerTimeZone();
+  const formatLocal = (date) =>
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: serverZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    }).format(date);
+
+  const data = await Promise.all(
+    entries
+      .filter((entry) => entry.name.toLowerCase() !== "photos")
+      .map(async (entry) => {
+        const childRelativeDir = cleanDir
+          ? `${cleanDir.replace(/\/$/, "")}/${entry.name}`
+          : entry.name;
+        const href = entry.isDirectory()
+          ? `/l10_logs/${serviceTag}/${encodeURIComponent(childRelativeDir).replace(/%2F/g, "/")}/`
+          : `/l10_logs/${serviceTag}/${encodeURIComponent(childRelativeDir).replace(/%2F/g, "/")}`;
+
+        let modifiedAt = null;
+        try {
+          const stat = await fs.stat(path.join(targetDir, entry.name));
+          modifiedAt = stat.mtime;
+        } catch {
+          modifiedAt = null;
+        }
+
+        return {
+          name: entry.name,
+          href,
+          is_dir: entry.isDirectory(),
+          dir_path: entry.isDirectory()
+            ? normalizeRelativeLogsDir(childRelativeDir)
+            : null,
+          modified_at: modifiedAt ? modifiedAt.toISOString() : null,
+          modified_at_local: modifiedAt ? formatLocal(modifiedAt) : "",
+        };
+      }),
+  );
+
+  data.sort((a, b) => {
+    if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+    const aTime = a.modified_at ? Date.parse(a.modified_at) : 0;
+    const bTime = b.modified_at ? Date.parse(b.modified_at) : 0;
+    if (aTime !== bTime) return bTime - aTime;
+    return String(a.name).localeCompare(String(b.name));
+  });
+
+  return { entries: data, currentDir: cleanDir };
+}
+
+function parseAndValidatePPID(ppidRaw) {
+  const ppid = (ppidRaw || "").trim().toUpperCase();
+
+  if (ppid.length !== 23 || !/^[A-Z0-9]+$/.test(ppid)) {
+    throw new Error("PPID must be exactly 23 uppercase alphanumeric chars");
+  }
+
+  const prefix = ppid.slice(0, 3);
+  const dpn = ppid.slice(3, 8);
+  const factoryCodeRaw = ppid.slice(8, 13);
+  const dateCode = ppid.slice(13, 16);
+  const serial = ppid.slice(16, 20);
+  const rev = ppid.slice(20, 23);
+
+  if (!/^[A-Z0-9]{3}$/.test(prefix)) throw new Error("Invalid prefix format");
+  if (!/^[A-Z0-9]{5}$/.test(dpn)) throw new Error("Invalid DPN format");
+  if (!/^[A-Z0-9]{5}$/.test(factoryCodeRaw)) {
+    throw new Error(`Invalid factory code format: ${factoryCodeRaw}`);
+  }
+  if (!/^[A-Z0-9]{3}$/.test(dateCode))
+    throw new Error("Invalid date code format");
+  const manufacturedDate = decodeDateCode(dateCode);
+  if (!manufacturedDate || isNaN(manufacturedDate.getTime())) {
+    throw new Error("Invalid date code (cannot decode)");
+  }
+  if (!/^[A-Z0-9]{4}$/.test(serial)) throw new Error("Invalid serial format");
+  if (!/^[A-Z0-9]{3}$/.test(rev)) throw new Error("Invalid revision format");
+
+  return { ppid, dpn, factoryCodeRaw, manufacturedDate, serial, rev };
+}
+
+function validateRackServiceTag(rackServiceTagRaw) {
+  const rackUpper = String(rackServiceTagRaw || "")
+    .trim()
+    .toUpperCase();
+  const genericInvalidError =
+    "Please provide a valid Rack Service Tag, not a filler value";
+
+  if (rackUpper.length !== 7) {
+    return "Rack Service Tag must be exactly 7 characters long";
+  }
+
+  if (!/^[A-Z0-9]{7}$/.test(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  if (!/[A-Z]/.test(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  if (!/[0-9]$/.test(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  const fillerTokens = [
+    "UNK",
+    "UNKN",
+    "N/A",
+    "NA",
+    "NONE",
+    "NULL",
+    "(NULL)",
+    "NODATA",
+    "NOINFO",
+    "TBD",
+    "TBA",
+    "N/R",
+    "BLANK",
+    "???",
+    "XXX",
+    "COOLANT",
+  ];
+
+  const manualBlocklist = new Set([
+    "1234567",
+    "2345678",
+    "COOLEAK",
+    "CWNC",
+    "COREWEAVENC",
+    "PHYSDMG",
+    "BADPALL",
+    "UNSURE",
+    "NOTGIVEN",
+  ]);
+
+  const rackForMatch = rackUpper.replace(/[\s/.-]/g, "");
+  const hasFiller = fillerTokens.some((tok) => rackForMatch.includes(tok));
+  if (hasFiller || manualBlocklist.has(rackForMatch)) {
+    return genericInvalidError;
+  }
+
+  const hasSequentialRun = (chunk, charset) => {
+    const indexes = [...chunk].map((ch) => charset.indexOf(ch));
+    if (indexes.some((idx) => idx === -1)) return false;
+    const len = charset.length;
+    const ascending = indexes
+      .slice(1)
+      .every((value, i) => value === (indexes[i] + 1) % len);
+    const descending = indexes
+      .slice(1)
+      .every((value, i) => value === (indexes[i] - 1 + len) % len);
+    return ascending || descending;
+  };
+
+  const containsSequentialFour = (value) => {
+    const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const digits = "0123456789";
+    for (let i = 0; i <= value.length - 4; i += 1) {
+      const chunk = value.slice(i, i + 4);
+      if (hasSequentialRun(chunk, alpha)) return true;
+      if (hasSequentialRun(chunk, digits)) return true;
+    }
+    return false;
+  };
+
+  if (containsSequentialFour(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  return null;
+}
+
+/**
+ * Assign a system to a pallet (or create a new pallet)
+ * Any open, unlocked pallet with free capacity can be used.
+ */
+async function assignSystemToPallet(system_id, client) {
+  const { rows } = await client.query(
+    `
+    SELECT p.id, p.pallet_number
+    FROM pallet p
+    LEFT JOIN pallet_system ps
+      ON p.id = ps.pallet_id AND ps.removed_at IS NULL
+    WHERE p.status = 'open' AND p.locked = FALSE
+    GROUP BY p.id, p.pallet_number
+    HAVING COUNT(ps.id) < 9
+    ORDER BY p.created_at ASC, p.id ASC
+    LIMIT 1
+    `,
+  );
+
+  let palletId, palletNumber;
+  if (rows.length) {
+    ({ id: palletId, pallet_number: palletNumber } = rows[0]);
+  } else {
+    const newNumber = await generatePalletNumber(client);
+    const shape = await allocateUniqueOpenPalletShape(client);
+    if (!shape) {
+      throw new Error("Too many pallets open at the same time.");
+    }
+    const ins = await client.query(
+      `INSERT INTO pallet (pallet_number, shape)
+       VALUES ($1, $2)
+       RETURNING id, pallet_number`,
+      [newNumber, shape],
+    );
+    palletId = ins.rows[0].id;
+    palletNumber = ins.rows[0].pallet_number;
+  }
+
+  await client.query(
+    `INSERT INTO pallet_system (pallet_id, system_id)
+     VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+    [palletId, system_id],
+  );
+
+  return { pallet_id: palletId, pallet_number: palletNumber };
+}
+
+function decodeDateCode(code) {
+  if (!code || code.length !== 3) return null;
+  const [y, m, d] = code.split("");
+  const decodeChar = (c) =>
+    /[0-9]/.test(c)
+      ? parseInt(c, 10)
+      : c.charCodeAt(0) - "A".charCodeAt(0) + 10;
+  const year = 2020 + parseInt(y, 10);
+  const month = decodeChar(m);
+  const day = decodeChar(d);
+  // Return a JavaScript Date object
+  return new Date(year, month - 1, day);
+}
+
+async function getFactoryByPPIDCode(ppidCode) {
+  const result = await db.query(
+    `SELECT id, code, name FROM factory WHERE ppid_code = $1`,
+    [ppidCode],
+  );
+  return result.rows[0] || null;
+}
+
+function isPgUniqueViolation(err) {
+  return err && err.code === "23505";
+}
+
+async function listDpnDellCustomers(client, dpnId) {
+  const { rows } = await client.query(
+    `SELECT dc.id, dc.name
+       FROM dpn_dell_customer ddc
+       JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+      WHERE ddc.dpn_id = $1
+      ORDER BY dc.name ASC`,
+    [dpnId],
+  );
+  return rows;
+}
+
+function normalizeDpnName(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeDpnConfig(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function normalizeDellCustomerName(value) {
+  return String(value || "").trim();
+}
+
+async function listDpnsByName(client, dpnName) {
+  const normalizedName = normalizeDpnName(dpnName);
+  if (!normalizedName) return [];
+  const { rows } = await client.query(
+    `SELECT id, name, config, dell_customer
+       FROM dpn
+      WHERE UPPER(TRIM(name)) = $1
+      ORDER BY UPPER(TRIM(config)) ASC, id ASC`,
+    [normalizedName],
+  );
+  return rows;
+}
+
+async function findDpnCustomerConflicts(
+  client,
+  dpnName,
+  dellCustomerIds = [],
+  excludeDpnId = null,
+) {
+  const normalizedName = normalizeDpnName(dpnName);
+  const uniqueIds = [
+    ...new Set(
+      (dellCustomerIds || [])
+        .map((v) => Number(v))
+        .filter((v) => Number.isInteger(v) && v > 0),
+    ),
+  ];
+  if (!normalizedName || uniqueIds.length === 0) return [];
+
+  const params = [normalizedName, uniqueIds];
+  let excludeSql = "";
+  if (Number.isInteger(Number(excludeDpnId)) && Number(excludeDpnId) > 0) {
+    params.push(Number(excludeDpnId));
+    excludeSql = `AND d.id <> $${params.length}`;
+  }
+
+  const { rows } = await client.query(
+    `SELECT d.id, d.name, d.config, dc.id AS dell_customer_id, dc.name AS dell_customer_name
+       FROM dpn d
+       JOIN dpn_dell_customer ddc ON ddc.dpn_id = d.id
+       JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+      WHERE UPPER(TRIM(d.name)) = $1
+        AND ddc.dell_customer_id = ANY($2::int[])
+        ${excludeSql}
+      GROUP BY d.id, d.name, d.config, dc.id, dc.name
+      ORDER BY UPPER(TRIM(d.config)) ASC, dc.name ASC`,
+    params,
+  );
+  return rows;
+}
+
+async function resolveDpnForSystem(client, dpnName, preferredDellCustomer = "") {
+  const matches = await listDpnsByName(client, dpnName);
+  if (matches.length === 0) {
+    throw new Error(`Unknown DPN: ${normalizeDpnName(dpnName)}`);
+  }
+
+  const normalizedCustomer = normalizeDellCustomerName(preferredDellCustomer)
+    .toLowerCase();
+  const candidates = [];
+
+  for (const dpn of matches) {
+    const mappedCustomers = await listDpnDellCustomers(client, dpn.id);
+    candidates.push({ ...dpn, mappedCustomers });
+  }
+
+  const allMapped = candidates.flatMap((entry) => entry.mappedCustomers);
+  if (allMapped.length === 0) {
+    throw new Error(
+      `DPN ${normalizeDpnName(dpnName)} has no configured Dell customers`,
+    );
+  }
+
+  if (!normalizedCustomer) {
+    const uniqueNames = [
+      ...new Set(
+        allMapped
+          .map((c) => normalizeDellCustomerName(c.name))
+          .filter(Boolean),
+      ),
+    ];
+    if (uniqueNames.length === 1) {
+      const chosenName = uniqueNames[0];
+      const candidate = candidates.find((entry) =>
+        entry.mappedCustomers.some(
+          (c) => normalizeDellCustomerName(c.name).toLowerCase() === chosenName.toLowerCase(),
+        ),
+      );
+      if (!candidate) {
+        throw new Error(
+          `DPN ${normalizeDpnName(dpnName)} has no configured Dell customers`,
+        );
+      }
+      return {
+        dpn: candidate,
+        chosenDellCustomer: chosenName,
+        mappedCustomers: candidate.mappedCustomers,
+      };
+    }
+    throw new Error(`Dell customer selection required for DPN ${normalizeDpnName(dpnName)}`);
+  }
+
+  const matchingCandidates = candidates.filter((entry) =>
+    entry.mappedCustomers.some(
+      (c) =>
+        normalizeDellCustomerName(c.name).toLowerCase() === normalizedCustomer,
+    ),
+  );
+
+  if (matchingCandidates.length === 0) {
+    throw new Error(
+      `Invalid Dell customer "${preferredDellCustomer}" for DPN ${normalizeDpnName(dpnName)}`,
+    );
+  }
+  if (matchingCandidates.length > 1) {
+    throw new Error(
+      `Dell customer "${preferredDellCustomer}" is assigned to multiple configs for DPN ${normalizeDpnName(dpnName)}`,
+    );
+  }
+
+  const chosen = matchingCandidates[0];
+  const chosenDellCustomer = chosen.mappedCustomers.find(
+    (c) => normalizeDellCustomerName(c.name).toLowerCase() === normalizedCustomer,
+  )?.name;
+
+  return {
+    dpn: chosen,
+    chosenDellCustomer: chosenDellCustomer || normalizeDellCustomerName(preferredDellCustomer),
+    mappedCustomers: chosen.mappedCustomers,
+  };
+}
+
+async function syncSystemsToDpnFamily(client, dpnName) {
+  const familyName = normalizeDpnName(dpnName);
+  if (!familyName) return;
+
+  const familyRows = await listDpnsByName(client, familyName);
+  if (familyRows.length === 0) return;
+
+  const familyById = new Map();
+  for (const row of familyRows) {
+    const mappedCustomers = await listDpnDellCustomers(client, row.id);
+    familyById.set(row.id, {
+      ...row,
+      mappedCustomers,
+    });
+  }
+
+  const systemsRes = await client.query(
+    `SELECT s.id, s.dpn_id, s.dell_customer
+       FROM system s
+       JOIN dpn d ON d.id = s.dpn_id
+      WHERE UPPER(TRIM(d.name)) = $1
+      FOR UPDATE`,
+    [familyName],
+  );
+
+  for (const systemRow of systemsRes.rows) {
+    const currentDpnId = Number(systemRow.dpn_id);
+    const currentCustomer = normalizeDellCustomerName(systemRow.dell_customer);
+    if (!currentCustomer) continue;
+
+    const matchingRows = [...familyById.values()].filter((row) =>
+      row.mappedCustomers.some(
+        (customer) =>
+          normalizeDellCustomerName(customer.name).toLowerCase() ===
+          currentCustomer.toLowerCase(),
+      ),
+    );
+
+    if (matchingRows.length !== 1) continue;
+
+    const targetDpnId = Number(matchingRows[0].id);
+    if (targetDpnId === currentDpnId) continue;
+
+    await client.query(`UPDATE system SET dpn_id = $1 WHERE id = $2`, [
+      targetDpnId,
+      systemRow.id,
+    ]);
+  }
+}
+
+async function resolveDellCustomerIds(client, ids = []) {
+  const uniqueIds = [
+    ...new Set(
+      (ids || [])
+        .map((v) => Number(v))
+        .filter((v) => Number.isInteger(v) && v > 0),
+    ),
+  ];
+  if (uniqueIds.length === 0) return [];
+  const { rows } = await client.query(
+    `SELECT id FROM dell_customer WHERE id = ANY($1::int[])`,
+    [uniqueIds],
+  );
+  const found = new Set(rows.map((r) => Number(r.id)));
+  const missing = uniqueIds.filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    throw new Error(`Invalid Dell customer id(s): ${missing.join(", ")}`);
+  }
+  return uniqueIds;
+}
+
+async function ensureDellCustomerByName(client, nameRaw) {
+  const name = String(nameRaw || "").trim();
+  if (!name) throw new Error("dell_customer is required");
+
+  const found = await client.query(
+    `SELECT id, name FROM dell_customer WHERE LOWER(name) = LOWER($1)`,
+    [name],
+  );
+  if (found.rows.length) return found.rows[0];
+
+  const inserted = await client.query(
+    `INSERT INTO dell_customer (name)
+     VALUES ($1)
+     ON CONFLICT (LOWER(name)) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id, name`,
+    [name],
+  );
+  return inserted.rows[0];
+}
+
+async function getDellCustomerById(client, idRaw) {
+  const id = Number(idRaw);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const { rows } = await client.query(
+    `SELECT id, name FROM dell_customer WHERE id = $1`,
+    [id],
+  );
+  return rows[0] || null;
+}
+
+// ---------- FACTORY CRUD ----------
+
+// GET factories (optional ?q= search by code or name)
+// GET factories (optional ?q= search by code or name)
+router.get("/factory", async (req, res) => {
+  const { q } = req.query;
+  try {
+    if (q && q.trim()) {
+      const like = `%${q.trim()}%`;
+      const { rows } = await db.query(
+        `SELECT id, code, name, ppid_code
+           FROM factory
+          WHERE code ILIKE $1 OR name ILIKE $1
+          ORDER BY code ASC`,
+        [like],
+      );
+      return res.json(rows);
+    }
+    const { rows } = await db.query(
+      `SELECT id, code, name, ppid_code FROM factory ORDER BY code ASC`,
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to list factories" });
+  }
+});
+
+// GET single factory
+router.get("/factory/:id", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, code, name, ppid_code FROM factory WHERE id = $1`,
+      [req.params.id],
+    );
+    if (!rows.length)
+      return res.status(404).json({ error: "Factory not found" });
+    return res.json(rows[0]);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to fetch factory" });
+  }
+});
+
+// POST factory (admin)
+router.post("/factory", authenticateToken, ensureAdmin, async (req, res) => {
+  const { code, name } = req.body || {};
+  if (!code || !name) {
+    return res.status(400).json({ error: "code and name are required" });
+  }
+  try {
+    const { rows } = await db.query(
+      `INSERT INTO factory (code, name)
+       VALUES ($1, $2)
+       RETURNING id, code, name, ppid_code`,
+      [code.trim(), name.trim()],
+    );
+    return res.status(201).json(rows[0]);
+  } catch (e) {
+    console.error(e);
+    if (isPgUniqueViolation(e)) {
+      return res
+        .status(409)
+        .json({ error: "Factory code or name already exists" });
+    }
+    return res.status(500).json({ error: "Failed to create factory" });
+  }
+});
+
+// PATCH factory (admin)
+router.patch(
+  "/factory/:id",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const { code, name } = req.body || {};
+    if (!code && !name) {
+      return res.status(400).json({ error: "Nothing to update" });
+    }
+    const fields = [];
+    const vals = [];
+    if (code) {
+      fields.push(`code = $${fields.length + 1}`);
+      vals.push(code.trim());
+    }
+    if (name) {
+      fields.push(`name = $${fields.length + 1}`);
+      vals.push(name.trim());
+    }
+    try {
+      const { rows } = await db.query(
+        `UPDATE factory SET ${fields.join(", ")}
+         WHERE id = $${fields.length + 1}
+       RETURNING id, code, name, ppid_code`,
+        [...vals, req.params.id],
+      );
+      if (!rows.length)
+        return res.status(404).json({ error: "Factory not found" });
+      return res.json(rows[0]);
+    } catch (e) {
+      console.error(e);
+      if (isPgUniqueViolation(e)) {
+        return res
+          .status(409)
+          .json({ error: "Factory code or name already exists" });
+      }
+      return res.status(500).json({ error: "Failed to update factory" });
+    }
+  },
+);
+
+// DELETE factory (admin) – block if referenced
+router.delete(
+  "/factory/:id",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const id = req.params.id;
+    try {
+      // Block delete if referenced by system or pallet
+      const ref = await db.query(
+        `
+      SELECT
+        EXISTS(SELECT 1 FROM system WHERE factory_id = $1) AS has_systems,
+        EXISTS(SELECT 1 FROM pallet WHERE factory_id = $1) AS has_pallets
+      `,
+        [id],
+      );
+      if (ref.rows[0].has_systems || ref.rows[0].has_pallets) {
+        return res.status(409).json({
+          error: "Cannot delete factory: referenced by systems or pallets",
+        });
+      }
+
+      const del = await db.query(`DELETE FROM factory WHERE id = $1`, [id]);
+      if (del.rowCount === 0) {
+        return res.status(404).json({ error: "Factory not found" });
+      }
+      return res.json({ message: "Factory deleted" });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: "Failed to delete factory" });
+    }
+  },
+);
+
+// ---------- DPN CRUD ----------
+
+// ---------- DELL CUSTOMER CRUD ----------
+
+router.get("/dell-customers", async (req, res) => {
+  const { q } = req.query;
+  try {
+    if (q && q.trim()) {
+      const like = `%${q.trim()}%`;
+      const { rows } = await db.query(
+        `SELECT id, name
+           FROM dell_customer
+          WHERE name ILIKE $1
+          ORDER BY name ASC`,
+        [like],
+      );
+      return res.json(rows);
+    }
+    const { rows } = await db.query(
+      `SELECT id, name FROM dell_customer ORDER BY name ASC`,
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to list Dell customers" });
+  }
+});
+
+router.post(
+  "/dell-customers",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const { name } = req.body || {};
+    const clean = String(name || "").trim();
+    if (!clean) {
+      return res.status(400).json({ error: "name is required" });
+    }
+    try {
+      const { rows } = await db.query(
+        `INSERT INTO dell_customer (name)
+         VALUES ($1)
+         RETURNING id, name`,
+        [clean],
+      );
+      return res.status(201).json(rows[0]);
+    } catch (e) {
+      console.error(e);
+      if (isPgUniqueViolation(e)) {
+        return res.status(409).json({ error: "Dell customer already exists" });
+      }
+      return res.status(500).json({ error: "Failed to create Dell customer" });
+    }
+  },
+);
+
+router.patch(
+  "/dell-customers/:id",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const { name } = req.body || {};
+    const clean = String(name || "").trim();
+    if (!clean) {
+      return res.status(400).json({ error: "name is required" });
+    }
+    try {
+      const { rows } = await db.query(
+        `UPDATE dell_customer
+            SET name = $1
+          WHERE id = $2
+        RETURNING id, name`,
+        [clean, req.params.id],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "Dell customer not found" });
+      }
+      return res.json(rows[0]);
+    } catch (e) {
+      console.error(e);
+      if (isPgUniqueViolation(e)) {
+        return res.status(409).json({ error: "Dell customer already exists" });
+      }
+      return res.status(500).json({ error: "Failed to update Dell customer" });
+    }
+  },
+);
+
+router.delete(
+  "/dell-customers/:id",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    try {
+      const ref = await db.query(
+        `SELECT EXISTS (
+           SELECT 1 FROM dpn_dell_customer WHERE dell_customer_id = $1
+         ) AS is_used`,
+        [req.params.id],
+      );
+      if (ref.rows[0]?.is_used) {
+        return res.status(409).json({
+          error: "Cannot delete Dell customer: referenced by one or more DPNs",
+        });
+      }
+
+      const del = await db.query(`DELETE FROM dell_customer WHERE id = $1`, [
+        req.params.id,
+      ]);
+      if (del.rowCount === 0) {
+        return res.status(404).json({ error: "Dell customer not found" });
+      }
+      return res.json({ message: "Dell customer deleted" });
+    } catch (e) {
+      console.error(e);
+      return res.status(500).json({ error: "Failed to delete Dell customer" });
+    }
+  },
+);
+
+// ---------- DPN CRUD ----------
+
+// GET dpns (optional ?q= search by name or config)
+router.get("/dpn", async (req, res) => {
+  const { q } = req.query;
+  try {
+    if (q && q.trim()) {
+      const like = `%${q.trim()}%`;
+      const { rows } = await db.query(
+        `SELECT
+           d.id,
+           d.name,
+           d.config,
+           COALESCE(
+             json_agg(
+               DISTINCT jsonb_build_object('id', dc.id, 'name', dc.name)
+             ) FILTER (WHERE dc.id IS NOT NULL),
+             '[]'::json
+           ) AS dell_customers
+         FROM dpn d
+         LEFT JOIN dpn_dell_customer ddc ON ddc.dpn_id = d.id
+         LEFT JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+         WHERE d.name ILIKE $1
+            OR CAST(d.config AS TEXT) ILIKE $1
+            OR dc.name ILIKE $1
+         GROUP BY d.id, d.name, d.config
+         ORDER BY d.name ASC, d.config ASC`,
+        [like],
+      );
+      return res.json(rows);
+    }
+    const { rows } = await db.query(
+      `SELECT
+         d.id,
+         d.name,
+         d.config,
+         COALESCE(
+           json_agg(
+             DISTINCT jsonb_build_object('id', dc.id, 'name', dc.name)
+           ) FILTER (WHERE dc.id IS NOT NULL),
+           '[]'::json
+         ) AS dell_customers
+       FROM dpn d
+       LEFT JOIN dpn_dell_customer ddc ON ddc.dpn_id = d.id
+       LEFT JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+       GROUP BY d.id, d.name, d.config
+       ORDER BY d.name ASC, d.config ASC`,
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to list DPNs" });
+  }
+});
+
+// GET single dpn
+router.get("/dpn/:id", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT
+         d.id,
+         d.name,
+         d.config,
+         COALESCE(
+           json_agg(
+             DISTINCT jsonb_build_object('id', dc.id, 'name', dc.name)
+           ) FILTER (WHERE dc.id IS NOT NULL),
+           '[]'::json
+         ) AS dell_customers
+       FROM dpn d
+       LEFT JOIN dpn_dell_customer ddc ON ddc.dpn_id = d.id
+       LEFT JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+       WHERE d.id = $1
+       GROUP BY d.id, d.name, d.config`,
+      [req.params.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "DPN not found" });
+    return res.json(rows[0]);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to fetch DPN" });
+  }
+});
+
+// POST dpn (admin)
+router.post("/dpn", authenticateToken, ensureAdmin, async (req, res) => {
+  const { name, config, dell_customer, dell_customer_ids } = req.body || {};
+  const cleanName = normalizeDpnName(name);
+  const cleanConfig = normalizeDpnConfig(config);
+  if (!cleanName) {
+    return res.status(400).json({ error: "name is required" });
+  }
+  if (!cleanConfig) {
+    return res.status(400).json({ error: "config is required" });
+  }
+  try {
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const ids = await resolveDellCustomerIds(client, dell_customer_ids);
+      let chosenIds = [...ids];
+      let baseline = null;
+      if (chosenIds.length > 0) {
+        baseline = await getDellCustomerById(client, chosenIds[0]);
+      } else if (String(dell_customer || "").trim()) {
+        baseline = await ensureDellCustomerByName(client, dell_customer);
+        chosenIds = [baseline.id];
+      }
+      if (!baseline || chosenIds.length === 0) {
+        await client.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ error: "At least one Dell customer is required for a DPN" });
+      }
+
+      const conflicts = await findDpnCustomerConflicts(
+        client,
+        cleanName,
+        chosenIds,
+      );
+      if (conflicts.length > 0) {
+        const first = conflicts[0];
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: `Dell customer "${first.dell_customer_name}" is already assigned to config ${first.config} for DPN ${cleanName}`,
+        });
+      }
+
+      const { rows } = await client.query(
+        `INSERT INTO dpn (name, config, dell_customer)
+          VALUES ($1, $2, $3)
+          RETURNING id, name, config, dell_customer`,
+        [cleanName, cleanConfig, baseline.name],
+      );
+      const dpn = rows[0];
+
+      for (const cid of chosenIds) {
+        await client.query(
+          `INSERT INTO dpn_dell_customer (dpn_id, dell_customer_id)
+           VALUES ($1, $2)
+           ON CONFLICT (dpn_id, dell_customer_id) DO NOTHING`,
+          [dpn.id, cid],
+        );
+      }
+
+      const mapped = await listDpnDellCustomers(client, dpn.id);
+      await syncSystemsToDpnFamily(client, cleanName);
+      await client.query("COMMIT");
+      return res.status(201).json({
+        ...dpn,
+        dell_customers: mapped,
+      });
+    } catch (innerErr) {
+      await client.query("ROLLBACK");
+      throw innerErr;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error(e);
+    if (isPgUniqueViolation(e)) {
+      return res.status(409).json({ error: "DPN name and config already exist" });
+    }
+    return res.status(500).json({ error: "Failed to create DPN" });
+  }
+});
+
+// PATCH dpn (admin)
+router.patch("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
+  const { name, config, dell_customer, dell_customer_ids } = req.body || {};
+  if (
+    typeof name === "undefined" &&
+    typeof config === "undefined" &&
+    typeof dell_customer === "undefined" &&
+    typeof dell_customer_ids === "undefined"
+  ) {
+    return res.status(400).json({ error: "Nothing to update" });
+  }
+  try {
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await client.query(
+        `SELECT id, name, config, dell_customer
+           FROM dpn
+          WHERE id = $1
+          FOR UPDATE`,
+        [req.params.id],
+      );
+      if (!current.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "DPN not found" });
+      }
+
+      const finalName =
+        typeof name !== "undefined"
+          ? normalizeDpnName(name)
+          : normalizeDpnName(current.rows[0].name);
+      const finalConfig =
+        typeof config !== "undefined"
+          ? normalizeDpnConfig(config)
+          : normalizeDpnConfig(current.rows[0].config);
+      if (!finalName) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "name is required" });
+      }
+      if (!finalConfig) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "config is required" });
+      }
+
+      let baselineName = String(current.rows[0].dell_customer || "").trim();
+      let baseline = baselineName
+        ? await ensureDellCustomerByName(client, baselineName)
+        : null;
+      let finalIds = await resolveDellCustomerIds(
+        client,
+        (await listDpnDellCustomers(client, req.params.id)).map((row) => row.id),
+      );
+
+      if (typeof dell_customer_ids !== "undefined") {
+        const ids = await resolveDellCustomerIds(client, dell_customer_ids);
+        finalIds = [...new Set(ids)];
+        if (finalIds.length === 0) {
+          await client.query("ROLLBACK");
+          return res
+            .status(400)
+            .json({
+              error: "At least one Dell customer is required for a DPN",
+            });
+        }
+        baseline = await getDellCustomerById(client, finalIds[0]);
+        baselineName = String(baseline?.name || "").trim();
+        const conflicts = await findDpnCustomerConflicts(
+          client,
+          finalName,
+          finalIds,
+          req.params.id,
+        );
+        if (conflicts.length > 0) {
+          const first = conflicts[0];
+          await client.query("ROLLBACK");
+          return res.status(409).json({
+            error: `Dell customer "${first.dell_customer_name}" is already assigned to config ${first.config} for DPN ${finalName}`,
+          });
+        }
+        await client.query(`DELETE FROM dpn_dell_customer WHERE dpn_id = $1`, [
+          req.params.id,
+        ]);
+        for (const cid of finalIds) {
+          await client.query(
+            `INSERT INTO dpn_dell_customer (dpn_id, dell_customer_id)
+             VALUES ($1, $2)
+             ON CONFLICT (dpn_id, dell_customer_id) DO NOTHING`,
+            [req.params.id, cid],
+          );
+        }
+      } else {
+        if (typeof dell_customer !== "undefined") {
+          baselineName = String(dell_customer || "").trim();
+          if (!baselineName) {
+            await client.query("ROLLBACK");
+            return res.status(400).json({ error: "dell_customer is required" });
+          }
+          baseline = await ensureDellCustomerByName(client, baselineName);
+          finalIds = [...new Set([...finalIds, baseline.id])];
+          await client.query(
+            `INSERT INTO dpn_dell_customer (dpn_id, dell_customer_id)
+             VALUES ($1, $2)
+             ON CONFLICT (dpn_id, dell_customer_id) DO NOTHING`,
+            [req.params.id, baseline.id],
+          );
+        }
+      }
+
+      const nameFamilyConflicts = await findDpnCustomerConflicts(
+        client,
+        finalName,
+        finalIds,
+        req.params.id,
+      );
+      if (nameFamilyConflicts.length > 0) {
+        const first = nameFamilyConflicts[0];
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: `Dell customer "${first.dell_customer_name}" is already assigned to config ${first.config} for DPN ${finalName}`,
+        });
+      }
+
+      const fields = [];
+      const vals = [];
+      if (typeof name !== "undefined") {
+        fields.push(`name = $${fields.length + 1}`);
+        vals.push(finalName);
+      }
+      if (typeof config !== "undefined") {
+        fields.push(`config = $${fields.length + 1}`);
+        vals.push(finalConfig);
+      }
+      fields.push(`dell_customer = $${fields.length + 1}`);
+      vals.push(baseline.name);
+
+      const { rows } = await client.query(
+        `UPDATE dpn SET ${fields.join(", ")}
+           WHERE id = $${fields.length + 1}
+         RETURNING id, name, config, dell_customer`,
+        [...vals, req.params.id],
+      );
+
+      const mapped = await listDpnDellCustomers(client, req.params.id);
+      await syncSystemsToDpnFamily(client, current.rows[0].name);
+      if (normalizeDpnName(current.rows[0].name) !== finalName) {
+        await syncSystemsToDpnFamily(client, finalName);
+      }
+      await client.query("COMMIT");
+      return res.json({
+        ...rows[0],
+        dell_customers: mapped,
+      });
+    } catch (innerErr) {
+      await client.query("ROLLBACK");
+      throw innerErr;
+    } finally {
+      client.release();
+    }
+  } catch (e) {
+    console.error(e);
+    if (isPgUniqueViolation(e)) {
+      return res.status(409).json({ error: "DPN name and config already exist" });
+    }
+    return res.status(500).json({ error: "Failed to update DPN" });
+  }
+});
+
+// DELETE dpn (admin) – block if referenced
+router.post(
+  "/dpn/delete-family",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const ids = [
+      ...new Set(
+        (req.body?.ids || [])
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0),
+      ),
+    ];
+    if (ids.length === 0) {
+      return res.status(400).json({ error: "At least one DPN id is required" });
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      const familyRows = await client.query(
+        `SELECT id, name, config
+           FROM dpn
+          WHERE id = ANY($1::int[])
+          FOR UPDATE`,
+        [ids],
+      );
+      if (familyRows.rowCount !== ids.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "One or more DPN configs were not found" });
+      }
+
+      const ref = await client.query(
+        `
+        SELECT
+          EXISTS(SELECT 1 FROM system WHERE dpn_id = ANY($1::int[])) AS has_systems,
+          EXISTS(SELECT 1 FROM pallet WHERE dpn_id = ANY($1::int[])) AS has_pallets
+        `,
+        [ids],
+      );
+      if (ref.rows[0].has_systems || ref.rows[0].has_pallets) {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          error: "Cannot delete DPN: one or more configs are referenced by systems or pallets",
+        });
+      }
+
+      await client.query(`DELETE FROM dpn WHERE id = ANY($1::int[])`, [ids]);
+      await client.query("COMMIT");
+      return res.json({ message: "DPN family deleted" });
+    } catch (e) {
+      await client.query("ROLLBACK");
+      console.error(e);
+      return res.status(500).json({ error: "Failed to delete DPN family" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+router.delete("/dpn/:id", authenticateToken, ensureAdmin, async (req, res) => {
+  const id = req.params.id;
+  try {
+    // Block delete if referenced by system or pallet
+    const ref = await db.query(
+      `
+      SELECT
+        EXISTS(SELECT 1 FROM system WHERE dpn_id = $1) AS has_systems,
+        EXISTS(SELECT 1 FROM pallet WHERE dpn_id = $1) AS has_pallets
+      `,
+      [id],
+    );
+    if (ref.rows[0].has_systems || ref.rows[0].has_pallets) {
+      return res.status(409).json({
+        error: "Cannot delete DPN: referenced by systems or pallets",
+      });
+    }
+
+    const del = await db.query(`DELETE FROM dpn WHERE id = $1`, [id]);
+    if (del.rowCount === 0) {
+      return res.status(404).json({ error: "DPN not found" });
+    }
+    return res.json({ message: "DPN deleted" });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to delete DPN" });
+  }
+});
+
+// ---------- ROOT CAUSE (LIST/GET) ----------
+router.get("/root-cause", async (req, res) => {
+  const { q } = req.query;
+  try {
+    if (q && q.trim()) {
+      const like = `%${q.trim()}%`;
+      const { rows } = await db.query(
+        `SELECT id, name
+           FROM root_cause
+          WHERE name ILIKE $1
+          ORDER BY name ASC`,
+        [like],
+      );
+      return res.json(rows);
+    }
+    const { rows } = await db.query(
+      `SELECT id, name FROM root_cause ORDER BY name ASC`,
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to list root causes" });
+  }
+});
+
+router.get("/root-cause/:id", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, name FROM root_cause WHERE id = $1`,
+      [req.params.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    return res.json(rows[0]);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: "Failed to fetch root cause" });
+  }
+});
+
+// ---------- ROOT CAUSE SUB-CATEGORIES (LIST/GET) ----------
+router.get("/root-cause-sub-categories", async (req, res) => {
+  const { q } = req.query;
+  try {
+    if (q && q.trim()) {
+      const like = `%${q.trim()}%`;
+      const { rows } = await db.query(
+        `SELECT id, name
+           FROM root_cause_sub_categories
+          WHERE name ILIKE $1
+          ORDER BY name ASC`,
+        [like],
+      );
+      return res.json(rows);
+    }
+    const { rows } = await db.query(
+      `SELECT id, name FROM root_cause_sub_categories ORDER BY name ASC`,
+    );
+    return res.json(rows);
+  } catch (e) {
+    console.error(e);
+    return res
+      .status(500)
+      .json({ error: "Failed to list root cause sub-categories" });
+  }
+});
+
+router.get("/root-cause-sub-categories/:id", async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT id, name FROM root_cause_sub_categories WHERE id = $1`,
+      [req.params.id],
+    );
+    if (!rows.length) return res.status(404).json({ error: "Not found" });
+    return res.json(rows[0]);
+  } catch (e) {
+    console.error(e);
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch root cause sub-category" });
+  }
+});
+
+/**
+ * GET /api/v1/systems
+ *
+ * Lists systems, supporting:
+ *
+ * Query Parameters:
+ * - filters: JSON string or object defining advanced nested filters
+ *   Example:
+ *     filters={
+ *       "op": "AND",
+ *       "conditions": [
+ *         {
+ *           "op": "OR",
+ *           "conditions": [
+ *             { "field": "service_tag", "values": ["TEST", "DEMO"], "op": "ILIKE" },
+ *             { "field": "issue", "values": ["Fan"], "op": "ILIKE" }
+ *           ]
+ *         },
+ *         {
+ *           "field": "location_id",
+ *           "values": [1, 2],
+ *           "op": "IN"
+ *         }
+ *       ]
+ *     }
+ *
+ * - Sorting:
+ *     ?sort_by=service_tag|issue|location
+ *     ?sort_order=asc|desc
+ *
+ * - Pagination:
+ *     ?page=1&page_size=50
+ *
+ * - Fetch all:
+ *     ?all=true (disables pagination and returns all rows)
+ *
+ * Notes:
+ * - `filters` is required for advanced AND/OR and operator selection.
+ * - Default sort is by `service_tag` descending.
+ * - Pagination page_size is capped at 100.
+ * - If `all=true`, pagination is ignored and all matching records are returned.
+ */
+router.get("/", async (req, res) => {
+  const {
+    filters,
+    tags,
+    page = 1,
+    page_size = 50,
+    all,
+    sort_by,
+    sort_order,
+    search, // 👈 capture it
+  } = req.query;
+
+  const params = [];
+  let whereSQL = "";
+
+  // --- filters (existing) ---
+  if (filters) {
+    const parsed = typeof filters === "string" ? JSON.parse(filters) : filters;
+    if (parsed && parsed.conditions?.length) {
+      const filtersSQL = buildWhereClause(parsed, params, {
+        service_tag: "s.service_tag",
+        issue: "s.issue",
+        location_id: "s.location_id",
+        location: "l.name",
+        dpn: "d.name",
+        dell_customer: "s.dell_customer",
+        manufactured_date: "s.manufactured_date",
+        serial: "s.serial",
+        rev: "s.rev",
+        factory: "f.code",
+        ppid: "s.ppid",
+        root_cause: "rc.name",
+        root_cause_sub_category: "rcs.name",
+        host_mac: "s.host_mac",
+        bmc_mac: "s.bmc_mac",
+      });
+      if (filtersSQL) whereSQL = `WHERE ${filtersSQL}`;
+    }
+  }
+  if (tags) {
+    const parsed = typeof tags === "string" ? JSON.parse(tags) : tags;
+    if (parsed.length > 0) {
+      const tagsSQL = parsed
+        .map(
+          (g) =>
+            `(${g.map((t) => `tags_agg.tags @> '[{"code":"${t}"}]'::jsonb`).join(" AND ")})`,
+        )
+        .join(" OR ");
+      whereSQL = whereSQL ? `${whereSQL} AND (${tagsSQL})` : `WHERE ${tagsSQL}`;
+    }
+  }
+  console.log(whereSQL);
+  // AND across terms, OR across fields per term
+  // e.g. search="KR7T5 bianca" -> matches rows that contain "KR7T5" AND "bianca" somewhere among these columns
+  if (search && String(search).trim()) {
+    const terms = String(search).trim().split(/\s+/).slice(0, 8); // cap terms defensively
+    const searchClauses = terms.map((t) => {
+      const p = `%${t}%`;
+      // push one param per field below (keep order consistent with SQL)
+      params.push(p, p, p, p, p, p, p, p, p, p, p, p);
+      //            1  2  3  4  5  6   7   8   9   10  11  12
+      // fields: service_tag, issue, location, dpn, dpn.config, dell_customer,
+      //         ppid, factory_code, rc.name, rcs.name, host_mac, bmc_mac
+      const base = params.length - 11;
+      return `(
+        s.service_tag     ILIKE $${base} OR
+        s.issue           ILIKE $${base + 1} OR
+        l.name            ILIKE $${base + 2} OR
+        d.name            ILIKE $${base + 3} OR
+        d.config          ILIKE $${base + 4} OR
+        s.dell_customer    ILIKE $${base + 5} OR
+        s.ppid            ILIKE $${base + 6} OR
+        f.code            ILIKE $${base + 7} OR
+        rc.name           ILIKE $${base + 8} OR
+        rcs.name          ILIKE $${base + 9} OR
+        s.host_mac::text  ILIKE $${base + 10} OR
+        s.bmc_mac::text   ILIKE $${base + 11}
+      )`;
+    });
+
+    const searchSQL = searchClauses.join(" AND "); // AND across terms
+    whereSQL = whereSQL
+      ? `${whereSQL} AND (${searchSQL})`
+      : `WHERE ${searchSQL}`;
+  }
+
+  // --- sorting (existing) ---
+  const allowedSortColumns = {
+    service_tag: "s.service_tag",
+    issue: "s.issue",
+    location: "l.name",
+    dpn: "d.name",
+    dell_customer: "s.dell_customer",
+    manufactured_date: "s.manufactured_date",
+    serial: "s.serial",
+    rev: "s.rev",
+    factory: "f.code",
+    date_created: "first_history.changed_at",
+    date_modified: "last_history.changed_at",
+    added_by: "first_user.username",
+    root_cause: "rc.name",
+    root_cause_sub_category: "rcs.name",
+  };
+  const orderColumn = allowedSortColumns[sort_by] || "s.service_tag";
+  const orderDirection = sort_order === "asc" ? "ASC" : "DESC";
+  const orderSql = `${orderColumn} ${orderDirection} NULLS LAST`;
+
+  // --- paging (existing) ---
+  let limitOffsetSQL = "";
+  let pageNum, pageSize, offset;
+  if (!all || all === "false") {
+    pageNum = Math.max(parseInt(page), 1);
+    pageSize = Math.min(parseInt(page_size), 100);
+    offset = (pageNum - 1) * pageSize;
+    limitOffsetSQL = `LIMIT ${pageSize} OFFSET ${offset}`;
+  }
+
+  try {
+    const baseSelect = `
+      SELECT 
+        s.id,
+        s.service_tag,
+        s.issue,
+        d.name  AS dpn,
+        d.config AS config,
+        s.dell_customer AS dell_customer,
+        s.manufactured_date,
+        s.serial,
+        s.rev,
+        s.ppid,
+        s.doa_number,
+        s.host_mac,
+        s.bmc_mac,
+        s.rack_service_tag AS rack_id, 
+        l.name AS location,
+        f.code AS factory_code,
+        f.name AS factory_name,
+        rc.name  AS root_cause,
+        rcs.name AS root_cause_sub_category,
+        first_history.changed_at AS date_created,
+        first_user.username AS added_by,
+        last_history.changed_at AS date_modified,
+        tags_agg.tags AS tags,
+        COALESCE(dell_opts.dell_customer_options, '[]'::jsonb) AS dell_customer_options
+      FROM system s
+      JOIN location l ON s.location_id = l.id
+      LEFT JOIN factory f ON s.factory_id = f.id
+      LEFT JOIN dpn d ON s.dpn_id = d.id
+      LEFT JOIN root_cause rc                 ON rc.id  = s.root_cause_id
+      LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+      LEFT JOIN LATERAL (
+        SELECT h.changed_at, h.moved_by
+        FROM system_location_history h
+        WHERE h.system_id = s.id
+        ORDER BY h.changed_at ASC
+        LIMIT 1
+      ) AS first_history ON TRUE
+      LEFT JOIN users first_user ON first_user.id = first_history.moved_by
+      LEFT JOIN LATERAL (
+        SELECT h.changed_at
+        FROM system_location_history h
+        WHERE h.system_id = s.id
+        ORDER BY h.changed_at DESC
+        LIMIT 1
+      ) AS last_history ON TRUE
+
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+              'tag_id', x.id,
+              'code', x.code,
+              'description', x.description
+            )
+            ORDER BY x.code
+          ),
+          '[]'::jsonb
+        ) AS tags
+        FROM (
+          SELECT DISTINCT t.id, t.code, t.description
+          FROM system_tag st
+          JOIN tag t ON t.id = st.tag_id
+          WHERE st.system_id = s.id
+        ) x
+      ) AS tags_agg ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'id', dc.id,
+              'name', dc.name
+            )
+            ORDER BY dc.name
+          ),
+          '[]'::jsonb
+        ) AS dell_customer_options
+        FROM dpn_dell_customer ddc
+        JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+        WHERE ddc.dpn_id = s.dpn_id
+      ) AS dell_opts ON TRUE
+    `;
+
+    const [dataResult, countResult] = await Promise.all([
+      db.query(
+        `${baseSelect} ${whereSQL} ORDER BY ${orderSql} ${limitOffsetSQL}`,
+        params,
+      ),
+      !all || all === "false"
+        ? db.query(
+            `
+            SELECT COUNT(*) AS count
+            FROM system s
+            JOIN location l ON s.location_id = l.id
+            LEFT JOIN factory f ON s.factory_id = f.id
+            LEFT JOIN dpn d ON s.dpn_id = d.id
+            LEFT JOIN root_cause rc                 ON rc.id  = s.root_cause_id
+            LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+            LEFT JOIN LATERAL (
+              SELECT COALESCE(
+                JSONB_AGG(
+                  JSONB_BUILD_OBJECT(
+                    'tag_id', x.id,
+                    'code', x.code,
+                    'description', x.description
+                  )
+                  ORDER BY x.code
+                ),
+                '[]'::jsonb
+              ) AS tags
+              FROM (
+                SELECT DISTINCT t.id, t.code, t.description
+                FROM system_tag st
+                JOIN tag t ON t.id = st.tag_id
+                WHERE st.system_id = s.id
+              ) x
+            ) AS tags_agg ON TRUE
+            ${whereSQL}
+            `,
+            params,
+          )
+        : Promise.resolve({ rows: [] }),
+    ]);
+
+    if (all && all !== "false") return res.json(dataResult.rows);
+
+    const total_count = parseInt(countResult.rows[0].count, 10);
+    res.json({
+      data: dataResult.rows,
+      total_count,
+      page: pageNum,
+      page_size: pageSize,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch systems" });
+  }
+});
+
+router.get("/snapshot", async (req, res) => {
+  const {
+    date, // REQUIRED: EOD ISO
+    locations, // OPTIONAL: comma-separated names
+    includeNote, // OPTIONAL
+    noCache, // OPTIONAL
+    mode = "cumulative", // 'perday' | 'cumulative'
+    start, // SoD ISO, required when mode=perday
+    includeReceived, // 'true' to compute "Last Received On"
+    format, // 'csv' to return CSV
+    timezone, // for MM/DD in notes
+    simplified, // if true, apply simplified status mapping
+  } = req.query;
+
+  if (!date) {
+    return res
+      .status(400)
+      .json({ error: "Missing required `date` query param" });
+  }
+  if (mode === "perday" && !start) {
+    return res
+      .status(400)
+      .json({ error: "When mode=perday, `start` is required" });
+  }
+
+  const includeNoteFlag =
+    includeNote === "true" || includeNote === "1" || includeNote === true;
+  const noCacheFlag = noCache === "true" || noCache === "1" || noCache === true;
+  const includeReceivedFlag =
+    includeReceived === "true" ||
+    includeReceived === "1" ||
+    includeReceived === true;
+  const wantCSV = format === "csv";
+
+  const simplifiedFlag =
+    simplified === "true" || simplified === "1" || simplified === true;
+
+  const INACTIVE_LOCATION_IDS = [6, 7, 8, 9, 10];
+  const RECEIVED_LOCATION_ID = 1;
+
+  const serverZone = process.env.SERVER_TZ || "UTC";
+  const displayZone = timezone || serverZone;
+
+  const cacheKey =
+    `${date}:${locations || ""}:${includeNoteFlag}:${mode}:${start || ""}:` +
+    `${includeReceivedFlag}:${displayZone}:${simplifiedFlag}`;
+
+  if (!noCacheFlag && !wantCSV) {
+    const cached = snapshotCache.get(cacheKey);
+    if (cached) {
+      snapshotCache.ttl(cacheKey, 300);
+      return res.json(cached);
+    }
+  }
+
+  // Build params
+  const params = [date];
+  const locationFilterSQL = [];
+  if (locations) {
+    const list = locations
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (list.length) {
+      const placeholders = list.map((_, i) => `$${i + 2}`);
+      locationFilterSQL.push(`AND l.name IN (${placeholders.join(", ")})`);
+      params.push(...list);
+    }
+  }
+
+  // Notes aggregate
+  const selectNotesAggregate = includeNoteFlag
+    ? `,
+        nh.notes_history`
+    : ``;
+
+  const lateralJoinNotesAggregate = includeNoteFlag
+    ? `
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          json_agg(
+            json_build_object(
+              'changed_at', to_char(h2.changed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+              'from_location', l_from.name,
+              'to_location', l_to.name,
+              'note', h2.note,
+              'moved_by', u.username
+            )
+            ORDER BY h2.changed_at DESC
+          ),
+          '[]'::json
+        ) AS notes_history
+        FROM system_location_history h2
+        LEFT JOIN location l_from ON h2.from_location_id = l_from.id
+        JOIN location l_to   ON h2.to_location_id = l_to.id
+        LEFT JOIN users   u  ON h2.moved_by       = u.id
+        WHERE h2.system_id = s.id
+          AND h2.changed_at <= $1
+      ) nh ON TRUE
+    `
+    : ``;
+
+  // Unit parts aggregate
+  const lateralJoinUnitParts = `
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(
+        json_agg(
+          json_build_object(
+            'is_functional', pl.is_functional,
+            'ppid', pl.ppid,
+            'part_name', p.name,
+            'part_dpn', p.dpn,
+            'line',
+              CASE WHEN pl.is_functional
+                THEN 'Good Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(pl.ppid,'')
+                ELSE
+                  CASE
+                    WHEN trim(l.name) ILIKE 'RMA%' OR trim(l.name) IN ('Sent to L11', 'Sent for Dell Repair')
+                      THEN 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '') || ' - ' || COALESCE(pl.ppid,'')
+                    ELSE 'Bad Part - ' || COALESCE(p.name, '#' || pl.part_id) || ' - ' || COALESCE(p.dpn, '')
+                  END
+              END
+          )
+          ORDER BY pl.created_at DESC
+        ), '[]'::json
+      ) AS unit_parts
+      FROM part_list pl
+      JOIN parts p ON p.id = pl.part_id
+      WHERE pl.place = 'unit'::part_place
+        AND pl.unit_id = s.id
+    ) up ON TRUE
+  `;
+
+  // Important: DISTINCT+ORDER BY must be handled via a subquery.
+  const lateralJoinTags = `
+    LEFT JOIN LATERAL (
+      SELECT COALESCE(
+        JSONB_AGG(x.code ORDER BY x.code),
+        '[]'::jsonb
+      ) AS tag_codes
+      FROM (
+        SELECT DISTINCT t.code
+        FROM system_tag st
+        JOIN tag t ON t.id = st.tag_id
+        WHERE st.system_id = s.id
+      ) x
+    ) tags_agg ON TRUE
+  `;
+
+  // Per-day exclusion SQL
+  let perDayExclusionSQL = ``;
+  if (mode === "perday") {
+    const startIdx = params.length + 1;
+    const inactiveIdx = params.length + 2;
+    perDayExclusionSQL = `
+      AND NOT (
+        l.id = ANY($${inactiveIdx}::int[])
+        AND h.changed_at < $${startIdx}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM pallet p
+          JOIN pallet_system ps ON ps.pallet_id = p.id
+          WHERE p.status = 'released'
+            AND p.released_at >= $${startIdx}
+            AND p.released_at <= $1
+            AND ps.system_id = s.id
+            AND ps.added_at <= p.released_at
+            AND COALESCE(ps.removed_at, 'infinity'::timestamptz) >= p.released_at
+        )
+      )
+    `;
+    params.push(start);
+    params.push(INACTIVE_LOCATION_IDS);
+  }
+  const rmaParamIdx = params.length + 1;
+
+  try {
+    const snapshotResult = await db.query(
+      `
+      WITH latest_state AS (
+        SELECT DISTINCT ON (h.system_id)
+          h.system_id,
+          h.to_location_id,
+          h.changed_at
+        FROM system_location_history h
+        WHERE h.changed_at <= $1
+        ORDER BY h.system_id, h.changed_at DESC
+      )
+      SELECT 
+        s.service_tag,
+        s.ppid,
+        COALESCE(f.code, 'Not Entered Yet') AS factory_code,
+        s.issue,
+        d.name   AS dpn,
+        d.config AS config,
+        s.dell_customer AS dell_customer,
+        CASE
+          WHEN trim(l.name) ILIKE 'RMA%' THEN
+            regexp_replace(l.name, '\\s*\\((PENDING|COMPLETE)\\)$', '', 'i')
+            ||
+            CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM pallet p
+                JOIN pallet_system ps ON ps.pallet_id = p.id
+                WHERE p.status = 'open'
+                  AND ps.system_id = s.id
+                  AND ps.removed_at IS NULL
+              )
+              THEN ' (PENDING)'
+              ELSE ' (COMPLETE)'
+            END
+          ELSE l.name
+        END AS location,
+        to_char(h.changed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS date_modified,
+        s.rack_service_tag AS rack_id
+        ${selectNotesAggregate}
+        , up.unit_parts
+        , CASE
+            WHEN s.root_cause_id IS NULL AND s.root_cause_sub_category_id IS NULL THEN NULL
+            WHEN s.root_cause_id IS NOT NULL AND s.root_cause_sub_category_id IS NOT NULL THEN rc.name || ' - ' || rcs.name
+            WHEN s.root_cause_id IS NOT NULL THEN rc.name
+            ELSE rcs.name
+          END AS root_cause
+        , to_char(first_history.first_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS first_received_on
+        ${
+          includeReceivedFlag
+            ? `,
+          to_char(last_recv.last_received_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS last_received_on`
+            : ``
+        }
+        , COALESCE(hist_counts.times_received, 0) AS times_received
+        , COALESCE(hist_counts.times_rma, 0) AS times_rma
+        , tags_agg.tag_codes AS tag_codes
+      FROM system s
+      JOIN latest_state h  ON h.system_id = s.id
+      JOIN location l      ON h.to_location_id = l.id
+      LEFT JOIN factory f  ON s.factory_id = f.id
+      LEFT JOIN dpn d      ON s.dpn_id     = d.id
+      LEFT JOIN root_cause rc ON rc.id = s.root_cause_id
+      LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+      ${lateralJoinNotesAggregate}
+      ${lateralJoinUnitParts}
+      ${lateralJoinTags}
+      LEFT JOIN LATERAL (
+        SELECT h0.changed_at AS first_at
+        FROM system_location_history h0
+        WHERE h0.system_id = s.id
+        ORDER BY h0.changed_at ASC
+        LIMIT 1
+      ) AS first_history ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*) FILTER (
+            WHERE h4.to_location_id = ${RECEIVED_LOCATION_ID}
+              AND h4.changed_at <= $1
+          )::int AS times_received,
+          COUNT(*) FILTER (
+            WHERE h4.to_location_id = ANY($${rmaParamIdx}::int[])
+              AND (
+                h4.from_location_id IS NULL
+                OR NOT (h4.from_location_id = ANY($${rmaParamIdx}::int[]))
+              )
+              AND h4.changed_at <= $1
+          )::int AS times_rma
+        FROM system_location_history h4
+        WHERE h4.system_id = s.id
+      ) AS hist_counts ON TRUE
+      ${
+        includeReceivedFlag
+          ? `
+      LEFT JOIN LATERAL (
+        SELECT h3.changed_at AS last_received_at
+        FROM system_location_history h3
+        WHERE h3.system_id = s.id
+          AND h3.changed_at <= $1
+          AND h3.to_location_id = ${RECEIVED_LOCATION_ID}
+        ORDER BY h3.changed_at DESC
+        LIMIT 1
+      ) AS last_recv ON TRUE`
+          : ``
+      }
+      LEFT JOIN LATERAL (
+        SELECT TRUE AS on_open_pallet
+        FROM pallet p
+        JOIN pallet_system ps ON ps.pallet_id = p.id
+        WHERE p.status = 'open'
+          AND ps.system_id = s.id
+          AND ps.removed_at IS NULL
+        LIMIT 1
+      ) ops ON TRUE
+      WHERE 1=1
+      ${locationFilterSQL.join(" ")}
+      ${perDayExclusionSQL}
+      ORDER BY s.service_tag
+      `,
+      [...params, RMA_LOCATION_IDS],
+    );
+
+    const rows = snapshotResult.rows;
+
+    // Apply simplified mapping (preserve original for PIC extraction in CSV)
+    if (simplifiedFlag) {
+      const reRMAComplete = /^RMA\s+(VID|CID|PID)\s+\(COMPLETE\)$/i;
+      const reRMAPending = /^RMA\s+(VID|CID|PID)\s+\(PENDING\)$/i;
+      const reInDebugSet = /^(In L10|In Debug - Wistron|Received)$/i;
+
+      for (const r of rows) {
+        const original = (r.location || "").trim();
+        r._orig_location = original;
+
+        if (reRMAComplete.test(original)) {
+          r.location = "RMA Done";
+        } else if (reRMAPending.test(original)) {
+          r.location = "Waiting for RMA";
+        } else if (/^Sent to L11$/i.test(original)) {
+          r.location = "Fixed";
+        } else if (/^Sent for Dell Repair$/i.test(original)) {
+          r.location = "Dell Repair";
+        } else if (reInDebugSet.test(original)) {
+          r.location = "In Debug";
+        }
+      }
+    }
+
+    if (!wantCSV) {
+      if (!noCacheFlag) snapshotCache.set(cacheKey, rows, 300);
+      return res.json(rows);
+    }
+
+    // ---- CSV (send once, no streaming) ----
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="snapshot_${(date || "").slice(0, 10)}_${mode}.csv"`,
+    );
+    res.setHeader("Cache-Control", "no-store");
+
+    const header = [
+      "First Received On",
+      "Last Received On",
+      "Date Modified",
+      "Received Count",
+      "RMA Count",
+      "Rack ID",
+      "PIC",
+      "From",
+      "Status",
+      "Service Tag",
+      "PPID",
+      "DPN",
+      "Config",
+      "Dell Customer",
+      "Issue",
+      "Note History",
+      "Root Cause",
+      "Unit Parts",
+      "Tags",
+      "L11 Logs Found",
+    ];
+
+    const csvEsc = (v) => {
+      const s = String(v ?? "");
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: displayZone,
+      month: "2-digit",
+      day: "2-digit",
+    });
+
+    const fmtExcelText = (iso) => {
+      if (!iso) return "";
+      return new Date(iso).toLocaleString("sv-SE", {
+        timeZone: displayZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      });
+    };
+
+    const lines = [];
+    lines.push(header.join(","));
+
+    const logsRoot = await firstExistingDir([
+      process.env.L10_LOGS_ROOT,
+      path.resolve(process.cwd(), "../l10_logs"),
+      path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+      path.resolve(process.cwd(), "l10_logs"),
+    ]);
+    const l11LogFoundByServiceTagAndRack = new Map();
+    await Promise.all(
+      rows.map(async (r) => {
+        const st = String(r.service_tag || "")
+          .trim()
+          .toUpperCase();
+        const rack = String(r.rack_id || "")
+          .trim()
+          .toUpperCase();
+        const key = `${st}::${rack}`;
+        if (!st || !rack || l11LogFoundByServiceTagAndRack.has(key)) return;
+        const found = await hasL11ArchiveForServiceTagAndRack(
+          logsRoot,
+          st,
+          rack,
+        );
+        l11LogFoundByServiceTagAndRack.set(key, found);
+      }),
+    );
+
+    for (const r of rows) {
+      const firstLocal = r.first_received_on
+        ? fmtExcelText(r.first_received_on)
+        : "";
+      const lastLocal =
+        includeReceivedFlag && r.last_received_on
+          ? fmtExcelText(r.last_received_on)
+          : "";
+      const modifiedLocal = r.date_modified
+        ? fmtExcelText(r.date_modified)
+        : "";
+
+      // Use original RMA location for PIC extraction so simplified labels don’t break it
+      const locForPic = r._orig_location || r.location || "";
+      const pic = locForPic.startsWith("RMA ")
+        ? locForPic
+            .replace(/^RMA\s+/, "")
+            .replace(/\s+\((PENDING|COMPLETE)\)$/, "")
+        : "";
+
+      let noteHistoryText = "";
+      if (
+        includeNoteFlag &&
+        Array.isArray(r.notes_history) &&
+        r.notes_history.length
+      ) {
+        const reversed = [...r.notes_history].reverse(); // oldest -> newest
+        noteHistoryText = reversed
+          .map((e) => {
+            const dt = new Date(e.changed_at);
+            const mmdd = fmt.format(dt);
+            const fromLoc = e.from_location || "";
+            const toLoc = e.to_location || "";
+            const note = (e.note || "").trim();
+            const by = e.moved_by || "";
+            return fromLoc
+              ? `${mmdd} - [${fromLoc} -> ${toLoc}] - ${note} [via] ${by}`
+              : `${mmdd} - [${toLoc}] - ${note} [via] ${by}`;
+          })
+          .join("\n");
+      }
+
+      let unitPartsText = "";
+      if (Array.isArray(r.unit_parts) && r.unit_parts.length) {
+        unitPartsText = r.unit_parts.map((e) => e.line).join("\n");
+      }
+
+      const rootCauseText = r.root_cause || "";
+
+      const tagsText =
+        Array.isArray(r.tag_codes) && r.tag_codes.length
+          ? r.tag_codes.join("\n")
+          : "";
+
+      const row = [
+        firstLocal ?? "",
+        includeReceivedFlag ? (lastLocal ?? "") : "",
+        modifiedLocal ?? "",
+        r.times_received ?? 0,
+        r.times_rma ?? 0,
+        r.rack_id ?? "",
+        pic ?? "",
+        r.factory_code ?? "",
+        r.location ?? "",
+        r.service_tag ?? "",
+        r.ppid ?? "",
+        r.dpn ?? "",
+        r.config != null ? `Config ${r.config}` : "",
+        r.dell_customer ?? "",
+        r.issue ?? "",
+        noteHistoryText ?? "",
+        rootCauseText ?? "",
+        unitPartsText ?? "",
+        tagsText ?? "",
+        l11LogFoundByServiceTagAndRack.get(
+          `${String(r.service_tag || "")
+            .trim()
+            .toUpperCase()}::${String(r.rack_id || "")
+            .trim()
+            .toUpperCase()}`,
+        )
+          ? "yes"
+          : "no",
+      ].map((v) => csvEsc(String(v)));
+
+      lines.push(row.join(","));
+    }
+
+    const csv = lines.join("\n");
+    return res.status(200).send(csv);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Failed to fetch snapshot" });
+  }
+});
+
+/**
+ * GET /api/v1/systems/history
+ *
+ * Lists system location history records, supporting:
+ *
+ * Query Parameters:
+ * - filters: JSON string or object defining advanced nested filters
+ *   Example:
+ *     filters={
+ *       "op": "AND",
+ *       "conditions": [
+ *         {
+ *           "field": "service_tag",
+ *           "values": ["TEST123", "STAGE"],
+ *           "op": "ILIKE"
+ *         },
+ *         {
+ *           "op": "OR",
+ *           "conditions": [
+ *             { "field": "from_location_id", "values": [1], "op": "IN" },
+ *             { "field": "to_location_id", "values": [2], "op": "IN" }
+ *           ]
+ *         }
+ *       ]
+ *     }
+ *
+ * - Sorting:
+ *     ?sort_by=changed_at|service_tag|from_location_id|to_location_id|moved_by
+ *     ?sort_order=asc|desc
+ *
+ * - Pagination:
+ *     ?page=1&page_size=50
+ *
+ * - Fetch all:
+ *     ?all=true (disables pagination and returns all rows)
+ *
+ * Notes:
+ * - `filters` is required for advanced AND/OR and operator selection.
+ * - Default sort is by `changed_at` descending.
+ * - Pagination page_size is capped at 100.
+ * - If `all=true`, pagination is ignored and all matching records are returned.
+ */
+router.get("/history", async (req, res) => {
+  const {
+    all,
+    page = 1,
+    page_size = 50,
+    sort_by = "changed_at",
+    sort_order = "desc",
+    filters, // new
+  } = req.query;
+
+  const params = [];
+  let whereSQL = "";
+
+  if (filters) {
+    const parsed = typeof filters === "string" ? JSON.parse(filters) : filters;
+
+    whereSQL =
+      parsed && parsed.conditions?.length
+        ? `WHERE ${buildWhereClause(parsed, params, {
+            service_tag: "s.service_tag",
+            from_location_id: "h.from_location_id",
+            to_location_id: "h.to_location_id",
+            moved_by_id: "h.moved_by",
+            changed_at: "h.changed_at",
+            note: "h.note",
+          })}`
+        : "";
+  }
+
+  const ALLOWED_SORT_FIELDS = [
+    "changed_at",
+    "service_tag",
+    "from_location_id",
+    "to_location_id",
+    "moved_by",
+  ];
+
+  const safeSortBy = ALLOWED_SORT_FIELDS.includes(sort_by)
+    ? sort_by
+    : "changed_at";
+  const safeSortOrder = sort_order.toLowerCase() === "asc" ? "ASC" : "DESC";
+
+  let limitOffsetSQL = "";
+  let pageNum, pageSize, offset;
+
+  if (!all || all === "false") {
+    pageNum = Math.max(1, parseInt(page));
+    pageSize = Math.min(100, parseInt(page_size));
+    offset = (pageNum - 1) * pageSize;
+    limitOffsetSQL = `LIMIT ${pageSize} OFFSET ${offset}`;
+  }
+
+  try {
+    const [dataResult, countResult] = await Promise.all([
+      db.query(
+        `
+        SELECT 
+          h.id,
+          s.service_tag,
+          l_from.name AS from_location,
+          l_to.name AS to_location,
+          u.username AS moved_by,
+          h.note,
+          h.changed_at
+        FROM system_location_history h
+        JOIN system s ON h.system_id = s.id
+        LEFT JOIN location l_from ON h.from_location_id = l_from.id
+        JOIN location l_to ON h.to_location_id = l_to.id
+        JOIN users u ON h.moved_by = u.id
+        ${whereSQL}
+        ORDER BY ${safeSortBy} ${safeSortOrder}
+        ${limitOffsetSQL}
+        `,
+        params,
+      ),
+      !all || all === "false"
+        ? db.query(
+            `
+            SELECT COUNT(*) AS count
+            FROM system_location_history h
+            JOIN system s ON h.system_id = s.id
+            LEFT JOIN location l_from ON h.from_location_id = l_from.id
+            JOIN location l_to ON h.to_location_id = l_to.id
+            JOIN users u ON h.moved_by = u.id
+            ${whereSQL}
+            `,
+            params,
+          )
+        : Promise.resolve({ rows: [] }),
+    ]);
+
+    if (all && all !== "false") {
+      return res.json(dataResult.rows);
+    }
+
+    const total_count = parseInt(countResult.rows[0].count);
+
+    res.json({
+      data: dataResult.rows,
+      total_count,
+      page: pageNum,
+      page_size: pageSize,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch history ledger" });
+  }
+});
+
+// GET /api/v1/systems/history/:id - get single history entry by ID
+router.get("/history/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT 
+        h.id,
+        s.service_tag,
+        l_from.name AS from_location,
+        l_to.name AS to_location,
+        u.username AS moved_by,
+        h.note,
+        h.changed_at
+      FROM system_location_history h
+      JOIN system s ON h.system_id = s.id
+      LEFT JOIN location l_from ON h.from_location_id = l_from.id
+      JOIN location l_to ON h.to_location_id = l_to.id
+      JOIN users u ON h.moved_by = u.id
+      WHERE h.id = $1
+      `,
+      [id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "History record not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch history record" });
+  }
+});
+
+// DELETE /api/v1/systems/:service_tag/history/last
+router.delete(
+  "/:service_tag/history/last",
+  authenticateToken,
+  async (req, res) => {
+    const { service_tag } = req.params;
+    const client = await db.connect();
+
+    try {
+      await client.query("BEGIN");
+
+      // 1. Find system by service_tag
+      const systemResult = await client.query(
+        "SELECT id FROM system WHERE service_tag = $1",
+        [service_tag],
+      );
+      if (systemResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "System not found" });
+      }
+      const system_id = systemResult.rows[0].id;
+
+      // 2. Get history entries newest → oldest
+      const historyResult = await client.query(
+        `
+        SELECT id, moved_by, to_location_id
+        FROM system_location_history
+        WHERE system_id = $1
+        ORDER BY changed_at DESC
+        `,
+        [system_id],
+      );
+      if (historyResult.rows.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "No history entries found" });
+      }
+      if (historyResult.rows.length === 1) {
+        await client.query("ROLLBACK");
+        return res
+          .status(400)
+          .json({ error: "Cannot delete the first history entry" });
+      }
+
+      const {
+        id: history_id,
+        moved_by,
+        to_location_id: deletedToLocationId,
+      } = historyResult.rows[0];
+
+      // 3. Who is deleting? (check admin flag from DB)
+      const meRes = await client.query(
+        `SELECT admin FROM users WHERE id = $1`,
+        [req.user.userId],
+      );
+      const isAdmin = !!meRes.rows[0]?.admin;
+
+      // 3b. (Optional) Get deleted_user id, if present
+      let deletedUserId = null;
+      const deletedUserIdResult = await client.query(
+        `SELECT id FROM users WHERE username = 'deleted_user@example.com'`,
+      );
+      if (deletedUserIdResult.rows.length) {
+        deletedUserId = deletedUserIdResult.rows[0].id;
+      }
+
+      // 4. Authorization check:
+      //    Allow if admin OR self-owned entry OR an entry created by deleted_user
+      if (
+        !isAdmin &&
+        moved_by !== req.user.userId &&
+        !(deletedUserId && moved_by === deletedUserId)
+      ) {
+        await client.query("ROLLBACK");
+        return res.status(403).json({
+          error:
+            "Not authorized. Only the note author or an other authorized users can delete this entry.",
+        });
+      }
+      const onLocked = await systemOnLockedPallet(client, system_id);
+      if (onLocked) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "System is on a locked pallet — cannot roll back history",
+        });
+      }
+
+      // 4b. If the *current* (to-be-deleted) entry is a resolved location,
+      //     clear root cause fields on the system.
+      if (
+        deletedToLocationId &&
+        RESOLVED_LOCATION_IDS.includes(deletedToLocationId)
+      ) {
+        await client.query(
+          `
+                  UPDATE system
+                  SET root_cause_id = NULL,
+                      root_cause_sub_category_id = NULL
+                WHERE id = $1
+                `,
+          [system_id],
+        );
+      }
+
+      // 5. Delete latest history entry
+      await client.query("DELETE FROM system_location_history WHERE id = $1", [
+        history_id,
+      ]);
+
+      // 6. Roll back system.location_id to new latest entry
+      const latestRemaining = await client.query(
+        `
+        SELECT to_location_id
+        FROM system_location_history
+        WHERE system_id = $1
+        ORDER BY changed_at DESC
+        LIMIT 1
+        `,
+        [system_id],
+      );
+
+      const rollbackLocation =
+        latestRemaining.rows.length > 0
+          ? latestRemaining.rows[0].to_location_id
+          : null;
+
+      await client.query("UPDATE system SET location_id = $1 WHERE id = $2", [
+        rollbackLocation,
+        system_id,
+      ]);
+
+      // Any transition to a resolved location clears all unit tags.
+      if (
+        rollbackLocation &&
+        RESOLVED_LOCATION_IDS.includes(rollbackLocation)
+      ) {
+        await client.query("DELETE FROM system_tag WHERE system_id = $1", [
+          system_id,
+        ]);
+      }
+
+      // If latest deleted history moved from resolved -> unresolved, clear per-unit DOA.
+      if (
+        deletedToLocationId &&
+        RESOLVED_LOCATION_IDS.includes(deletedToLocationId) &&
+        rollbackLocation &&
+        !RESOLVED_LOCATION_IDS.includes(rollbackLocation)
+      ) {
+        await client.query(
+          "UPDATE system SET doa_number = NULL WHERE id = $1",
+          [system_id],
+        );
+      }
+
+      // 7. If we are LEAVING an RMA location, remove from any open pallet
+      if (
+        deletedToLocationId &&
+        RMA_LOCATION_IDS.includes(deletedToLocationId)
+      ) {
+        await client.query(
+          `
+          UPDATE pallet_system
+          SET removed_at = NOW()
+          WHERE system_id = $1
+            AND removed_at IS NULL
+            AND pallet_id IN (SELECT id FROM pallet WHERE status = 'open')
+          `,
+          [system_id],
+        );
+      }
+
+      await client.query("COMMIT");
+      res.json({
+        message:
+          "Last history entry deleted, system location rolled back" +
+          (deletedToLocationId && RMA_LOCATION_IDS.includes(deletedToLocationId)
+            ? " and removed from open pallet"
+            : ""),
+        new_location_id: rollbackLocation,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error(err);
+      res.status(500).json({ error: "Failed to delete last history entry" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+// GET /api/v1/systems/:service_tag/history
+router.get("/:service_tag/history", async (req, res) => {
+  const { service_tag } = req.params;
+
+  const systemResult = await db.query(
+    "SELECT id FROM system WHERE service_tag = $1",
+    [service_tag],
+  );
+
+  if (systemResult.rows.length === 0) {
+    return res.status(404).json({ error: "System not found" });
+  }
+
+  const system_id = systemResult.rows[0].id;
+
+  const result = await db.query(
+    `
+    SELECT h.id, l_from.name AS from_location, l_to.name AS to_location, h.note, u.username AS moved_by, h.changed_at
+    FROM system_location_history h
+    LEFT JOIN location l_from ON h.from_location_id = l_from.id
+    JOIN location l_to ON h.to_location_id = l_to.id
+    JOIN users u ON h.moved_by = u.id
+    WHERE h.system_id = $1
+    ORDER BY h.changed_at DESC
+  `,
+    [system_id],
+  );
+
+  res.json(result.rows);
+});
+
+// POST /api/v1/systems
+router.post("/", authenticateToken, async (req, res) => {
+  const {
+    service_tag,
+    issue,
+    location_id,
+    ppid,
+    rack_service_tag,
+    host_mac,
+    bmc_mac,
+    dell_customer,
+  } = req.body;
+
+  if (
+    !service_tag?.trim() ||
+    !location_id ||
+    !ppid?.trim() ||
+    !rack_service_tag?.trim() ||
+    !host_mac?.toString().trim() ||
+    !bmc_mac?.toString().trim()
+  ) {
+    return res.status(400).json({
+      error:
+        "Service Tag, Location, PPID, Rack Service Tag, Host MAC, and BMC MAC are required",
+    });
+  }
+  const rackUpper = rack_service_tag.trim().toUpperCase();
+  const rackValidationError = validateRackServiceTag(rackUpper);
+  if (rackValidationError) {
+    return res.status(400).json({ error: rackValidationError });
+  }
+
+  let parsed;
+  try {
+    parsed = parseAndValidatePPID(ppid);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  let hostMac12, bmcMac12;
+  try {
+    hostMac12 = requireMac12Hex(host_mac, "host_mac");
+    bmcMac12 = requireMac12Hex(bmc_mac, "bmc_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    // Require existing DPN (no silent auto-create) so customer mappings are configured.
+    const {
+      dpn: resolvedDpn,
+      chosenDellCustomer,
+    } = await resolveDpnForSystem(client, parsed.dpn, dell_customer);
+    const dpn_id = resolvedDpn.id;
+
+    // factory via PPID code
+    const facRes = await client.query(
+      `SELECT id FROM factory WHERE ppid_code = $1`,
+      [parsed.factoryCodeRaw],
+    );
+    const factory_id = facRes.rows[0]?.id || null;
+    if (!factory_id)
+      throw new Error(`Unknown factory PPID code: ${parsed.factoryCodeRaw}`);
+
+    // insert system
+    const ins = await client.query(
+      `
+      INSERT INTO system
+        (service_tag, issue, location_id, ppid, dpn_id, factory_id,
+        manufactured_date, serial, rev, dell_customer, rack_service_tag,
+        host_mac, bmc_mac)
+      VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING id
+      `,
+      [
+        service_tag.trim().toUpperCase(),
+        issue ?? null,
+        location_id,
+        parsed.ppid,
+        dpn_id,
+        factory_id,
+        parsed.manufacturedDate,
+        parsed.serial,
+        parsed.rev,
+        chosenDellCustomer,
+        rackUpper,
+        hostMac12,
+        bmcMac12,
+      ],
+    );
+    const system_id = ins.rows[0].id;
+
+    await client.query(
+      `INSERT INTO system_location_history
+         (system_id, from_location_id, to_location_id, note, moved_by)
+       VALUES ($1, NULL, $2, $3, $4)`,
+      [
+        system_id,
+        location_id,
+        `added to system with issue "${issue}"`,
+        req.user.userId,
+      ],
+    );
+
+    await client.query("COMMIT");
+
+    const stUpper = service_tag.trim().toUpperCase();
+    res.status(201).json({ service_tag: stUpper });
+
+    // fire-and-forget webhook AFTER response
+    try {
+      const ack = await submitL11ScanJob(stUpper, rackUpper, { wait: "ack" });
+      console.log(`host-runner ack: ${JSON.stringify(ack)}`);
+    } catch (e) {
+      console.error("host-runner call failed:", e);
+    }
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+
+    if (err.code === "23505") {
+      if (err.constraint === "system_service_tag_key") {
+        return res.status(409).json({ error: "Service Tag already exists" });
+      }
+      if (err.constraint === "system_ppid_key") {
+        return res.status(409).json({
+          error: "PPID already exists (this unit is already in the system)",
+        });
+      }
+      if (err.constraint === "uq_system_host_mac") {
+        return res.status(409).json({ error: "Host MAC already exists" });
+      }
+      if (err.constraint === "uq_system_bmc_mac") {
+        return res.status(409).json({ error: "BMC MAC already exists" });
+      }
+      if (err.code === "23514") {
+        return res.status(400).json({ error: "MAC format invalid" });
+      }
+      // fallback if some other unique hits in future
+      return res
+        .status(409)
+        .json({ error: "Duplicate value violates unique constraint" });
+    }
+
+    if (
+      typeof err?.message === "string" &&
+      (err.message.startsWith("Unknown DPN:") ||
+        err.message.includes("has no configured Dell customers") ||
+        err.message.startsWith("Dell customer selection required") ||
+        err.message.startsWith("Invalid Dell customer") ||
+        err.message.includes("assigned to multiple configs"))
+    ) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    return res.status(500).json({ error: "Failed to create system" });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/batch-export-unit-data", async (_req, res) => {
+  try {
+    await cleanupExpiredBatchExports();
+    const jobs = await listBatchExportJobs();
+    return res.json(jobs.map(serializeBatchExport));
+  } catch (err) {
+    console.error("Failed to list batch exports:", err);
+    return res.status(500).json({ error: "Failed to list batch exports" });
+  }
+});
+
+router.post(
+  "/batch-export-unit-data/preview",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+      const exportOptions = normalizeBatchExportOptions(req.body?.export_options);
+      if (!serviceTags.length) {
+        return res
+          .status(400)
+          .json({ error: "Provide at least one service tag" });
+      }
+      if (!hasSelectedBatchExportOption(exportOptions)) {
+        return res.status(400).json({
+          error: "Select at least one export option",
+        });
+      }
+
+      const preview = await validateBatchExportServiceTags(
+        serviceTags,
+        exportOptions,
+      );
+      return res.json({
+        ...preview,
+        export_options: exportOptions,
+        total_count: serviceTags.length,
+        review_rows: buildBatchExportReviewRows(serviceTags, preview),
+      });
+    } catch (err) {
+      console.error("Failed to preview batch export:", err);
+      return res.status(500).json({ error: "Failed to preview batch export" });
+    }
+  },
+);
+
+router.post("/batch-export-unit-data", authenticateToken, async (req, res) => {
+  try {
+    await cleanupExpiredBatchExports();
+
+    const serviceTags = parseBatchExportCsv(req.body?.csv_text || "");
+    const exportOptions = normalizeBatchExportOptions(req.body?.export_options);
+    if (!serviceTags.length) {
+      return res
+        .status(400)
+        .json({ error: "Provide at least one service tag" });
+    }
+    if (!hasSelectedBatchExportOption(exportOptions)) {
+      return res.status(400).json({
+        error: "Select at least one export option",
+      });
+    }
+
+    const preview = await validateBatchExportServiceTags(
+      serviceTags,
+      exportOptions,
+    );
+    if (!preview.will_export.length) {
+      return res.status(400).json({
+        error: "No valid systems available for export",
+        ...preview,
+        export_options: exportOptions,
+        total_count: serviceTags.length,
+      });
+    }
+
+    let meta = {
+      job_id: buildBatchExportId(),
+      status: "queued",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      expires_at: null,
+      file_name: null,
+      archive_path: null,
+      total_count: preview.will_export.length,
+      processed_count: 0,
+      export_options: exportOptions,
+      service_tags: preview.will_export,
+      skipped_not_found: preview.skipped_not_found,
+      skipped_internal_error: preview.skipped_internal_error,
+      review_rows: buildBatchExportReviewRows(serviceTags, preview),
+      error: null,
+    };
+
+    meta = await persistBatchExportMeta(meta);
+    runBatchExportJob(meta.job_id, preview.will_export, exportOptions).catch((err) => {
+      console.error("Failed to start batch export job:", err);
+    });
+
+    return res.status(202).json(serializeBatchExport(meta));
+  } catch (err) {
+    console.error("Failed to create batch export:", err);
+    return res.status(500).json({ error: "Failed to create batch export" });
+  }
+});
+
+router.get("/batch-export-unit-data/:job_id/download", async (req, res) => {
+  const jobId = String(req.params.job_id || "").trim();
+  if (!jobId) {
+    return res.status(400).json({ error: "job_id is required" });
+  }
+
+  try {
+    await cleanupExpiredBatchExports();
+    const meta = await readBatchExportMeta(jobId);
+    if (meta.status !== "ready" || !meta.archive_path || !meta.file_name) {
+      return res.status(409).json({ error: "Batch export is not ready" });
+    }
+
+    await fs.access(meta.archive_path);
+    res.setHeader("Content-Type", "application/gzip");
+    return res.download(meta.archive_path, meta.file_name);
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ error: "Batch export not found" });
+    }
+    console.error("Failed to download batch export:", err);
+    return res.status(500).json({ error: "Failed to download batch export" });
+  }
+});
+
+router.delete(
+  "/batch-export-unit-data/:job_id",
+  authenticateToken,
+  async (req, res) => {
+    const jobId = String(req.params.job_id || "").trim();
+    if (!jobId) {
+      return res.status(400).json({ error: "job_id is required" });
+    }
+
+    try {
+      const meta = await readBatchExportMeta(jobId);
+      if (meta.status === "queued" || meta.status === "running") {
+        await persistBatchExportMeta({
+          ...meta,
+          status: "deleted",
+          canceled: true,
+          expires_at: new Date().toISOString(),
+        });
+        return res.json({ message: "Batch export deleted" });
+      }
+
+      await removeBatchExportArtifacts(meta);
+      batchExportJobs.delete(jobId);
+      return res.json({ message: "Batch export deleted" });
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        return res.status(404).json({ error: "Batch export not found" });
+      }
+      console.error("Failed to delete batch export:", err);
+      return res.status(500).json({ error: "Failed to delete batch export" });
+    }
+  },
+);
+
+// GET /api/v1/systems/:service_tag - get single system
+router.get("/:service_tag", async (req, res) => {
+  const { service_tag } = req.params;
+
+  try {
+    const result = await db.query(
+      `
+      SELECT 
+        s.id,
+        s.service_tag,
+        s.issue,
+        d.name   AS dpn,
+        d.config AS config,
+        s.dell_customer AS dell_customer,
+        s.manufactured_date,
+        s.serial,
+        s.rev,
+        s.ppid,
+        s.host_mac,
+        s.bmc_mac,
+        s.rack_service_tag AS rack_id,
+        l.name AS location,
+        f.code AS factory_code,
+        f.name AS factory_name,
+        rc.name  AS root_cause,
+        rcs.name AS root_cause_sub_category,
+        -- first history entry
+        first_history.changed_at AS date_created,
+        first_user.username AS added_by,
+        -- last history entry
+        last_history.changed_at AS date_modified,
+        tags_agg.tags AS tags,
+        COALESCE(dell_opts.dell_customer_options, '[]'::jsonb) AS dell_customer_options
+
+      FROM system s
+      JOIN location l ON s.location_id = l.id
+      LEFT JOIN factory f ON s.factory_id = f.id
+      LEFT JOIN dpn d ON s.dpn_id = d.id
+      LEFT JOIN root_cause rc                 ON rc.id  = s.root_cause_id
+      LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+
+      -- first history entry per system
+      LEFT JOIN LATERAL (
+        SELECT h.changed_at, h.moved_by
+        FROM system_location_history h
+        WHERE h.system_id = s.id
+        ORDER BY h.changed_at ASC
+        LIMIT 1
+      ) AS first_history ON TRUE
+      LEFT JOIN users first_user ON first_user.id = first_history.moved_by
+
+      -- last history entry per system
+      LEFT JOIN LATERAL (
+        SELECT h.changed_at
+        FROM system_location_history h
+        WHERE h.system_id = s.id
+        ORDER BY h.changed_at DESC
+        LIMIT 1
+      ) AS last_history ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+              'tag_id', x.id,
+              'code', x.code,
+              'description', x.description
+            )
+            ORDER BY x.code
+          ),
+          '[]'::jsonb
+        ) AS tags
+        FROM (
+          SELECT DISTINCT t.id, t.code, t.description
+          FROM system_tag st
+          JOIN tag t ON t.id = st.tag_id
+          WHERE st.system_id = s.id
+        ) x
+      ) AS tags_agg ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'id', dc.id,
+              'name', dc.name
+            )
+            ORDER BY dc.name
+          ),
+          '[]'::jsonb
+        ) AS dell_customer_options
+        FROM dpn_dell_customer ddc
+        JOIN dell_customer dc ON dc.id = ddc.dell_customer_id
+        WHERE ddc.dpn_id = s.dpn_id
+      ) AS dell_opts ON TRUE
+
+
+      WHERE s.service_tag = $1
+      `,
+      [service_tag],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const details = result.rows[0];
+    const logsRoot = await firstExistingDir([
+      process.env.L10_LOGS_ROOT,
+      path.resolve(process.cwd(), "../l10_logs"),
+      path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+      path.resolve(process.cwd(), "l10_logs"),
+    ]);
+    const stSegment = safeServiceTagSegment(
+      details?.service_tag || service_tag,
+    );
+    const logsDir =
+      logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+    const l10LogsTotalSizeBytes = await getDirectorySizeBytes(logsDir);
+
+    res.json({
+      ...details,
+      l10_logs_total_size_bytes: l10LogsTotalSizeBytes,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch system" });
+  }
+});
+
+router.patch("/:service_tag/host_mac", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { host_mac } = req.body;
+
+  if (typeof host_mac === "undefined") {
+    return res.status(400).json({ error: "host_mac is required" });
+  }
+
+  let mac12;
+  try {
+    mac12 = requireMac12Hex(host_mac, "host_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE system SET host_mac = $1 WHERE service_tag = $2 RETURNING service_tag`,
+      [mac12, service_tag],
+    );
+
+    if (!result.rowCount)
+      return res.status(404).json({ error: "System not found" });
+    return res.json({ message: "HOST MAC updated" });
+  } catch (err) {
+    console.error(err);
+    if (err.code === "23505" && err.constraint === "uq_system_host_mac") {
+      return res.status(409).json({ error: "HOST MAC already exists" });
+    }
+    if (err.code === "23514")
+      return res.status(400).json({ error: "MAC format invalid" });
+    return res.status(500).json({ error: "Failed to update host_mac" });
+  }
+});
+
+router.patch("/:service_tag/bmc_mac", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { bmc_mac } = req.body;
+
+  if (typeof bmc_mac === "undefined") {
+    return res.status(400).json({ error: "bmc_mac is required" });
+  }
+
+  let mac12;
+  try {
+    mac12 = requireMac12Hex(bmc_mac, "bmc_mac");
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    const result = await db.query(
+      `UPDATE system SET bmc_mac = $1 WHERE service_tag = $2 RETURNING service_tag`,
+      [mac12, service_tag],
+    );
+
+    if (!result.rowCount)
+      return res.status(404).json({ error: "System not found" });
+    return res.json({ message: "BMC MAC updated" });
+  } catch (err) {
+    console.error(err);
+    if (err.code === "23505" && err.constraint === "uq_system_bmc_mac") {
+      return res.status(409).json({ error: "BMC MAC already exists" });
+    }
+    if (err.code === "23514")
+      return res.status(400).json({ error: "MAC format invalid" });
+    return res.status(500).json({ error: "Failed to update bmc_mac" });
+  }
+});
+
+router.get("/:service_tag/photos", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const serverZone = getServerTimeZone();
+    const formatLocal = (date) =>
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: serverZone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      }).format(date);
+
+    const photosDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag, "photos");
+    let entries = [];
+    try {
+      entries = await fs.readdir(photosDir, { withFileTypes: true });
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        return res.json({ data: [] });
+      }
+      throw err;
+    }
+
+    const files = await Promise.all(
+      entries
+        .filter(
+          (entry) =>
+            entry.isFile() && /\.(jpe?g|png|webp|heic|heif)$/i.test(entry.name),
+        )
+        .map(async (entry) => {
+          const fullPath = path.join(photosDir, entry.name);
+          const stat = await fs.stat(fullPath);
+          return {
+            name: entry.name,
+            modified_at: stat.mtime.toISOString(),
+            modified_at_local: formatLocal(stat.mtime),
+            relative_path: `/l10_logs/${serviceTag}/photos/${encodeURIComponent(entry.name)}`,
+          };
+        }),
+    );
+
+    files.sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+    return res.json({ data: files });
+  } catch (err) {
+    console.error("Failed to list photos:", err);
+    return res.status(500).json({ error: "Failed to list photos" });
+  }
+});
+
+router.get("/:service_tag/photos/file", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  const fileName = path.basename(String(req.query.name || ""));
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+  if (!fileName) {
+    return res.status(400).json({ error: "Photo name is required" });
+  }
+
+  try {
+    const fullPath = path.join(
+      PHOTO_UPLOAD_ROOT,
+      serviceTag,
+      "photos",
+      fileName,
+    );
+    const stat = await fs.stat(fullPath);
+    if (!stat.isFile()) {
+      return res
+        .status(400)
+        .json({ error: "Requested photo path is not a file" });
+    }
+
+    return res.sendFile(path.resolve(fullPath));
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ error: "Photo not found" });
+    }
+    console.error("Failed to serve photo:", err);
+    return res.status(500).json({ error: "Failed to serve photo" });
+  }
+});
+
+router.get("/:service_tag/logs", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const requestedDir = normalizeRelativeLogsDir(req.query.dir || "");
+    const { entries, currentDir } = await listLogsEntries(
+      serviceTag,
+      requestedDir,
+    );
+    return res.json({
+      service_tag: serviceTag,
+      current_dir: currentDir,
+      data: entries,
+      has_logs: entries.length > 0,
+    });
+  } catch (err) {
+    if (err?.message === "Invalid logs directory") {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error("Failed to list logs:", err);
+    return res.status(500).json({ error: "Failed to list logs" });
+  }
+});
+
+router.get("/:service_tag/logs/download", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const relativePath = normalizeRelativeLogsDir(req.query.path || "").replace(
+      /\/$/,
+      "",
+    );
+    if (!relativePath) {
+      return res.status(400).json({ error: "Log file path is required" });
+    }
+
+    const fullPath = path.join(
+      PHOTO_UPLOAD_ROOT,
+      serviceTag,
+      ...relativePath.split("/").filter(Boolean),
+    );
+    const stat = await fs.stat(fullPath);
+    if (!stat.isFile()) {
+      return res
+        .status(400)
+        .json({ error: "Requested log path is not a file" });
+    }
+
+    if (/\.(log|json)$/i.test(fullPath)) {
+      const isJson = /\.json$/i.test(fullPath);
+      res.type("text/plain; charset=utf-8");
+      if (isJson) {
+        res.type("application/json; charset=utf-8");
+      }
+      res.setHeader(
+        "Content-Disposition",
+        `inline; filename="${path.basename(fullPath)}"`,
+      );
+      return res.sendFile(path.resolve(fullPath));
+    }
+
+    return res.download(fullPath, path.basename(fullPath));
+  } catch (err) {
+    if (err?.message === "Invalid logs directory") {
+      return res.status(400).json({ error: err.message });
+    }
+    if (err?.code === "ENOENT") {
+      return res.status(404).json({ error: "Log file not found" });
+    }
+    console.error("Failed to download log file:", err);
+    return res.status(500).json({ error: "Failed to download log file" });
+  }
+});
+
+router.get("/:service_tag/l11-logs-found", async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      [serviceTag],
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const rackServiceTag = String(rows[0].rack_service_tag || "")
+      .trim()
+      .toUpperCase();
+    if (!rackServiceTag) {
+      return res.json({
+        service_tag: serviceTag,
+        rack_service_tag: "",
+        found: false,
+      });
+    }
+
+    const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
+    if (!latestReceivedAt) {
+      return res.json({
+        service_tag: serviceTag,
+        rack_service_tag: rackServiceTag,
+        found: false,
+      });
+    }
+
+    const logsRoot = await firstExistingDir([
+      process.env.L10_LOGS_ROOT,
+      path.resolve(process.cwd(), "../l10_logs"),
+      path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+      path.resolve(process.cwd(), "l10_logs"),
+    ]);
+    const found = await hasL11ArchiveForServiceTagAndRack(
+      logsRoot,
+      serviceTag,
+      rackServiceTag,
+      latestReceivedAt,
+    );
+    return res.json({
+      service_tag: serviceTag,
+      rack_service_tag: rackServiceTag,
+      found,
+    });
+  } catch (err) {
+    console.error("Failed to evaluate l11-logs-found:", err);
+    return res.status(500).json({ error: "Failed to evaluate l11-logs-found" });
+  }
+});
+
+router.post("/:service_tag/l11-scan", authenticateToken, async (req, res) => {
+  const serviceTag = safeServiceTagSegment(req.params.service_tag);
+  if (!serviceTag) {
+    return res.status(400).json({ error: "Invalid service_tag" });
+  }
+
+  try {
+    const { rows } = await db.query(
+      `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      [serviceTag],
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const rackServiceTag = safeServiceTagSegment(rows[0].rack_service_tag);
+    if (!rackServiceTag) {
+      return res
+        .status(400)
+        .json({
+          error:
+            "Current rack service tag is required before scanning L11 logs",
+        });
+    }
+
+    const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
+
+    const found = await hasL11ArchiveForServiceTagAndRack(
+      PHOTO_UPLOAD_ROOT,
+      serviceTag,
+      rackServiceTag,
+      latestReceivedAt,
+    );
+    if (found) {
+      return res.status(409).json({
+        error: "L11 logs already exist for this unit and current rack tag",
+      });
+    }
+
+    const ack = await submitL11ScanJob(serviceTag, rackServiceTag, {
+      wait: "ack",
+    });
+    return res.status(202).json({
+      service_tag: serviceTag,
+      rack_service_tag: rackServiceTag,
+      job_id: ack?.job_id || null,
+      status: ack?.status || "queued",
+    });
+  } catch (err) {
+    console.error("Failed to start L11 scan:", err);
+    const { status, details } = summarizeUpstreamError(
+      err,
+      "Failed to start L11 scan",
+    );
+    return res.status(status).json({ error: details });
+  }
+});
+
+router.get(
+  "/:service_tag/l11-scan/:job_id",
+  authenticateToken,
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    const jobId = String(req.params.job_id || "").trim();
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+    if (!jobId) {
+      return res.status(400).json({ error: "job_id is required" });
+    }
+
+    try {
+      const job = await getHostRunnerJob(jobId);
+      return res.json({
+        service_tag: serviceTag,
+        job_id: job?.job_id || jobId,
+        status: job?.status || "unknown",
+        returncode: job?.returncode ?? null,
+        stdout: job?.stdout || "",
+        stderr: job?.stderr || "",
+        started_at: job?.started_at || null,
+        ended_at: job?.ended_at || null,
+      });
+    } catch (err) {
+      if (err?.status === 404) {
+        return res.status(404).json({ error: "L11 scan job not found" });
+      }
+      console.error("Failed to fetch L11 scan status:", err);
+      const { status, details } = summarizeUpstreamError(
+        err,
+        "Failed to fetch L11 scan status",
+      );
+      return res.status(status).json({ error: details });
+    }
+  },
+);
+
+router.post(
+  "/:service_tag/photos",
+  authenticateToken,
+  (req, res, next) => {
+    photoUpload.single("photo")(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE") {
+        return res.status(413).json({
+          error: `Photo exceeds ${Math.floor(MAX_PHOTO_BYTES / (1024 * 1024))}MB limit`,
+        });
+      }
+      return res
+        .status(400)
+        .json({ error: err.message || "Invalid photo upload" });
+    });
+  },
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    const file = req.file;
+
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+    if (!file) {
+      return res.status(400).json({ error: "photo is required" });
+    }
+    if (!ALLOWED_PHOTO_MIME.has(file.mimetype)) {
+      return res.status(400).json({ error: "Unsupported photo type" });
+    }
+
+    try {
+      const { rows } = await db.query(
+        `SELECT 1 FROM system WHERE service_tag = $1 LIMIT 1`,
+        [serviceTag],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const photosDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag, "photos");
+      await fs.mkdir(photosDir, { recursive: true });
+
+      const ext =
+        extensionFromMime(file.mimetype) ||
+        path.extname(file.originalname || "");
+      const safeExt =
+        ext && /^[.][a-zA-Z0-9]+$/.test(ext) ? ext.toLowerCase() : ".jpg";
+      const base = sanitizeBaseName(file.originalname);
+      const fileName = `${base}_${timestampSuffix()}${safeExt}`;
+      const fullPath = path.join(photosDir, fileName);
+      await fs.writeFile(fullPath, file.buffer);
+
+      return res.status(201).json({
+        message: "Photo uploaded",
+        service_tag: serviceTag,
+        file_name: fileName,
+        relative_path: `/l10_logs/${serviceTag}/photos/${fileName}`,
+      });
+    } catch (err) {
+      console.error("Photo upload failed:", err);
+      return res.status(500).json({ error: "Failed to upload photo" });
+    }
+  },
+);
+
+router.post(
+  "/:service_tag/l11-log-archive",
+  authenticateToken,
+  (req, res, next) => {
+    l11LogUpload.array("files", MAX_L11_LOG_FILES)(req, res, (err) => {
+      if (!err) return next();
+      if (err instanceof multer.MulterError) {
+        if (err.code === "LIMIT_FILE_SIZE") {
+          return res.status(413).json({
+            error: `Each L11 log file must be ${Math.floor(MAX_L11_LOG_BYTES / (1024 * 1024))}MB or smaller`,
+          });
+        }
+        if (err.code === "LIMIT_FILE_COUNT") {
+          return res.status(400).json({
+            error: `You can upload up to ${MAX_L11_LOG_FILES} files at once`,
+          });
+        }
+      }
+      return res
+        .status(400)
+        .json({ error: err.message || "Invalid L11 log upload" });
+    });
+  },
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    const files = Array.isArray(req.files) ? req.files : [];
+
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+    if (!files.length) {
+      return res.status(400).json({ error: "At least one file is required" });
+    }
+
+    let tempDir = null;
+    try {
+      const { rows } = await db.query(
+        `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+        [serviceTag],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const rackServiceTag = safeServiceTagSegment(rows[0].rack_service_tag);
+      if (!rackServiceTag) {
+        return res
+          .status(400)
+          .json({
+            error:
+              "Current rack service tag is required before uploading L11 logs",
+          });
+      }
+
+      const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
+
+      const existingArchive = await hasL11ArchiveForServiceTagAndRack(
+        PHOTO_UPLOAD_ROOT,
+        serviceTag,
+        rackServiceTag,
+        latestReceivedAt,
+      );
+      if (existingArchive) {
+        return res.status(409).json({
+          error: "L11 logs already exist for this unit and current rack tag",
+        });
+      }
+
+      const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+      await fs.mkdir(serviceDir, { recursive: true });
+
+      const archiveBaseName = `L11_logs_ST_${serviceTag}_RT_${rackServiceTag}`;
+      const archiveName = `${archiveBaseName}.tgz`;
+      const archivePath = path.join(serviceDir, archiveName);
+
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "wistron-l11-"));
+      const archiveSourceDir = path.join(tempDir, archiveBaseName);
+      await fs.mkdir(archiveSourceDir, { recursive: true });
+      const usedNames = new Set();
+
+      for (const file of files) {
+        const safeName = uniqueFileName(
+          sanitizeUploadFileName(file.originalname, "l11_log"),
+          usedNames,
+        );
+        await fs.writeFile(path.join(archiveSourceDir, safeName), file.buffer);
+      }
+
+      await runTar(["-czf", archivePath, "-C", tempDir, archiveBaseName]);
+
+      return res.status(201).json({
+        message: "L11 logs archived",
+        service_tag: serviceTag,
+        rack_service_tag: rackServiceTag,
+        file_name: archiveName,
+        relative_path: `/l10_logs/${serviceTag}/${encodeURIComponent(archiveName)}`,
+      });
+    } catch (err) {
+      console.error("L11 log archive upload failed:", err);
+      return res.status(500).json({ error: "Failed to archive L11 logs" });
+    } finally {
+      if (tempDir) {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+  },
+);
+
+router.get(
+  "/:service_tag/export-unit-data",
+  authenticateToken,
+  async (req, res) => {
+    const serviceTag = safeServiceTagSegment(req.params.service_tag);
+    if (!serviceTag) {
+      return res.status(400).json({ error: "Invalid service_tag" });
+    }
+
+    let tempDir = null;
+    let archivePath = null;
+    try {
+      const { rows } = await db.query(
+        `SELECT 1 FROM system WHERE service_tag = $1 LIMIT 1`,
+        [serviceTag],
+      );
+      if (!rows.length) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const serviceDir = path.join(PHOTO_UPLOAD_ROOT, serviceTag);
+      let serviceDirStat = null;
+      try {
+        serviceDirStat = await fs.stat(serviceDir);
+      } catch (err) {
+        if (err?.code === "ENOENT") {
+          return res
+            .status(404)
+            .json({ error: "No unit data found to export" });
+        }
+        throw err;
+      }
+
+      if (!serviceDirStat.isDirectory()) {
+        return res.status(404).json({ error: "No unit data found to export" });
+      }
+
+      tempDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "wistron-unit-export-"),
+      );
+      const archiveName = `system_folder_${serviceTag}.tgz`;
+      archivePath = path.join(tempDir, archiveName);
+
+      await runTar(["-czf", archivePath, "-C", PHOTO_UPLOAD_ROOT, serviceTag]);
+
+      res.setHeader("Content-Type", "application/gzip");
+      return res.download(archivePath, archiveName, async (err) => {
+        if (err && !res.headersSent) {
+          res.status(500).json({ error: "Failed to export system folder" });
+        }
+        if (archivePath) {
+          await fs.rm(archivePath, { force: true }).catch(() => {});
+        }
+        if (tempDir) {
+          await fs
+            .rm(tempDir, { recursive: true, force: true })
+            .catch(() => {});
+        }
+      });
+    } catch (err) {
+      console.error("System folder export failed:", err);
+      if (archivePath) {
+        await fs.rm(archivePath, { force: true }).catch(() => {});
+      }
+      if (tempDir) {
+        await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+      return res.status(500).json({ error: "Failed to export system folder" });
+    }
+  },
+);
+
+// PATCH /api/v1/systems/:service_tag/root-cause
+router.patch(
+  "/:service_tag/root-cause",
+  authenticateToken,
+  async (req, res) => {
+    const { service_tag } = req.params;
+    let { root_cause_id, root_cause_sub_category_id } = req.body || {};
+
+    const providedRoot = typeof root_cause_id !== "undefined";
+    const providedSub = typeof root_cause_sub_category_id !== "undefined";
+
+    if (!providedRoot && !providedSub) {
+      return res.status(400).json({ error: "Nothing to update" });
+    }
+    if (providedRoot !== providedSub) {
+      return res.status(400).json({
+        error:
+          "root_cause_id and root_cause_sub_category_id must be provided together (both null or both set).",
+      });
+    }
+
+    // At this point, both are provided. Enforce pair rule:
+    const bothNull =
+      root_cause_id === null && root_cause_sub_category_id === null;
+    const bothSet =
+      root_cause_id !== null && root_cause_sub_category_id !== null;
+
+    if (!bothNull && !bothSet) {
+      return res.status(400).json({
+        error: "Invalid pair: both must be null or both must be non-null.",
+      });
+    }
+
+    try {
+      // Validate when set (existence in lookup tables)
+      if (bothSet) {
+        const [rc, rcs] = await Promise.all([
+          db.query(`SELECT 1 FROM root_cause WHERE id = $1`, [root_cause_id]),
+          db.query(`SELECT 1 FROM root_cause_sub_categories WHERE id = $1`, [
+            root_cause_sub_category_id,
+          ]),
+        ]);
+        if (!rc.rowCount)
+          return res
+            .status(400)
+            .json({ error: `root_cause id ${root_cause_id} not found` });
+        if (!rcs.rowCount)
+          return res.status(400).json({
+            error: `root_cause_sub_category id ${root_cause_sub_category_id} not found`,
+          });
+      }
+
+      // Update both columns in one statement
+      const upd = await db.query(
+        `
+      UPDATE system
+         SET root_cause_id = $2,
+             root_cause_sub_category_id = $3
+       WHERE service_tag = $1
+       RETURNING id
+      `,
+        [service_tag, root_cause_id, root_cause_sub_category_id],
+      );
+
+      if (!upd.rowCount) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      // Return names (not ids)
+      const { rows } = await db.query(
+        `
+      SELECT rc.name  AS root_cause,
+             rcs.name AS root_cause_sub_category
+      FROM system s
+      LEFT JOIN root_cause rc                 ON rc.id  = s.root_cause_id
+      LEFT JOIN root_cause_sub_categories rcs ON rcs.id = s.root_cause_sub_category_id
+      WHERE s.service_tag = $1
+      `,
+        [service_tag],
+      );
+
+      return res.json({
+        message: "Root cause fields updated",
+        root_cause: rows[0].root_cause || null,
+        root_cause_sub_category: rows[0].root_cause_sub_category || null,
+      });
+    } catch (err) {
+      console.error(err);
+      // Will also catch CHECK constraint violations if someone tries to bypass the API
+      return res
+        .status(500)
+        .json({ error: "Failed to update root cause fields" });
+    }
+  },
+);
+
+// PATCH /api/v1/systems/:service_tag/location
+router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { to_location_id, note } = req.body;
+  const targetLocationId = Number(to_location_id);
+
+  if (!Number.isInteger(targetLocationId) || !note) {
+    return res
+      .status(400)
+      .json({ error: "to_location_id and note are required" });
+  }
+
+  const client = await db.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Get system details
+    const { rows } = await client.query(
+      `SELECT 
+         id, 
+         location_id, 
+         factory_id, 
+         ppid, 
+         dpn_id, 
+         manufactured_date, 
+         serial, 
+         rev
+       FROM system 
+       WHERE service_tag = $1`,
+      [service_tag],
+    );
+
+    if (!rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const {
+      id: system_id,
+      location_id: from_location_id,
+      factory_id,
+      ppid,
+      dpn_id,
+      manufactured_date,
+      serial,
+      rev,
+    } = rows[0];
+    const targetLocationResult = await client.query(
+      `SELECT name FROM location WHERE id = $1 LIMIT 1`,
+      [targetLocationId],
+    );
+    const targetLocationName = targetLocationResult.rows[0]?.name || "";
+
+    let receivedAt = null;
+
+    if (targetLocationId === PENDING_L11_LOGS_LOCATION_ID) {
+      const pendingL11MoveRule = await getPendingL11MoveRule(client);
+
+      if (pendingL11MoveRule.enabled) {
+        const latestReceivedAt = await getLatestReceivedAt(client, system_id);
+
+        if (!latestReceivedAt) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "Cannot move into Pending L11 Logs: no Received timestamp found for this system.",
+          });
+        }
+
+        const receivedMs = new Date(latestReceivedAt).getTime();
+        const elapsedMs = Date.now() - receivedMs;
+        const requiredMs = pendingL11MoveRule.minutes * 60 * 1000;
+
+        if (!Number.isFinite(receivedMs)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "Cannot move into Pending L11 Logs: the latest Received timestamp is invalid.",
+          });
+        }
+
+        if (elapsedMs < requiredMs) {
+          const remainingMinutes = Math.ceil(
+            (requiredMs - Math.max(0, elapsedMs)) / 60000,
+          );
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `Need to wait ${remainingMinutes} more minute(s) before moving into Pending L11 Logs so that any pending log downloads from MFT can complete.`,
+          });
+        }
+      }
+    }
+
+    // Moving into a resolved location or Pending MRB requires new evidence since latest Received.
+    if (
+      RESOLVED_LOCATION_IDS.includes(targetLocationId) ||
+      isPendingMrbLocationName(targetLocationName)
+    ) {
+      const latestReceived = await client.query(
+        `
+        SELECT changed_at
+        FROM system_location_history
+        WHERE system_id = $1
+          AND to_location_id = $2
+        ORDER BY changed_at DESC
+        LIMIT 1
+        `,
+        [system_id, RECEIVED_LOCATION_ID],
+      );
+
+      if (!latestReceived.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "Cannot move to resolved location: no Received timestamp found for this system.",
+        });
+      }
+
+      receivedAt = latestReceived.rows[0].changed_at;
+      const logsRoot = await firstExistingDir([
+        process.env.L10_LOGS_ROOT,
+        path.resolve(process.cwd(), "../l10_logs"),
+        path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
+        path.resolve(process.cwd(), "l10_logs"),
+      ]);
+      const stSegment = safeServiceTagSegment(service_tag);
+      const serviceTagDir =
+        logsRoot && stSegment ? path.join(logsRoot, stSegment) : null;
+      const hasNewFile = await hasAnyFileNewerThan(serviceTagDir, receivedAt);
+
+      if (!hasNewFile) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: isPendingMrbLocationName(targetLocationName)
+            ? "Add evidence (logs or photos) before moving to Pending MRB."
+            : "Add evidence (logs or photos) before resolving this unit.",
+        });
+      }
+    }
+
+    if (
+      targetLocationId === RMA_CID_LOCATION_ID ||
+      isPendingMrbLocationName(targetLocationName)
+    ) {
+      const stSegment = safeServiceTagSegment(service_tag);
+      const photosDir =
+        PHOTO_UPLOAD_ROOT && stSegment
+          ? path.join(PHOTO_UPLOAD_ROOT, stSegment, "photos")
+          : null;
+      const hasFreshPhotoEvidence =
+        receivedAt && (await hasAnyFileNewerThan(photosDir, receivedAt));
+
+      if (!hasFreshPhotoEvidence) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: isPendingMrbLocationName(targetLocationName)
+            ? "Photo evidence of the damage must be uploaded before Pending MRB."
+            : "Photo evidence of the damage must be uploaded before RMA CID.",
+        });
+      }
+    }
+
+    //check if system is on a locked pallet
+    const onLocked = await systemOnLockedPallet(client, system_id);
+    if (onLocked) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error:
+          "System is on a locked pallet — location changes are not allowed",
+      });
+    }
+
+    if (targetLocationName === PENDING_MRB_LOCATION_NAME) {
+      const trackedBadParts = await client.query(
+        `
+        SELECT COUNT(*)::int AS count
+        FROM part_list
+        WHERE unit_id = $1
+          AND is_functional = false
+        `,
+        [system_id],
+      );
+      const badPartCount = trackedBadParts.rows[0]?.count || 0;
+      if (badPartCount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "Track all estimated CID-damaged parts before moving to Pending MRB.",
+        });
+      }
+    }
+
+    // RMA validation
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
+      const missingFields = [];
+      if (!factory_id) missingFields.push("factory_id");
+      if (!ppid) missingFields.push("ppid");
+      if (!dpn_id) missingFields.push("dpn"); // NULL means missing
+      if (!manufactured_date) missingFields.push("manufactured_date");
+      if (!serial) missingFields.push("serial");
+      if (!rev) missingFields.push("rev");
+
+      if (missingFields.length) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
+            ", ",
+          )}. Update PPID first.`,
+        });
+      }
+    }
+
+    // Update location and clear DOA when moving from resolved -> unresolved.
+    await client.query(
+      `
+      UPDATE system
+      SET location_id = $1,
+          doa_number = CASE
+            WHEN $2::int = ANY($4::int[]) AND NOT ($1::int = ANY($4::int[]))
+              THEN NULL
+            ELSE doa_number
+          END
+      WHERE id = $3
+      `,
+      [targetLocationId, from_location_id, system_id, RESOLVED_LOCATION_IDS],
+    );
+
+    // Any transition to a resolved location clears all unit tags.
+    if (RESOLVED_LOCATION_IDS.includes(targetLocationId)) {
+      await client.query("DELETE FROM system_tag WHERE system_id = $1", [
+        system_id,
+      ]);
+    }
+
+    // Default to original note
+    let finalNote = note;
+
+    // Handle RMA-specific logic
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
+      const { pallet_number } = await assignSystemToPallet(system_id, client);
+      finalNote = `${note} - added to ${pallet_number}`;
+    } else if (RMA_LOCATION_IDS.includes(from_location_id)) {
+      await client.query(
+        `
+        UPDATE pallet_system
+        SET removed_at = NOW()
+        WHERE system_id = $1
+          AND removed_at IS NULL
+        `,
+        [system_id],
+      );
+    }
+
+    // Log history
+    await client.query(
+      `INSERT INTO system_location_history
+       (system_id, from_location_id, to_location_id, note, moved_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        system_id,
+        from_location_id,
+        targetLocationId,
+        finalNote,
+        req.user.userId,
+      ],
+    );
+
+    await client.query("COMMIT");
+    // If we added to an RMA pallet, include it in the response
+    return res.json({
+      message: "Location updated",
+      ...(RMA_LOCATION_IDS.includes(targetLocationId)
+        ? { pallet_number: finalNote.split(" - added to ")[1] }
+        : {}),
+    });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+
+    const message = String(err?.message || "").trim();
+    if (message === "Too many pallets open at the same time.") {
+      return res.status(409).json({ error: message });
+    }
+
+    res.status(500).json({ error: message || "Failed to update location" });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/issue
+router.patch("/:service_tag/issue", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { issue } = req.body;
+
+  if (!issue) {
+    return res.status(400).json({ error: "issue is required" });
+  }
+
+  try {
+    const result = await db.query(
+      "UPDATE system SET issue = $1 WHERE service_tag = $2 RETURNING service_tag",
+      [issue, service_tag],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    res.json({ message: "Issue updated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update issue" });
+  }
+});
+
+// POST /api/v1/systems/:service_tag/note
+router.post("/:service_tag/note", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const note = String(req.body?.note || "").trim();
+
+  if (!note) {
+    return res.status(400).json({ error: "note is required" });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    const systemRes = await client.query(
+      `SELECT id, location_id FROM system WHERE service_tag = $1 LIMIT 1`,
+      [service_tag],
+    );
+
+    if (!systemRes.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const { id: system_id, location_id } = systemRes.rows[0];
+
+    await client.query(
+      `INSERT INTO system_location_history
+         (system_id, from_location_id, to_location_id, note, moved_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [system_id, location_id, location_id, note, req.user.userId],
+    );
+
+    await client.query("COMMIT");
+    return res.json({ message: "Note added" });
+  } catch (err) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    return res.status(500).json({ error: "Failed to add note" });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/rack
+router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { rack_service_tag } = req.body;
+
+  // rack must exist (no null / no "")
+  if (rack_service_tag === undefined || rack_service_tag === null) {
+    return res.status(400).json({ error: "Rack Service Tag is required" });
+  }
+  if (!String(rack_service_tag).trim()) {
+    return res.status(400).json({ error: "Rack Service Tag is required" });
+  }
+
+  const stUpper = String(service_tag).trim().toUpperCase();
+  const rackUpper = String(rack_service_tag).trim().toUpperCase();
+
+  const rackValidationError = validateRackServiceTag(rackUpper);
+  if (rackValidationError) {
+    return res.status(400).json({ error: rackValidationError });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+
+    // lock row + get old value so we can avoid firing webhook on no-op
+    const sel = await client.query(
+      `SELECT id, rack_service_tag
+         FROM system
+        WHERE service_tag = $1
+        FOR UPDATE`,
+      [stUpper],
+    );
+
+    if (sel.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    const oldRack = sel.rows[0].rack_service_tag; // may be null in DB, but we won't set null
+    const changed = String(oldRack ?? "") !== String(rackUpper);
+
+    await client.query(
+      `UPDATE system
+          SET rack_service_tag = $1
+        WHERE service_tag = $2
+      RETURNING service_tag`,
+      [rackUpper, stUpper],
+    );
+
+    await client.query("COMMIT");
+
+    // respond first
+    res.json({ message: "Rack service tag updated" });
+
+    // webhook AFTER response
+    if (changed) {
+      try {
+        const ack = await submitL11ScanJob(stUpper, rackUpper, { wait: "ack" });
+        console.log(`host-runner ack: ${JSON.stringify(ack)}`);
+      } catch (e) {
+        console.error("host-runner call failed:", e);
+      }
+    }
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (_) {}
+    console.error(err);
+    return res.status(500).json({ error: "Failed to update Rack Service Tag" });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/dell-customer
+router.patch(
+  "/:service_tag/dell-customer",
+  authenticateToken,
+  async (req, res) => {
+    const { service_tag } = req.params;
+    const raw = String(req.body?.dell_customer || "").trim();
+    if (!raw) {
+      return res.status(400).json({ error: "dell_customer is required" });
+    }
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+      const systemResult = await client.query(
+        `SELECT id, dpn_id
+           FROM system
+          WHERE service_tag = $1
+          FOR UPDATE`,
+        [service_tag.trim().toUpperCase()],
+      );
+      if (!systemResult.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "System not found" });
+      }
+      const system = systemResult.rows[0];
+      if (!system.dpn_id) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: "System DPN is not set" });
+      }
+
+      const mappedCustomers = await listDpnDellCustomers(client, system.dpn_id);
+      const allowedSet = new Set(
+        mappedCustomers.map((c) =>
+          String(c.name || "")
+            .trim()
+            .toLowerCase(),
+        ),
+      );
+      if (!allowedSet.has(raw.toLowerCase())) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `Invalid Dell customer "${raw}" for this system's DPN`,
+        });
+      }
+
+      await client.query(
+        `UPDATE system
+            SET dell_customer = $1
+          WHERE id = $2`,
+        [raw, system.id],
+      );
+      await client.query("COMMIT");
+      return res.json({
+        service_tag: service_tag.trim().toUpperCase(),
+        dell_customer: raw,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error(err);
+      return res.status(500).json({ error: "Failed to update Dell customer" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+// PATCH /api/v1/systems/:service_tag/ppid
+router.patch("/:service_tag/ppid", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const { ppid } = req.body;
+
+  if (!ppid?.trim()) {
+    return res.status(400).json({ error: "ppid is required" });
+  }
+
+  if (ppid.trim().toUpperCase() === service_tag.toUpperCase()) {
+    return res.json({
+      message: "PPID provided matches service tag, skipping PPID update",
+    });
+  }
+
+  let parsed;
+  try {
+    parsed = parseAndValidatePPID(ppid);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+
+  try {
+    // factory_id via dynamic ppid_code
+    const { rows } = await db.query(
+      "SELECT id FROM factory WHERE ppid_code = $1",
+      [parsed.factoryCodeRaw],
+    );
+    const factoryId = rows.length ? rows[0].id : null;
+
+    if (!factoryId) {
+      throw new Error(`Unknown factory PPID code: ${parsed.factoryCodeRaw}`);
+    }
+
+    const client = await db.connect();
+    try {
+      const systemRes = await client.query(
+        `SELECT s.dell_customer
+           FROM system s
+          WHERE s.service_tag = $1`,
+        [service_tag],
+      );
+      if (systemRes.rowCount === 0) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const preferredDellCustomer = String(
+        systemRes.rows[0]?.dell_customer || "",
+      ).trim();
+      const { dpn } = await resolveDpnForSystem(
+        client,
+        parsed.dpn,
+        preferredDellCustomer,
+      );
+
+      const fields = [
+        { column: "ppid", value: parsed.ppid },
+        { column: "dpn_id", value: dpn.id },
+        { column: "manufactured_date", value: parsed.manufacturedDate },
+        { column: "serial", value: parsed.serial },
+        { column: "rev", value: parsed.rev },
+      ];
+      if (factoryId) fields.push({ column: "factory_id", value: factoryId });
+
+      const setClauses = fields
+        .map((f, i) => `${f.column} = $${i + 2}`)
+        .join(", ");
+      const values = fields.map((f) => f.value);
+
+      const result = await client.query(
+        `UPDATE system SET ${setClauses} WHERE service_tag = $1 RETURNING service_tag`,
+        [service_tag, ...values],
+      );
+
+      if (result.rowCount === 0) {
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      return res.json({ message: "System PPID fields updated successfully" });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error(err);
+    if (
+      typeof err?.message === "string" &&
+      (err.message.startsWith("Unknown DPN:") ||
+        err.message.includes("has no configured Dell customers") ||
+        err.message.startsWith("Dell customer selection required") ||
+        err.message.startsWith("Invalid Dell customer") ||
+        err.message.includes("assigned to multiple configs"))
+    ) {
+      return res.status(400).json({ error: err.message });
+    }
+    return res.status(500).json({ error: "Failed to update PPID data" });
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/doa
+router.patch("/:service_tag/doa", authenticateToken, async (req, res) => {
+  const { service_tag } = req.params;
+  const raw = req.body?.doa_number;
+  const doa_number =
+    typeof raw === "string"
+      ? raw.trim()
+      : raw == null
+        ? ""
+        : String(raw).trim();
+
+  if (doa_number.length > 20) {
+    return res
+      .status(400)
+      .json({ error: "doa_number must be 20 characters or fewer" });
+  }
+
+  try {
+    const result = await db.query(
+      `
+      UPDATE system
+      SET doa_number = $1
+      WHERE service_tag = $2
+      RETURNING service_tag, doa_number
+      `,
+      [doa_number || null, service_tag],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    return res.json({
+      message: "System DOA updated",
+      service_tag: result.rows[0].service_tag,
+      doa_number: result.rows[0].doa_number,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Failed to update DOA number" });
+  }
+});
+
+// PATCH /api/v1/systems/:service_tag/add-to-pallet
+router.patch(
+  "/:service_tag/add-to-pallet",
+  authenticateToken,
+  async (req, res) => {
+    const { service_tag } = req.params;
+
+    const client = await db.connect();
+    try {
+      await client.query("BEGIN");
+
+      // 1. Get system details including location_id and ppid
+      const { rows } = await client.query(
+        `
+      SELECT id, location_id, ppid
+      FROM system
+      WHERE service_tag = $1
+      `,
+        [service_tag],
+      );
+
+      if (!rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ error: "System not found" });
+      }
+
+      const { id: system_id, location_id, ppid } = rows[0];
+
+      // 2. Validate RMA location
+      if (!RMA_LOCATION_IDS.includes(location_id)) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "System must be in an RMA location before being added to a pallet",
+        });
+      }
+
+      // 3. Validate PPID
+      if (!ppid || !ppid.trim()) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: "System must have a valid PPID before being added to a pallet",
+        });
+      }
+
+      // 4.5 Block if already on an active pallet (covers locked pallets too)
+      const { rows: activePalletRows } = await client.query(
+        `
+      SELECT p.pallet_number, p.locked, p.status
+      FROM pallet_system ps
+      JOIN pallet p ON p.id = ps.pallet_id
+      WHERE ps.system_id = $1
+        AND ps.removed_at IS NULL
+      LIMIT 1
+      `,
+        [system_id],
+      );
+      if (activePalletRows.length > 0) {
+        const { pallet_number, locked, status } = activePalletRows[0];
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error: `System is already on pallet ${pallet_number} (status: ${status})${
+            locked ? " and locked" : ""
+          }`,
+        });
+      }
+
+      // 5. Assign to pallet (your helper already ignores locked pallets)
+      const { pallet_id, pallet_number } = await assignSystemToPallet(
+        system_id,
+        client,
+      );
+
+      await client.query("COMMIT");
+
+      return res.json({
+        message: `System ${service_tag} added to pallet ${pallet_number}`,
+        pallet_id,
+        pallet_number,
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      console.error(err);
+      res.status(500).json({ error: "Failed to add system to pallet" });
+    } finally {
+      client.release();
+    }
+  },
+);
+
+// DELETE /api/v1/systems/:service_tag
+router.delete(
+  "/:service_tag",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const { service_tag } = req.params;
+
+    const result = await db.query(
+      "DELETE FROM system WHERE service_tag = $1 RETURNING service_tag",
+      [service_tag],
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: "System not found" });
+    }
+
+    res.json({ message: "System deleted" });
+  },
+);
+
+router.get("/:service_tag/pallet", async (req, res) => {
+  const { service_tag } = req.params;
+
+  const systemRes = await db.query(
+    `SELECT id FROM system WHERE service_tag = $1`,
+    [service_tag],
+  );
+
+  if (systemRes.rows.length === 0) {
+    return res.status(404).json({ message: "System not found." });
+  }
+
+  const systemId = systemRes.rows[0].id;
+
+  const result = await db.query(
+    `
+    SELECT
+      p.id AS pallet_id,
+      p.pallet_number,
+      p.shape,
+      d.name AS dpn,      
+      p.status,
+      p.created_at,
+      f.name AS factory,
+      f.code AS factory_code,
+      ps.added_at
+    FROM pallet_system ps
+    JOIN pallet p ON ps.pallet_id = p.id
+    LEFT JOIN factory f ON p.factory_id = f.id
+    LEFT JOIN dpn d ON p.dpn_id = d.id
+    WHERE ps.system_id = $1
+      AND ps.removed_at IS NULL
+      AND p.status = 'open'
+    ORDER BY ps.added_at DESC
+    LIMIT 1;
+    `,
+    [systemId],
+  );
+
+  if (result.rows.length === 0) {
+    return res
+      .status(404)
+      .json({ message: "System is not on an active pallet." });
+  }
+
+  res.json(result.rows[0]);
+});
+
+router.get("/:service_tag/pallet-history", async (req, res) => {
+  const { service_tag } = req.params;
+
+  const systemRes = await db.query(
+    `SELECT id FROM system WHERE service_tag = $1`,
+    [service_tag],
+  );
+
+  if (systemRes.rows.length === 0) {
+    return res.status(404).json({ message: "System not found." });
+  }
+
+  const systemId = systemRes.rows[0].id;
+
+  const result = await db.query(
+    `
+    SELECT
+      ps.id AS assignment_id,
+      p.id AS pallet_id,
+      p.pallet_number,
+      p.shape,
+      d.name AS dpn,
+      f.name AS factory,
+      f.code AS factory_code,
+      p.status AS pallet_status,
+      ps.added_at,
+      ps.removed_at
+    FROM pallet_system ps
+    JOIN pallet p ON ps.pallet_id = p.id
+    LEFT JOIN factory f ON p.factory_id = f.id
+    LEFT JOIN dpn d ON p.dpn_id = d.id
+    WHERE ps.system_id = $1
+    ORDER BY ps.added_at ASC;
+    `,
+    [systemId],
+  );
+
+  res.json(result.rows);
+});
+
+module.exports = router;

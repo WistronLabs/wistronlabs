@@ -1,0 +1,1066 @@
+import { useContext } from "react";
+import { AuthContext } from "../context/AuthContext";
+
+const BASE_URL = import.meta.env.VITE_BACKEND_URL;
+const DATA_FETCH_EVENT_NAME = "wistronlabs:data-fetch-success";
+
+function useApi() {
+  const { token, refreshToken } = useContext(AuthContext);
+
+  function getServerUTCOffset(serverTimeString) {
+    // Parse server time string
+    const [datePart, timePart] = serverTimeString.split(", ");
+    const [month, day, year] = datePart.split("/").map(Number);
+    let [time, meridiem] = timePart.split(" ");
+    let [hour, minute, second] = time.split(":").map(Number);
+
+    if (meridiem === "PM" && hour !== 12) hour += 12;
+    if (meridiem === "AM" && hour === 12) hour = 0;
+
+    // Build a *local* Date using server values
+    const serverLocal = new Date(year, month - 1, day, hour, minute, second);
+
+    // Compare to UTC to get offset
+    const offsetMinutes =
+      (serverLocal.getHours() - serverLocal.getUTCHours()) * 60 +
+      (serverLocal.getMinutes() - serverLocal.getUTCMinutes());
+
+    const offsetHours = offsetMinutes / 60;
+
+    return offsetHours; // e.g., -5 for CST
+  }
+
+  async function fetchJSON(endpoint, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+
+    const request = async (authToken) => {
+      const headers = {
+        ...(options.headers || {}),
+        ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      };
+
+      const res = await fetch(`${BASE_URL}${endpoint}`, {
+        ...options,
+        headers,
+      });
+
+      let data = null;
+      const contentType = res.headers.get("content-type");
+      if (contentType && contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        data = await res.text();
+      }
+
+      return { res, data };
+    };
+
+    let { res, data } = await request(token);
+
+    if (res.status === 401 && token) {
+      try {
+        const freshToken = await refreshToken(true);
+        ({ res, data } = await request(freshToken));
+      } catch {
+        // refreshToken already handles logout
+      }
+    }
+
+    if (!res.ok) {
+      // Extract the error message from JSON or text
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (data && typeof data === "string" && data) ||
+        res.statusText;
+
+      const error = new Error(
+        `API ${endpoint} failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+
+    // Handle no content
+    if (
+      method === "GET" &&
+      typeof window !== "undefined" &&
+      typeof window.dispatchEvent === "function"
+    ) {
+      window.dispatchEvent(
+        new CustomEvent(DATA_FETCH_EVENT_NAME, {
+          detail: {
+            endpoint,
+            method,
+            pathname: window.location.pathname,
+            timestamp: Date.now(),
+          },
+        }),
+      );
+    }
+
+    if (res.status === 204) return null;
+    return data;
+  }
+
+  // System API
+
+  function buildQueryString(params) {
+    const usp = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        value.forEach((v) => usp.append(key, v));
+      } else if (value !== undefined && value !== null) {
+        usp.append(key, value);
+      }
+    });
+    return usp.toString() ? `?${usp.toString()}` : "";
+  }
+
+  /**
+   * Get systems with optional filters/sorts/pagination
+   */
+  const getSystems = ({
+    filters, // advanced filters JSON string or object
+    tags,
+    service_tag,
+    issue,
+    location_id,
+    page,
+    page_size,
+    all,
+    sort_by,
+    sort_order,
+  } = {}) => {
+    const params = {
+      page,
+      page_size,
+      all,
+      sort_by,
+      sort_order,
+    };
+
+    if (filters) {
+      params.filters =
+        typeof filters === "string" ? filters : JSON.stringify(filters);
+    } else {
+      // fallback for old-style params
+      if (service_tag) params.service_tag = service_tag;
+      if (issue) params.issue = issue;
+      if (location_id) params.location_id = location_id;
+    }
+    if (tags) {
+      params.tags = typeof tags === "string" ? tags : JSON.stringify(tags);
+    }
+    const qs = buildQueryString(params);
+    return fetchJSON(`/systems${qs}`);
+  };
+
+  /**
+   * Get history with optional filters/sorts/pagination
+   */
+  const getHistory = ({
+    filters, // advanced filters JSON string or object
+    service_tag,
+    from_location_id,
+    to_location_id,
+    moved_by_id,
+    page,
+    page_size,
+    all,
+    sort_by,
+    sort_order,
+  } = {}) => {
+    const params = {
+      page,
+      page_size,
+      all,
+      sort_by,
+      sort_order,
+    };
+
+    if (filters) {
+      params.filters =
+        typeof filters === "string" ? filters : JSON.stringify(filters);
+    } else {
+      // fallback for old-style params
+      if (service_tag) params.service_tag = service_tag;
+      if (from_location_id) params.from_location_id = from_location_id;
+      if (to_location_id) params.to_location_id = to_location_id;
+      if (moved_by_id) params.moved_by_id = moved_by_id;
+    }
+
+    const qs = buildQueryString(params);
+    return fetchJSON(`/systems/history${qs}`);
+  };
+
+  const getHistoryById = (id) => fetchJSON(`/systems/history/${id}`);
+  const getSystem = (tag) => fetchJSON(`/systems/${tag}`);
+  const getSystemHistory = (tag) => fetchJSON(`/systems/${tag}/history`);
+  const getServerTime = async () => {
+    const res = await fetchJSON(`/server/time`);
+    return { ...res, utcOffset: getServerUTCOffset(res.localtime) };
+  };
+  const getRepairsAllowed = () => fetchJSON(`/server/repairs_allowed`);
+  const updateRepairsAllowed = (repairs_allowed) =>
+    fetchJSON(`/server/repairs_allowed`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repairs_allowed: !!repairs_allowed }),
+    });
+  const getL11LogReconciliationMode = () =>
+    fetchJSON(`/server/l11_log_reconciliation_mode`);
+  const updateL11LogReconciliationMode = (l11_log_reconciliation_mode) =>
+    fetchJSON(`/server/l11_log_reconciliation_mode`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        l11_log_reconciliation_mode: !!l11_log_reconciliation_mode,
+      }),
+    });
+  const getPendingL11MoveRule = () => fetchJSON(`/server/pending_l11_move_rule`);
+  const updatePendingL11MoveRule = (pending_l11_move_rule) =>
+    fetchJSON(`/server/pending_l11_move_rule`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pending_l11_move_rule: {
+          enabled: !!pending_l11_move_rule?.enabled,
+          minutes: pending_l11_move_rule?.minutes,
+        },
+      }),
+    });
+
+  const createSystem = (payload) =>
+    fetchJSON("/systems", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  const deleteSystem = (tag) =>
+    fetchJSON(`/systems/${tag}`, { method: "DELETE" });
+
+  const updateSystemLocation = (tag, payload) =>
+    fetchJSON(`/systems/${tag}/location`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  const addSystemNote = (tag, note) =>
+    fetchJSON(`/systems/${encodeURIComponent(tag)}/note`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    });
+
+  // list all categories
+  const getRootCauses = () => fetchJSON(`/systems/root-cause`);
+
+  // list all sub-categories
+  const getRootCauseSubCategories = () =>
+    fetchJSON(`/systems/root-cause-sub-categories`);
+
+  // inside your useApi() module, alongside updateSystemLocation, etc.
+
+  const updateSystemRootCause = (serviceTag, payload) => {
+    const { root_cause_id, root_cause_sub_category_id } = payload ?? {};
+
+    const bothProvided =
+      root_cause_id != null && root_cause_sub_category_id != null;
+    const bothNull =
+      root_cause_id === null && root_cause_sub_category_id === null;
+
+    if (!(bothProvided || bothNull)) {
+      return Promise.reject(
+        new Error(
+          "Provide both root_cause_id and root_cause_sub_category_id, or set both to null.",
+        ),
+      );
+    }
+
+    return fetchJSON(`/systems/${encodeURIComponent(serviceTag)}/root-cause`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        root_cause_id,
+        root_cause_sub_category_id,
+      }),
+    });
+  };
+
+  const deleteLastHistoryEntry = (tag) =>
+    fetchJSON(`/systems/${tag}/history/last`, { method: "DELETE" });
+
+  // Location API
+  const getLocations = () => fetchJSON("/locations");
+
+  const updateLocation = (tag, body) =>
+    fetchJSON(`/systems/${tag}/location`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+  // Station API
+  const getStations = () => fetchJSON("/stations");
+
+  const getStation = (stationName) =>
+    fetchJSON(`/stations/${encodeURIComponent(stationName)}`);
+
+  const createStation = (payload) =>
+    fetchJSON("/stations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  const updateStation = (stationName, payload) => {
+    console.log("PATCH /stations/" + stationName + " payload", payload);
+
+    return fetchJSON(`/stations/${encodeURIComponent(stationName)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  };
+
+  const deleteStation = (stationName) =>
+    fetchJSON(`/stations/${encodeURIComponent(stationName)}`, {
+      method: "DELETE",
+    });
+
+  const moveSystemToReceived = async (service_tag, issue, rack_service_tag) => {
+    // First fetch: move system
+    const updateLocation = await fetchJSON(`/systems/${service_tag}/location`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        to_location_id: 1,
+        note: `Moving back to received from Inactive with issue "${issue}"`,
+      }),
+    });
+
+    // Second fetch: clear root cause + sub-category (must set both to null)
+    await updateSystemRootCause(service_tag, {
+      root_cause_id: null,
+      root_cause_sub_category_id: null,
+    });
+
+    // Third fetch: update issue
+    const updateIssue = await fetchJSON(`/systems/${service_tag}/issue`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        issue: issue,
+      }),
+    });
+
+    // Forth fetch: update rack service tag
+    const updateRackTag = await fetchJSON(`/systems/${service_tag}/rack`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rack_service_tag: rack_service_tag,
+      }),
+    });
+
+    return { updateLocation, updateIssue, updateRackTag };
+  };
+
+  const getSnapshot = ({
+    date,
+    locations,
+    includeNote = false,
+    noCache = false,
+    simplified = false, // NEW
+  } = {}) => {
+    if (!date) throw new Error("getSnapshot requires a `date` parameter");
+
+    const params = { date };
+
+    if (locations) {
+      params.locations = Array.isArray(locations)
+        ? locations.join(",")
+        : locations;
+    }
+
+    params.includeNote = includeNote ? "true" : "false";
+    params.noCache = noCache ? "true" : "false";
+
+    if (simplified) params.simplified = "true";
+
+    const qs = buildQueryString(params);
+    return fetchJSON(`/systems/snapshot${qs}`);
+  };
+
+  /**
+   * Update the PPID of a system
+   * @param {string} tag - service_tag
+   * @param {string} ppid - full PPID string
+   */
+  const updateSystemPPID = (tag, ppid) =>
+    fetchJSON(`/systems/${tag}/ppid`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ppid }),
+    });
+
+  const updateSystemDOA = (tag, doa_number) =>
+    fetchJSON(`/systems/${tag}/doa`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doa_number }),
+    });
+
+  const getSystemPallet = (service_tag) =>
+    fetchJSON(`/systems/${service_tag}/pallet`);
+
+  const getSystemPalletHistory = (service_tag) =>
+    fetchJSON(`/systems/${service_tag}/pallet-history`);
+
+  const moveSystemBetweenPallets = ({
+    service_tag,
+    from_pallet_number,
+    to_pallet_number,
+  }) =>
+    fetchJSON(`/pallets/move`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        service_tag,
+        from_pallet_number,
+        to_pallet_number,
+      }),
+    });
+
+  const releasePallet = (pallet_number) =>
+    fetchJSON(`/pallets/${pallet_number}/release`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+  const deletePallet = (pallet_number) =>
+    fetchJSON(`/pallets/${pallet_number}`, {
+      method: "DELETE",
+    });
+
+  const updateRackServiceTag = (service_tag, rack_service_tag) =>
+    fetchJSON(`/systems/${service_tag}/rack`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rack_service_tag }),
+    });
+
+  const getPallets = ({
+    filters, // advanced filters JSON string or object
+    pallet_number,
+    factory_id,
+    dpn,
+    status,
+    page,
+    page_size,
+    all,
+    sort_by,
+    sort_order,
+  } = {}) => {
+    const params = {
+      page,
+      page_size,
+      all,
+      sort_by,
+      sort_order,
+    };
+
+    if (filters) {
+      params.filters =
+        typeof filters === "string" ? filters : JSON.stringify(filters);
+    } else {
+      // fallback legacy filter support
+      if (pallet_number) params.pallet_number = pallet_number;
+      if (factory_id) params.factory_id = factory_id;
+      if (dpn) params.dpn = dpn;
+      if (status) params.status = status;
+    }
+
+    const qs = buildQueryString(params);
+    return fetchJSON(`/pallets${qs}`);
+  };
+
+  const updateHostMac = (service_tag, host_mac) =>
+    fetchJSON(`/systems/${service_tag}/host_mac`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host_mac }),
+    });
+
+  const updateBmcMac = (service_tag, bmc_mac) =>
+    fetchJSON(`/systems/${service_tag}/bmc_mac`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bmc_mac }),
+    });
+
+  const updateSystemDellCustomer = (service_tag, dell_customer) =>
+    fetchJSON(`/systems/${service_tag}/dell-customer`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ dell_customer }),
+    });
+
+  const uploadSystemPhoto = async (
+    service_tag,
+    file,
+    authTokenOverride = null,
+  ) => {
+    if (!file) throw new Error("Photo file is required");
+    const form = new FormData();
+    form.append("photo", file);
+
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/photos`,
+      {
+        method: "POST",
+        headers: {
+          ...(authTokenOverride || token
+            ? { Authorization: `Bearer ${authTokenOverride || token}` }
+            : {}),
+        },
+        body: form,
+      },
+    );
+
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json()
+      : await res.text();
+
+    if (!res.ok) {
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/photos failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+    return data;
+  };
+
+  const getSystemPhotos = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/photos`);
+  const getSystemLogs = (service_tag, dir = "") =>
+    fetchJSON(
+      `/systems/${encodeURIComponent(service_tag)}/logs${buildQueryString(
+        dir ? { dir } : {},
+      )}`,
+    );
+  const getSystemL11LogsFound = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-logs-found`);
+  const uploadSystemL11LogArchive = async (service_tag, files = []) => {
+    const chosenFiles = Array.isArray(files)
+      ? files.filter(Boolean)
+      : Array.from(files || []).filter(Boolean);
+    if (!chosenFiles.length) throw new Error("At least one file is required");
+
+    const form = new FormData();
+    chosenFiles.forEach((file) => {
+      form.append("files", file);
+    });
+
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/l11-log-archive`,
+      {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: form,
+      },
+    );
+
+    const contentType = res.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await res.json()
+      : await res.text();
+
+    if (!res.ok) {
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/l11-log-archive failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+
+    return data;
+  };
+
+  const startSystemL11Scan = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-scan`, {
+      method: "POST",
+    });
+
+  const getSystemL11ScanStatus = (service_tag, job_id) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-scan/${encodeURIComponent(job_id)}`);
+
+  const exportSystemUnitData = async (service_tag) => {
+    const res = await fetch(
+      `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/export-unit-data`,
+      {
+        method: "GET",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      },
+    );
+
+    if (!res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      const data = contentType.includes("application/json")
+        ? await res.json()
+        : await res.text();
+      const errMsg =
+        (data && typeof data === "object" && data.error) ||
+        (typeof data === "string" && data) ||
+        res.statusText;
+      const error = new Error(
+        `API /systems/${service_tag}/export-unit-data failed: ${res.status} ${errMsg}`,
+      );
+      error.status = res.status;
+      error.body = data;
+      throw error;
+    }
+
+    const disposition = res.headers.get("content-disposition") || "";
+    const filenameMatch =
+      disposition.match(/filename\*=UTF-8''([^;]+)/i) ||
+      disposition.match(/filename="?([^";]+)"?/i);
+    const filename = filenameMatch?.[1]
+      ? decodeURIComponent(filenameMatch[1])
+      : `system_folder_${service_tag}.tgz`;
+
+    return {
+      blob: await res.blob(),
+      filename,
+    };
+  };
+
+  const previewBatchExportUnitData = (csv_text, export_options) =>
+    fetchJSON(`/systems/batch-export-unit-data/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_text, export_options }),
+    });
+
+  const createBatchExportUnitData = (csv_text, export_options) =>
+    fetchJSON(`/systems/batch-export-unit-data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_text, export_options }),
+    });
+
+  const listBatchExportUnitData = () =>
+    fetchJSON(`/systems/batch-export-unit-data`);
+
+  const getPallet = (pallet_number) =>
+    fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}`);
+
+  // PATCH /api/v1/pallets/:pallet_number/lock  { locked: boolean }
+  const setPalletLock = (pallet_number, locked) =>
+    fetchJSON(`/pallets/${encodeURIComponent(pallet_number)}/lock`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ locked }),
+    });
+
+  const createPallet = () =>
+    fetchJSON(`/pallets`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+  const getDpns = () => fetchJSON(`/systems/dpn`);
+
+  const createDpn = ({ name, config, dell_customer_ids }) =>
+    fetchJSON(`/systems/dpn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name.trim(),
+        config: (config ?? "").trim() || null,
+        dell_customer_ids: Array.isArray(dell_customer_ids)
+          ? dell_customer_ids
+          : undefined,
+      }),
+    });
+
+  const updateDpn = (id, payload) =>
+    fetchJSON(`/systems/dpn/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), // { name?, config? }
+    });
+
+  const deleteDpn = (id) =>
+    fetchJSON(`/systems/dpn/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+  const deleteDpnFamily = (ids = []) =>
+    fetchJSON(`/systems/dpn/delete-family`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+
+  const getDellCustomers = ({ q } = {}) =>
+    fetchJSON(`/systems/dell-customers${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+  const createDellCustomer = ({ name }) =>
+    fetchJSON(`/systems/dell-customers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: String(name || "").trim() }),
+    });
+
+  const updateDellCustomer = (id, payload) =>
+    fetchJSON(`/systems/dell-customers/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  const deleteDellCustomer = (id) =>
+    fetchJSON(`/systems/dell-customers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+
+  // Factory API
+  const getFactories = () => fetchJSON(`/systems/factory`);
+
+  const createFactory = ({ name, code, ppid_code }) =>
+    fetchJSON(`/systems/factory`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name.trim(),
+        code: code.trim(),
+        ppid_code: ppid_code?.trim() || null,
+      }),
+    });
+
+  const updateFactory = (id, payload) =>
+    fetchJSON(`/systems/factory/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), // { name?, code?, ppid_code? }
+    });
+
+  const deleteFactory = (id) =>
+    fetchJSON(`/systems/factory/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+
+  // Part Categories API
+  const getPartCategories = ({ q } = {}) =>
+    fetchJSON(`/part-categories${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+  const createPartCategory = ({ name }) =>
+    fetchJSON(`/part-categories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: String(name || "").trim() }),
+    });
+
+  const updatePartCategory = (id, payload) =>
+    fetchJSON(`/part-categories/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), // { name? }
+    });
+
+  const deletePartCategory = (id) =>
+    fetchJSON(`/part-categories/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+
+  // Parts
+  const getParts = ({ q, category_id } = {}) => {
+    const qs = [];
+    if (q) qs.push(`q=${encodeURIComponent(q)}`);
+    if (category_id) qs.push(`category_id=${encodeURIComponent(category_id)}`);
+    const suffix = qs.length ? `?${qs.join("&")}` : "";
+    return fetchJSON(`/parts${suffix}`);
+  };
+
+  const createPart = ({ name, dpn, part_category_id }) =>
+    fetchJSON(`/parts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: String(name || "").trim(),
+        dpn: String(dpn || "").trim(),
+        part_category_id: part_category_id || null,
+      }),
+    });
+
+  const updatePart = (id, payload) =>
+    fetchJSON(`/parts/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload), // { name?, part_category_id? }
+    });
+
+  const deletePart = (id) =>
+    fetchJSON(`/parts/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+  const getMe = () => fetchJSON(`/auth/me`);
+
+  const getUsers = ({ page, page_size, search, is_admin } = {}) => {
+    const qs = buildQueryString({ page, page_size, search, is_admin });
+    return fetchJSON(`/auth/users${qs}`);
+  };
+
+  const setUserAdmin = (username, isAdmin) =>
+    fetchJSON(`/auth/users/${encodeURIComponent(username)}/admin`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ admin: !!isAdmin }),
+    });
+
+  // tiny convenience wrappers
+  const lockPallet = (pallet_number) => setPalletLock(pallet_number, true);
+  const unlockPallet = (pallet_number) => setPalletLock(pallet_number, false);
+
+  // List physical part items (inventory + in-unit)
+  // Supported filters:
+  // {
+  //   q,                                 // text search (part_name or PPID)
+  //   place,                             // 'inventory' | 'unit' | string[] for multi
+  //   is_functional,                     // boolean | 'true' | 'false'
+  //   part_id,                           // number | string
+  //   part_name,                         // string
+  //   part_category_id,                  // number | string
+  //   part_category_name,                // string
+  //   unit_id,                           // number | string
+  //   unit_service_tag                   // string
+  // }
+  const getPartItems = async (params = {}) => {
+    const qs = new URLSearchParams();
+
+    const add = (k, v) => {
+      if (v === undefined || v === null || v === "") return;
+      if (Array.isArray(v)) {
+        v.forEach((item) => add(k, item));
+      } else {
+        qs.append(k, String(v));
+      }
+    };
+
+    // Normalize booleans explicitly
+    const normalizeBool = (v) => {
+      if (typeof v === "boolean") return v ? "true" : "false";
+      if (v === "true" || v === "false") return v;
+      return undefined;
+    };
+
+    const {
+      q,
+      place,
+      is_functional,
+      part_id,
+      part_name,
+      part_category_id,
+      part_category_name,
+      unit_id,
+      unit_service_tag,
+    } = params;
+
+    add("q", q);
+    add("part_id", part_id);
+    add("part_name", part_name);
+    add("part_category_id", part_category_id);
+    add("part_category_name", part_category_name);
+    add("unit_id", unit_id);
+    add("unit_service_tag", unit_service_tag);
+
+    // allow single or array for place
+    add("place", place);
+
+    // normalize boolean to "true"/"false"
+    const isFuncStr = normalizeBool(is_functional);
+    if (isFuncStr !== undefined) add("is_functional", isFuncStr);
+
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON(`/part-items/${suffix}`);
+  };
+
+  // Read one by PPID
+  const getPartItem = async (ppid) =>
+    fetchJSON(`/part-items/${encodeURIComponent(String(ppid).toUpperCase())}`);
+
+  // Create by PPID in path
+  // payload = { part_id, place='inventory', unit_id, is_functional=true }
+  const createPartItem = async (ppid, payload) =>
+    fetchJSON(`/part-items/${encodeURIComponent(String(ppid).toUpperCase())}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  // Update by PPID in path
+  // payload can include: { part_id?, place?, unit_id?, is_functional?, ppid? }  // ppid renames
+  const updatePartItem = async (ppid, payload) =>
+    fetchJSON(`/part-items/${encodeURIComponent(String(ppid).toUpperCase())}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+  // Delete by PPID in path
+  const deletePartItem = async (ppid) =>
+    fetchJSON(`/part-items/${encodeURIComponent(String(ppid).toUpperCase())}`, {
+      method: "DELETE",
+    });
+
+  // -----------------------------
+  // Tags API
+  // -----------------------------
+
+  // List tags (optionally search by q)
+  const getTags = ({ q } = {}) =>
+    fetchJSON(`/tags${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+
+  // Create a tag { name }
+  const createTag = ({ code }) =>
+    fetchJSON(`/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: String(code || "").trim() }),
+    });
+
+  // List tags on a system
+  const getSystemTags = (service_tag) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`);
+
+  // Attach an existing tag to a system
+  const addSystemTag = (service_tag, tag_code) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_code: String(tag_code || "").trim() }),
+    });
+
+  // Remove a tag from a system
+  const removeSystemTag = (service_tag, tag_code) =>
+    fetchJSON(`/systems/${encodeURIComponent(service_tag)}/tags`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag_code: String(tag_code || "").trim() }),
+    });
+
+  return {
+    getSystems,
+    getHistory,
+    getSystem,
+    getSystemHistory,
+    createSystem,
+    deleteSystem,
+    updateSystemLocation,
+    updateSystemRootCause,
+    deleteLastHistoryEntry,
+    getLocations,
+    updateLocation,
+    getStations,
+    getStation,
+    createStation,
+    updateStation,
+    deleteStation,
+    moveSystemToReceived,
+    getHistoryById,
+    getServerTime,
+    getRepairsAllowed,
+    updateRepairsAllowed,
+    getL11LogReconciliationMode,
+    updateL11LogReconciliationMode,
+    getPendingL11MoveRule,
+    updatePendingL11MoveRule,
+    getSnapshot,
+    updateSystemPPID,
+    updateSystemDOA,
+    getSystemPallet,
+    getSystemPalletHistory,
+    moveSystemBetweenPallets,
+    releasePallet,
+    deletePallet,
+    getPallets,
+    getPallet,
+    setPalletLock,
+    lockPallet,
+    unlockPallet,
+    createPallet,
+    getDpns,
+    createDpn,
+    updateDpn,
+    deleteDpn,
+    deleteDpnFamily,
+    getFactories,
+    createFactory,
+    updateFactory,
+    deleteFactory,
+    getMe,
+    getUsers,
+    setUserAdmin,
+    getParts,
+    createPart,
+    updatePart,
+    deletePart,
+    getPartCategories,
+    createPartCategory,
+    updatePartCategory,
+    deletePartCategory,
+    getPartItems,
+    getPartItem,
+    createPartItem,
+    updatePartItem,
+    deletePartItem,
+    addSystemNote,
+    getRootCauses,
+    getRootCauseSubCategories,
+    getTags,
+    createTag,
+    getSystemTags,
+    addSystemTag,
+    removeSystemTag,
+    updateHostMac,
+    updateBmcMac,
+    updateSystemDellCustomer,
+    getDellCustomers,
+    createDellCustomer,
+    updateDellCustomer,
+    deleteDellCustomer,
+    updateRackServiceTag,
+    uploadSystemPhoto,
+    getSystemLogs,
+    getSystemPhotos,
+    getSystemL11LogsFound,
+    uploadSystemL11LogArchive,
+    startSystemL11Scan,
+    getSystemL11ScanStatus,
+    exportSystemUnitData,
+    previewBatchExportUnitData,
+    createBatchExportUnitData,
+    listBatchExportUnitData,
+  };
+}
+
+export default useApi;
