@@ -3628,6 +3628,12 @@ function SystemPage() {
                                         instanceId={`good-part-${block.id}`}
                                         classNamePrefix="react-select"
                                         styles={select40Styles}
+                                        menuPortalTarget={
+                                          typeof document !== "undefined"
+                                            ? document.body
+                                            : null
+                                        }
+                                        menuPosition="fixed"
                                         isClearable
                                         isSearchable
                                         placeholder="Select part"
@@ -3657,6 +3663,12 @@ function SystemPage() {
                                         instanceId={`good-ppid-${block.id}`}
                                         classNamePrefix="react-select"
                                         styles={select40Styles}
+                                        menuPortalTarget={
+                                          typeof document !== "undefined"
+                                            ? document.body
+                                            : null
+                                        }
+                                        menuPosition="fixed"
                                         placeholder={
                                           block.part_id
                                             ? "Select PPID"
