@@ -3,12 +3,14 @@ import useBodyScrollLock from "./useBodyScrollLock.jsx";
 
 export default function usePrintConfirmPendingParts() {
   const [isOpen, setIsOpen] = useState(false);
+  const [labelName, setLabelName] = useState("Pending Parts");
   const resolveRef = useRef(null);
   const resolvedRef = useRef(false);
   useBodyScrollLock(isOpen);
 
-  const confirmPrintPendingParts = () =>
+  const confirmPrintPendingParts = (nextLabelName = "Pending Parts") =>
     new Promise((resolve) => {
+      setLabelName(nextLabelName);
       setIsOpen(true);
       resolveRef.current = resolve;
       resolvedRef.current = false;
@@ -71,7 +73,7 @@ export default function usePrintConfirmPendingParts() {
             Choose Label Type
           </h2>
           <p className="text-sm text-gray-600">
-            This system is pending parts. Which label would you like to print?
+            {`This system is ${labelName.toLowerCase()}. Which label would you like to print?`}
           </p>
 
           <div className="flex flex-col sm:flex-row gap-2 sm:justify-between mt-4">
@@ -86,7 +88,7 @@ export default function usePrintConfirmPendingParts() {
               className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
               onClick={() => handleChoice("parts")}
             >
-              Pending Parts Label
+              {labelName} Label
             </button>
           </div>
         </div>

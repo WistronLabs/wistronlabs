@@ -3,12 +3,12 @@ export default function Flowchart({
   locations,
   repairsAllowed,
 }) {
-  const locationsHiddenWhenRepairsDisabled = new Set([3, 4]);
+  const locationsHiddenWhenRepairsDisabled = new Set([4]);
   const locationsHiddenWhenRepairsEnabled = new Set([10]);
-  const arrowsHiddenWhenRepairsDisabled = new Set([3, 4, 6]);
-  const arrowsHiddenWhenRepairsEnabled = new Set([11]);
-  const rectsHiddenWhenRepairsDisabled = new Set([2, 5, 6, 12, 13, 14]);
-  const rectsHiddenWhenRepairsEnabled = new Set([15, 16, 17, 18, 19, 20]);
+  const arrowsHiddenWhenRepairsDisabled = new Set([4]);
+  const arrowsHiddenWhenRepairsEnabled = new Set([]);
+  const rectsHiddenWhenRepairsDisabled = new Set([2, 5, 12]);
+  const rectsHiddenWhenRepairsEnabled = new Set([15, 16, 17, 18, 19, 20, 23]);
 
   const filterByRepairsAllowed = (
     items,
@@ -31,22 +31,24 @@ export default function Flowchart({
       { id: 1, x: 0, y: 150 },
       // In Debug - Wistron
       { id: 2, x: 200, y: 150 },
-      // Pending L11 Logs
-      { id: 3, x: 200, y: 260 },
       // In L10
       { id: 5, x: 400, y: 150 },
       // Sent to L11
-      { id: 9, x: 600, y: 0 },
+      { id: 9, x: 600, y: 100 },
       // RMA VID
-      { id: 6, x: 600, y: 100 },
+      { id: 6, x: 600, y: 200 },
       // RMA PID
-      { id: 8, x: 600, y: 200 },
+      { id: 8, x: 600, y: 0 },
       // RMA CID
       { id: 7, x: 600, y: 300 },
       // Pending Parts
-      { id: 4, x: 200, y: 50 },
+      { id: 4, x: 100, y: 50 },
+      // Pending L11 Logs
+      { id: 3, x: 300, y: 50 },
       // Sent to Dell for Repair
-      { id: 10, x: 200, y: 0 },
+      { id: 10, x: 100, y: 0 },
+      // Pending MRB
+      { id: 11, x: 200, y: 250 },
     ],
     locationsHiddenWhenRepairsDisabled,
     locationsHiddenWhenRepairsEnabled,
@@ -73,97 +75,146 @@ export default function Flowchart({
         stemHeight: 20,
         totalLenth: 40,
         direction: "right",
-        ids: [1, 5],
+        ids: [1],
       },
+      // In L10 to In Debug - Wistron
       {
         id: 2,
-        x: 355,
+        x: 375,
         y: 175,
         stemHeight: 20,
-        totalLenth: 40,
+        totalLenth: 20,
         direction: "right",
         ids: [2],
       },
+
+      // In Debug to Pending Parts
       {
         id: 3,
-        x: 325,
-        y: 215,
+        x: 225,
+        y: repairsAllowed ? 125 : 135,
         stemHeight: 20,
-        totalLenth: 40,
-        direction: "down",
-        ids: [2],
+        totalLenth: repairsAllowed ? 20 : 80,
+        direction: "up",
+        ids: [2, 5],
       },
+      // Pending Parts to In Debug
       {
         id: 4,
         x: 225,
-        y: 145,
+        y: 125,
         stemHeight: 20,
-        totalLenth: 40,
-        direction: "up",
-        ids: [2],
-      },
-      {
-        id: 5,
-        x: 225,
-        y: 250,
-        stemHeight: 20,
-        totalLenth: 45,
-        direction: "up",
-        ids: [3, 5],
-      },
-      {
-        id: 6,
-        x: 325,
-        y: 105,
-        stemHeight: 20,
-        totalLenth: 40,
+        totalLenth: 20,
         direction: "down",
         ids: [4],
       },
+      // MRB to In Debug
+      {
+        id: 5,
+        x: 225,
+        y: 225,
+        stemHeight: 20,
+        totalLenth: 20,
+        direction: "up",
+        ids: [11],
+      },
+      // In Debug to MRB
+      {
+        id: 6,
+        x: 225,
+        y: 225,
+        stemHeight: 20,
+        totalLenth: 20,
+        direction: "down",
+        ids: [2],
+      },
+      //Pending L11 Logs to In Debug
       {
         id: 7,
+        x: 325,
+        y: 125,
+        stemHeight: 20,
+        totalLenth: 20,
+        direction: "down",
+        ids: [3],
+      },
+      // In Debug to Pending L11 Logs
+      {
+        id: 8,
+        x: 325,
+        y: 125,
+        stemHeight: 20,
+        totalLenth: 20,
+        direction: "up",
+        ids: [2],
+      },
+      // Pending L11 Logs to RMA PID
+      {
+        id: 9,
         x: 555,
         y: 25,
         stemHeight: 20,
         totalLenth: 40,
         direction: "right",
-        ids: [5],
+        ids: [2, 5, 3],
       },
+      // Sent to L11
       {
-        id: 8,
+        id: 10,
         x: 555,
         y: 125,
         stemHeight: 20,
         totalLenth: 40,
         direction: "right",
-        ids: [2, 5],
+        ids: [5],
       },
+      // RMA VID
       {
-        id: 9,
+        id: 11,
         x: 555,
         y: 225,
         stemHeight: 20,
         totalLenth: 40,
         direction: "right",
-        ids: [2, 3, 5],
+        ids: [2, 5],
       },
+      // RMA CID
       {
-        id: 10,
+        id: 12,
         x: 555,
         y: 325,
         stemHeight: 20,
         totalLenth: 40,
         direction: "right",
-        ids: [2, 5],
+        ids: [11],
       },
       {
-        id: 11,
-        x: 275,
-        y: 100,
+        id: 13,
+        x: 375,
+        y: 175,
         stemHeight: 20,
-        totalLenth: 45,
-        direction: "up",
-        ids: [2, 5],
+        totalLenth: 20,
+        direction: "left",
+        ids: [5],
+      },
+      // In L10 to Pending MRB
+      {
+        id: 14,
+        x: 465,
+        y: 275,
+        stemHeight: 20,
+        totalLenth: 110,
+        direction: "left",
+        ids: [5],
+      },
+      {
+        id: 15,
+        x: 475,
+        y: 75,
+        stemHeight: 20,
+        totalLenth: 20,
+        direction: "left",
+        ids: [5],
       },
     ],
     arrowsHiddenWhenRepairsDisabled,
@@ -172,68 +223,55 @@ export default function Flowchart({
 
   const rects = filterByRepairsAllowed(
     [
+      // Pending L11 Logs to RMA PID
       {
-        id: 1,
-        x: 325,
+        id: 3,
+        x: 315,
+        y: 15,
+        width: 240,
+        height: 20,
+        direction: "horizontal",
+        ids: [3],
+      },
+      // Horizontal line from Pending L11 Logs to RMA PID
+      {
+        id: 6,
+        x: 315,
+        y: 30,
+        width: 15,
+        height: 20,
+        direction: "vertical",
+        ids: [3],
+      },
+      // In Debug Wistron to RMA
+      {
+        id: 4,
+        x: 315,
         y: 215,
-        width: 67,
+        width: 240,
         height: 20,
         direction: "horizontal",
         ids: [2],
       },
-      {
-        id: 2,
-        x: 355,
-        y: 275,
-        width: 40,
-        height: 20,
-        direction: "horizontal",
-        ids: [3],
-      },
-      {
-        id: 3,
-        x: 390,
-        y: 215,
-        width: 70,
-        height: 20,
-        direction: "horizontal",
-        ids: [2, 3],
-      },
-      {
-        id: 4,
-        x: 490,
-        y: 215,
-        width: 97,
-        height: 20,
-        direction: "horizontal",
-        ids: [2, 3],
-      },
-      {
-        id: 5,
-        x: 175,
-        y: 230,
-        width: 40,
-        height: 20,
-        direction: "horizontal",
-        ids: [5],
-      },
-      {
-        id: 6,
-        x: 215,
-        y: 250,
-        width: 5,
-        height: 20,
-        direction: "vertical",
-        ids: [3],
-      },
+      // Vertical line inbetween RMA PID, Sent to L11 and RMA VID
       {
         id: 7,
         x: 555,
-        y: 134,
-        width: 185,
+        y: 35,
+        width: 180,
         height: 18,
         direction: "vertical",
         ids: [2, 5],
+      },
+      // Vertical line inbetween RMA PID, Sent to L11 and RMA VID
+      {
+        id: 7,
+        x: 465,
+        y: 65,
+        width: 80,
+        height: 18,
+        direction: "vertical",
+        ids: [5],
       },
       {
         id: 8,
@@ -244,6 +282,7 @@ export default function Flowchart({
         direction: "vertical",
         ids: [2],
       },
+      // Small horizonal nub to the right of In L10
       {
         id: 9,
         x: 552,
@@ -253,104 +292,72 @@ export default function Flowchart({
         direction: "horizontal",
         ids: [5],
       },
+      // Pending MRB to RMA CID
       {
-        id: 10,
-        x: 555,
-        y: 25,
-        width: 90,
+        id: 13,
+        x: 215,
+        y: 305,
+        width: 30,
+        height: 20,
+        direction: "vertical",
+        ids: [11],
+      },
+      // Pending MRB to RMA CID
+      {
+        id: 14,
+        x: 220,
+        y: 315,
+        width: 335,
+        height: 20,
+        direction: "horizontal",
+        ids: [11],
+      },
+      {
+        id: 17,
+        x: 350,
+        y: 115,
+        width: 115,
+        height: 20,
+        direction: "horizontal",
+        ids: [5],
+      },
+      {
+        id: 20,
+        x: 235,
+        y: 115,
+        width: 65,
+        height: 20,
+        direction: "horizontal",
+        ids: [5],
+      },
+      //vertical line l10 to pending MRB part 1
+      {
+        id: 21,
+        x: 465,
+        y: 205,
+        width: 5,
+        height: 18,
+        direction: "vertical",
+        ids: [5],
+      },
+      //vertical line l10 to pending MRB part 2
+      {
+        id: 22,
+        x: 465,
+        y: 240,
+        width: 45,
         height: 18,
         direction: "vertical",
         ids: [5],
       },
       {
-        id: 11,
-        x: 465,
-        y: 205,
-        width: 125,
-        height: 20,
-        direction: "vertical",
-        ids: [5],
-      },
-      {
-        id: 12,
-        x: 390,
-        y: 235,
-        width: 60,
-        height: 20,
-        direction: "vertical",
-        ids: [3],
-      },
-      {
-        id: 13,
-        x: 175,
-        y: 230,
-        width: 100,
-        height: 20,
-        direction: "vertical",
-        ids: [5],
-      },
-      {
-        id: 14,
-        x: 175,
-        y: 315,
-        width: 310,
-        height: 20,
-        direction: "horizontal",
-        ids: [5],
-      },
-      {
-        id: 15,
+        id: 23,
         x: 215,
-        y: 315,
-        width: 270,
-        height: 20,
-        direction: "horizontal",
-        ids: [5],
-      },
-      {
-        id: 16,
-        x: 215,
-        y: 230,
-        width: 100,
-        height: 20,
-        direction: "vertical",
-        ids: [5],
-      },
-      {
-        id: 17,
-        x: 285,
-        y: 100,
-        width: 200,
-        height: 20,
-        direction: "horizontal",
-        ids: [5],
-      },
-      {
-        id: 18,
-        x: 265,
-        y: 100,
-        width: 20,
-        height: 20,
-        direction: "horizontal",
-        ids: [2, 5],
-      },
-      {
-        id: 19,
-        x: 265,
-        y: 120,
-        width: 25,
+        y: 135,
+        width: 10,
         height: 20,
         direction: "vertical",
         ids: [2],
-      },
-      {
-        id: 20,
-        x: 465,
-        y: 120,
-        width: 25,
-        height: 20,
-        direction: "vertical",
-        ids: [5],
       },
     ],
     rectsHiddenWhenRepairsDisabled,
@@ -417,6 +424,100 @@ export default function Flowchart({
         </g>
       ))}
 
+      {/* Render arrows */}
+      {arrows.map((arrow, idx) => {
+        const stemThickness = arrow.stemHeight ?? 20;
+        const totalLength = arrow.totalLenth ?? 40;
+        const direction = arrow.direction ?? "right";
+
+        const headLengthFactor = 0.8;
+        const headHeightFactor = 1.8;
+        const headLength = stemThickness * headLengthFactor;
+        const headHeight = stemThickness * headHeightFactor;
+        const stemLength = Math.max(0, totalLength - headLength);
+
+        const cx = arrow.x;
+        const cy = arrow.y;
+
+        const isActive = arrow.ids?.includes(currentLocation_id);
+        const fill = isActive ? "#bfdbfe" : "#9ca3af";
+
+        let stemX = cx;
+        let stemY = cy;
+        let stemWidth = 0;
+        let stemHeight = 0;
+        let points = "";
+
+        if (direction === "right") {
+          stemX = cx;
+          stemY = cy - stemThickness / 2;
+          stemWidth = stemLength;
+          stemHeight = stemThickness;
+
+          const headBaseX = cx + stemLength;
+
+          points = `
+            ${headBaseX},${cy - headHeight / 2}
+            ${headBaseX + headLength},${cy}
+            ${headBaseX},${cy + headHeight / 2}
+          `;
+        } else if (direction === "left") {
+          stemX = cx - stemLength;
+          stemY = cy - stemThickness / 2;
+          stemWidth = stemLength;
+          stemHeight = stemThickness;
+
+          const headBaseX = cx - stemLength;
+
+          points = `
+            ${headBaseX},${cy - headHeight / 2}
+            ${headBaseX - headLength},${cy}
+            ${headBaseX},${cy + headHeight / 2}
+          `;
+        } else if (direction === "down") {
+          stemX = cx - stemThickness / 2;
+          stemY = cy;
+          stemWidth = stemThickness;
+          stemHeight = stemLength;
+
+          const headBaseY = cy + stemLength;
+
+          points = `
+            ${cx - headHeight / 2},${headBaseY}
+            ${cx},${headBaseY + headLength}
+            ${cx + headHeight / 2},${headBaseY}
+          `;
+        } else if (direction === "up") {
+          stemX = cx - stemThickness / 2;
+          stemY = cy - stemLength;
+          stemWidth = stemThickness;
+          stemHeight = stemLength;
+
+          const headBaseY = cy - stemLength;
+
+          points = `
+            ${cx - headHeight / 2},${headBaseY}
+            ${cx},${headBaseY - headLength}
+            ${cx + headHeight / 2},${headBaseY}
+          `;
+        }
+
+        return (
+          <g key={idx}>
+            {stemWidth > 0 && stemHeight > 0 && (
+              <rect
+                x={stemX}
+                y={stemY}
+                width={stemWidth}
+                height={stemHeight}
+                fill={fill}
+              />
+            )}
+            <polygon points={points} fill={fill} />
+          </g>
+        );
+      })}
+
       {/* Render rects */}
       {rects.map((rect, idx) => {
         const baseX = rect.x;
@@ -441,98 +542,6 @@ export default function Flowchart({
             height={h}
             fill={fill}
           />
-        );
-      })}
-
-      {/* Render arrows */}
-      {arrows.map((arrow, idx) => {
-        const stemThickness = arrow.stemHeight ?? 20;
-        const totalLength = arrow.totalLenth ?? 40;
-        const direction = arrow.direction ?? "right";
-
-        const headLength = totalLength * 0.4;
-        const stemLength = totalLength - headLength;
-
-        const headHeightFactor = 1.8;
-        const headHeight = stemThickness * headHeightFactor;
-
-        const cx = arrow.x;
-        const cy = arrow.y;
-
-        const isActive = arrow.ids?.includes(currentLocation_id);
-        const fill = isActive ? "#bfdbfe" : "#9ca3af";
-
-        let stemX = cx;
-        let stemY = cy;
-        let stemWidth = 0;
-        let stemHeight = 0;
-        let points = "";
-
-        if (direction === "right") {
-          stemX = cx;
-          stemY = cy - stemThickness / 2;
-          stemWidth = stemLength + 1;
-          stemHeight = stemThickness;
-
-          const headBaseX = cx + stemLength;
-
-          points = `
-            ${headBaseX},${cy - headHeight / 2}
-            ${headBaseX + headLength},${cy}
-            ${headBaseX},${cy + headHeight / 2}
-          `;
-        } else if (direction === "left") {
-          stemX = cx - stemLength - 1;
-          stemY = cy - stemThickness / 2;
-          stemWidth = stemLength + 1;
-          stemHeight = stemThickness;
-
-          const headBaseX = cx - stemLength;
-
-          points = `
-            ${headBaseX},${cy - headHeight / 2}
-            ${headBaseX - headLength},${cy}
-            ${headBaseX},${cy + headHeight / 2}
-          `;
-        } else if (direction === "down") {
-          stemX = cx - stemThickness / 2;
-          stemY = cy;
-          stemWidth = stemThickness;
-          stemHeight = stemLength + 1;
-
-          const headBaseY = cy + stemLength;
-
-          points = `
-            ${cx - headHeight / 2},${headBaseY}
-            ${cx},${headBaseY + headLength}
-            ${cx + headHeight / 2},${headBaseY}
-          `;
-        } else if (direction === "up") {
-          stemX = cx - stemThickness / 2;
-          stemY = cy - stemLength - 1;
-          stemWidth = stemThickness;
-          stemHeight = stemLength + 1;
-
-          const headBaseY = cy - stemLength;
-
-          points = `
-            ${cx - headHeight / 2},${headBaseY}
-            ${cx},${headBaseY - headLength}
-            ${cx + headHeight / 2},${headBaseY}
-          `;
-        }
-
-        return (
-          <g key={idx}>
-            <rect
-              x={stemX}
-              y={stemY}
-              width={stemWidth}
-              height={stemHeight}
-              fill={fill}
-            />
-            <polygon points={points} fill={fill} />
-          </g>
         );
       })}
     </svg>

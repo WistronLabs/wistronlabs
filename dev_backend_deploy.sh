@@ -66,9 +66,9 @@ EOF
 
 cmd="${1:-}"
 
-# Load config (supports optional 9th field: source_prod)
+# Load config (supports optional 10th field: deploy_mode)
 declare -A HOST DIR PROJ PORT FRONTEND IS_DEV LOCKFILE SOURCE_PROD
-while IFS='|' read -r name host dir proj port frontend is_dev lockfile source_prod; do
+while IFS='|' read -r name host dir proj port frontend is_dev lockfile source_prod deploy_mode _ignored_extra || [[ -n "${name:-}" ]]; do
   [[ -z "${name// }" ]] && continue
   [[ "$name" =~ ^# ]] && continue
 

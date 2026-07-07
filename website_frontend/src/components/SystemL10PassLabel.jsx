@@ -14,6 +14,12 @@ const LABEL_WIDTH = 144;
 const LABEL_HEIGHT = 72;
 const SCALE = 1;
 const S = (n) => Math.round(n * SCALE * 100) / 100;
+const formatPrintDate = () =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  }).format(new Date());
 
 const styles = StyleSheet.create({
   page: {
@@ -96,47 +102,61 @@ const styles = StyleSheet.create({
     fontFamily: "Helvetica",
     lineHeight: 1.2,
   },
+  footer_text: {
+    position: "absolute",
+    left: S(7),
+    bottom: S(2),
+    width: S(120),
+    fontSize: S(6),
+    fontFamily: "Helvetica",
+    color: "#374151",
+    lineHeight: 1.1,
+  },
 });
 
-const SystemPDFLabel = ({ systems }) => (
-  <Document>
-    {systems.map((system, index) => (
-      <Page
-        key={index}
-        size={{ width: LABEL_WIDTH, height: LABEL_HEIGHT }}
-        style={styles.page}
-      >
-        <View style={styles.canvas}>
-          <View style={styles.label}>
-            {/* ✅ Vector checkmark */}
-            <View style={styles.checkWrap}>
-              <Svg viewBox="0 0 24 24" width="100%" height="100%">
-                <Path
-                  d="M20 6L9 17l-5-5"
-                  stroke="#111827"
-                  strokeWidth={2}
-                  fill="none"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </Svg>
-            </View>
+const SystemPDFLabel = ({ systems }) => {
+  const printDate = formatPrintDate();
+  return (
+    <Document>
+      {systems.map((system, index) => (
+        <Page
+          key={index}
+          size={{ width: LABEL_WIDTH, height: LABEL_HEIGHT }}
+          style={styles.page}
+        >
+          <View style={styles.canvas}>
+            <View style={styles.label}>
+              {/* ✅ Vector checkmark */}
+              <View style={styles.checkWrap}>
+                <Svg viewBox="0 0 24 24" width="100%" height="100%">
+                  <Path
+                    d="M20 6L9 17l-5-5"
+                    stroke="#111827"
+                    strokeWidth={2}
+                    fill="none"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </Svg>
+              </View>
 
-            <Text style={styles.text}>{system.service_tag}</Text>
-            <View style={styles.wistron_wrap}>
-              <Text style={styles.issue_text}>Passed L10</Text>
+              <Text style={styles.text}>{system.service_tag}</Text>
+              <View style={styles.wistron_wrap}>
+                <Text style={styles.issue_text}>Passed L10</Text>
+              </View>
+              <Text style={styles.dpn_text}>
+                {system.dpn} - Config {system.config}
+              </Text>
+              <Text style={styles.dell_customer_text}>
+                {system.dell_customer}
+              </Text>
+              <Text style={styles.footer_text}>Printed: {printDate}</Text>
             </View>
-            <Text style={styles.dpn_text}>
-              {system.dpn} - Config {system.config}
-            </Text>
-            <Text style={styles.dell_customer_text}>
-              {system.dell_customer}
-            </Text>
           </View>
-        </View>
-      </Page>
-    ))}
-  </Document>
-);
+        </Page>
+      ))}
+    </Document>
+  );
+};
 
 export default SystemPDFLabel;

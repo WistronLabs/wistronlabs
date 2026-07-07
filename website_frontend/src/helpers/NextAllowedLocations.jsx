@@ -17,22 +17,27 @@ export function allowedNextLocations(
               "In Debug - Wistron",
               "RMA VID",
               "RMA PID",
-              "RMA CID",
+              "Pending MRB",
             ].includes(l.name),
           )
         : locations.filter((l) =>
             [
               "In L10",
               "In Debug - Wistron",
+              "Pending L11 Logs",
               "RMA VID",
               "RMA PID",
-              "RMA CID",
+              "Pending MRB",
               "Sent for Dell Repair",
             ].includes(l.name),
           );
     case "Pending Parts":
       return locations.filter((l) =>
         ["Pending Parts", "In Debug - Wistron"].includes(l.name),
+      );
+    case "Pending MRB":
+      return locations.filter((l) =>
+        ["Pending MRB", "In Debug - Wistron", "RMA CID"].includes(l.name),
       );
     case "Pending L11 Logs":
       return locations.filter((l) =>
@@ -48,18 +53,20 @@ export function allowedNextLocations(
         ? locations.filter((l) =>
             [
               "In Debug - Wistron",
+              "Pending MRB",
+              "Pending L11 Logs",
               "RMA VID",
               "RMA PID",
-              "RMA CID",
               "Sent to L11",
             ].includes(l.name),
           )
         : locations.filter((l) =>
             [
               "In Debug - Wistron",
+              "Pending MRB",
+              "Pending L11 Logs",
               "RMA VID",
               "RMA PID",
-              "RMA CID",
               "Sent to L11",
               "Sent for Dell Repair",
             ].includes(l.name),

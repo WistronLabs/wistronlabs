@@ -224,6 +224,27 @@ async function getLatestReceivedAt(client, systemId) {
   return rows[0]?.changed_at || null;
 }
 
+function normalizePendingL11MoveRule(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const parsedMinutes = Number.parseInt(raw.minutes, 10);
+  const minutes = Number.isInteger(parsedMinutes) && parsedMinutes > 0
+    ? parsedMinutes
+    : DEFAULT_PENDING_L11_MOVE_RULE.minutes;
+
+  return {
+    enabled: !!raw.enabled,
+    minutes,
+  };
+}
+
+async function getPendingL11MoveRule(client) {
+  const { rows } = await client.query(
+    `SELECT value_json FROM global_settings WHERE key = $1 LIMIT 1`,
+    [PENDING_L11_MOVE_RULE_KEY],
+  );
+  return normalizePendingL11MoveRule(rows[0]?.value_json);
+}
+
 // Helper: fetch deleted user id
 async function getDeletedUserId() {
   const result = await db.query(
@@ -237,6 +258,17 @@ const RMA_LOCATION_IDS = [6, 7, 8];
 const RMA_CID_LOCATION_ID = 7;
 const RESOLVED_LOCATION_IDS = [6, 7, 8, 9, 10];
 const RECEIVED_LOCATION_ID = 1;
+const PENDING_L11_LOGS_LOCATION_ID = 3;
+const PENDING_MRB_LOCATION_NAME = "Pending MRB";
+const PENDING_L11_MOVE_RULE_KEY = "pending_l11_move_rule";
+const DEFAULT_PENDING_L11_MOVE_RULE = {
+  enabled: false,
+  minutes: 30,
+};
+
+function isPendingMrbLocationName(name) {
+  return String(name || "").trim() === PENDING_MRB_LOCATION_NAME;
+}
 const PHOTO_UPLOAD_ROOT = process.env.L10_LOGS_ROOT || "/var/www/html/l10_logs";
 const MAX_PHOTO_BYTES = 12 * 1024 * 1024; // 12MB
 const MAX_L11_LOG_BYTES = 250 * 1024 * 1024; // 250MB per file
@@ -1133,6 +1165,97 @@ function parseAndValidatePPID(ppidRaw) {
   if (!/^[A-Z0-9]{3}$/.test(rev)) throw new Error("Invalid revision format");
 
   return { ppid, dpn, factoryCodeRaw, manufacturedDate, serial, rev };
+}
+
+function validateRackServiceTag(rackServiceTagRaw) {
+  const rackUpper = String(rackServiceTagRaw || "")
+    .trim()
+    .toUpperCase();
+  const genericInvalidError =
+    "Please provide a valid Rack Service Tag, not a filler value";
+
+  if (rackUpper.length !== 7) {
+    return "Rack Service Tag must be exactly 7 characters long";
+  }
+
+  if (!/^[A-Z0-9]{7}$/.test(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  if (!/[A-Z]/.test(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  if (!/[0-9]$/.test(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  const fillerTokens = [
+    "UNK",
+    "UNKN",
+    "N/A",
+    "NA",
+    "NONE",
+    "NULL",
+    "(NULL)",
+    "NODATA",
+    "NOINFO",
+    "TBD",
+    "TBA",
+    "N/R",
+    "BLANK",
+    "???",
+    "XXX",
+    "COOLANT",
+  ];
+
+  const manualBlocklist = new Set([
+    "1234567",
+    "2345678",
+    "COOLEAK",
+    "CWNC",
+    "COREWEAVENC",
+    "PHYSDMG",
+    "BADPALL",
+    "UNSURE",
+    "NOTGIVEN",
+  ]);
+
+  const rackForMatch = rackUpper.replace(/[\s/.-]/g, "");
+  const hasFiller = fillerTokens.some((tok) => rackForMatch.includes(tok));
+  if (hasFiller || manualBlocklist.has(rackForMatch)) {
+    return genericInvalidError;
+  }
+
+  const hasSequentialRun = (chunk, charset) => {
+    const indexes = [...chunk].map((ch) => charset.indexOf(ch));
+    if (indexes.some((idx) => idx === -1)) return false;
+    const len = charset.length;
+    const ascending = indexes
+      .slice(1)
+      .every((value, i) => value === (indexes[i] + 1) % len);
+    const descending = indexes
+      .slice(1)
+      .every((value, i) => value === (indexes[i] - 1 + len) % len);
+    return ascending || descending;
+  };
+
+  const containsSequentialFour = (value) => {
+    const alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const digits = "0123456789";
+    for (let i = 0; i <= value.length - 4; i += 1) {
+      const chunk = value.slice(i, i + 4);
+      if (hasSequentialRun(chunk, alpha)) return true;
+      if (hasSequentialRun(chunk, digits)) return true;
+    }
+    return false;
+  };
+
+  if (containsSequentialFour(rackUpper)) {
+    return genericInvalidError;
+  }
+
+  return null;
 }
 
 /**
@@ -3485,43 +3608,10 @@ router.post("/", authenticateToken, async (req, res) => {
         "Service Tag, Location, PPID, Rack Service Tag, Host MAC, and BMC MAC are required",
     });
   }
-  // normalize rack id
   const rackUpper = rack_service_tag.trim().toUpperCase();
-
-  // 1) must be exactly 7 chars
-  if (rackUpper.length !== 7) {
-    return res.status(400).json({
-      error: "Rack Service Tag must be exactly 7 characters long",
-    });
-  }
-
-  // 2) must NOT contain common filler words
-  const fillerTokens = [
-    "UNK",
-    "UNKN",
-    "N/A",
-    "NA",
-    "NONE",
-    "NULL",
-    "(NULL)",
-    "NODATA",
-    "NOINFO",
-    "TBD",
-    "TBA",
-    "N/R",
-    "BLANK",
-    "???",
-    "XXX",
-    "COOLANT",
-  ];
-
-  // to make matching easier, remove spaces and slashes for the check
-  const rackForMatch = rackUpper.replace(/[\s/.-]/g, "");
-  const hasFiller = fillerTokens.some((tok) => rackForMatch.includes(tok));
-  if (hasFiller) {
-    return res.status(400).json({
-      error: "Please provide a valid Rack Service Tag, not a filler value",
-    });
+  const rackValidationError = validateRackServiceTag(rackUpper);
+  if (rackValidationError) {
+    return res.status(400).json({ error: rackValidationError });
   }
 
   let parsed;
@@ -4735,11 +4825,57 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       serial,
       rev,
     } = rows[0];
+    const targetLocationResult = await client.query(
+      `SELECT name FROM location WHERE id = $1 LIMIT 1`,
+      [targetLocationId],
+    );
+    const targetLocationName = targetLocationResult.rows[0]?.name || "";
 
     let receivedAt = null;
 
-    // Moving into a resolved location requires new logs since latest Received.
-    if (RESOLVED_LOCATION_IDS.includes(targetLocationId)) {
+    if (targetLocationId === PENDING_L11_LOGS_LOCATION_ID) {
+      const pendingL11MoveRule = await getPendingL11MoveRule(client);
+
+      if (pendingL11MoveRule.enabled) {
+        const latestReceivedAt = await getLatestReceivedAt(client, system_id);
+
+        if (!latestReceivedAt) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "Cannot move into Pending L11 Logs: no Received timestamp found for this system.",
+          });
+        }
+
+        const receivedMs = new Date(latestReceivedAt).getTime();
+        const elapsedMs = Date.now() - receivedMs;
+        const requiredMs = pendingL11MoveRule.minutes * 60 * 1000;
+
+        if (!Number.isFinite(receivedMs)) {
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error:
+              "Cannot move into Pending L11 Logs: the latest Received timestamp is invalid.",
+          });
+        }
+
+        if (elapsedMs < requiredMs) {
+          const remainingMinutes = Math.ceil(
+            (requiredMs - Math.max(0, elapsedMs)) / 60000,
+          );
+          await client.query("ROLLBACK");
+          return res.status(400).json({
+            error: `Need to wait ${remainingMinutes} more minute(s) before moving into Pending L11 Logs so that any pending log downloads from MFT can complete.`,
+          });
+        }
+      }
+    }
+
+    // Moving into a resolved location or Pending MRB requires new evidence since latest Received.
+    if (
+      RESOLVED_LOCATION_IDS.includes(targetLocationId) ||
+      isPendingMrbLocationName(targetLocationName)
+    ) {
       const latestReceived = await client.query(
         `
         SELECT changed_at
@@ -4775,12 +4911,17 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       if (!hasNewFile) {
         await client.query("ROLLBACK");
         return res.status(400).json({
-          error: "Add evidence (logs or photos) before resolving this unit.",
+          error: isPendingMrbLocationName(targetLocationName)
+            ? "Add evidence (logs or photos) before moving to Pending MRB."
+            : "Add evidence (logs or photos) before resolving this unit.",
         });
       }
     }
 
-    if (targetLocationId === RMA_CID_LOCATION_ID) {
+    if (
+      targetLocationId === RMA_CID_LOCATION_ID ||
+      isPendingMrbLocationName(targetLocationName)
+    ) {
       const stSegment = safeServiceTagSegment(service_tag);
       const photosDir =
         PHOTO_UPLOAD_ROOT && stSegment
@@ -4792,7 +4933,9 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       if (!hasFreshPhotoEvidence) {
         await client.query("ROLLBACK");
         return res.status(400).json({
-          error: "Photo evidence of the damage must be uploaded before RMA CID.",
+          error: isPendingMrbLocationName(targetLocationName)
+            ? "Photo evidence of the damage must be uploaded before Pending MRB."
+            : "Photo evidence of the damage must be uploaded before RMA CID.",
         });
       }
     }
@@ -4805,6 +4948,26 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         error:
           "System is on a locked pallet — location changes are not allowed",
       });
+    }
+
+    if (targetLocationName === PENDING_MRB_LOCATION_NAME) {
+      const trackedBadParts = await client.query(
+        `
+        SELECT COUNT(*)::int AS count
+        FROM part_list
+        WHERE unit_id = $1
+          AND is_functional = false
+        `,
+        [system_id],
+      );
+      const badPartCount = trackedBadParts.rows[0]?.count || 0;
+      if (badPartCount <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          error:
+            "Track all estimated CID-damaged parts before moving to Pending MRB.",
+        });
+      }
     }
 
     // RMA validation
@@ -4990,38 +5153,9 @@ router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
   const stUpper = String(service_tag).trim().toUpperCase();
   const rackUpper = String(rack_service_tag).trim().toUpperCase();
 
-  // SAME checks as POST
-  if (rackUpper.length !== 7) {
-    return res.status(400).json({
-      error: "Rack Service Tag must be exactly 7 characters long",
-    });
-  }
-
-  const fillerTokens = [
-    "UNK",
-    "UNKN",
-    "N/A",
-    "NA",
-    "NONE",
-    "NULL",
-    "(NULL)",
-    "NODATA",
-    "NOINFO",
-    "TBD",
-    "TBA",
-    "N/R",
-    "BLANK",
-    "???",
-    "XXX",
-    "COOLANT",
-  ];
-
-  const rackForMatch = rackUpper.replace(/[\s/.-]/g, "");
-  const hasFiller = fillerTokens.some((tok) => rackForMatch.includes(tok));
-  if (hasFiller) {
-    return res.status(400).json({
-      error: "Please provide a valid Rack Service Tag, not a filler value",
-    });
+  const rackValidationError = validateRackServiceTag(rackUpper);
+  if (rackValidationError) {
+    return res.status(400).json({ error: rackValidationError });
   }
 
   const client = await db.connect();

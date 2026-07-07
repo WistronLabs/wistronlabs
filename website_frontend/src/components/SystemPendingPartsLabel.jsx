@@ -4,6 +4,12 @@ import { Document, Page, View, Text, StyleSheet } from "@react-pdf/renderer";
 
 const LABEL_WIDTH = 144;
 const LABEL_HEIGHT = 72;
+const formatPrintDate = () =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  }).format(new Date());
 
 const styles = StyleSheet.create({
   page: {
@@ -44,9 +50,17 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 8,
   },
+  footer: {
+    marginTop: "auto",
+    fontFamily: "Helvetica",
+    fontSize: 6,
+    color: "#374151",
+    textAlign: "left",
+  },
 });
 
-const SystemPendingPartsLabel = ({ parts = [] }) => {
+const SystemPendingPartsLabel = ({ parts = [], title = "Pending Parts" }) => {
+  const printDate = formatPrintDate();
   const names = (parts || [])
     .map((p) => (p || "").toString().trim())
     .filter(Boolean);
@@ -55,11 +69,11 @@ const SystemPendingPartsLabel = ({ parts = [] }) => {
     <Document>
       <Page
         size={{ width: LABEL_WIDTH, height: LABEL_HEIGHT }}
-        style={styles.page}
+          style={styles.page}
       >
         <View style={styles.canvas}>
           <View style={styles.card}>
-            <Text style={styles.title}>Pending Parts</Text>
+            <Text style={styles.title}>{title}</Text>
             {names.length ? (
               names.map((name, i) => (
                 <Text key={i} style={styles.item}>
@@ -69,6 +83,7 @@ const SystemPendingPartsLabel = ({ parts = [] }) => {
             ) : (
               <Text style={styles.empty}>No parts listed</Text>
             )}
+            <Text style={styles.footer}>Printed: {printDate}</Text>
           </View>
         </View>
       </Page>

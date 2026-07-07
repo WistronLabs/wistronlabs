@@ -44,6 +44,8 @@ function AdminPage() {
     updateRepairsAllowed,
     getL11LogReconciliationMode,
     updateL11LogReconciliationMode,
+    getPendingL11MoveRule,
+    updatePendingL11MoveRule,
   } = useApi();
   const [users, setUsers] = useState([]);
   const [baselineUsers, setBaselineUsers] = useState([]); // snapshot to diff from
@@ -106,6 +108,14 @@ function AdminPage() {
   const [l11LogReconciliationModeLoading, setL11LogReconciliationModeLoading] =
     useState(false);
   const [l11LogReconciliationModeSaving, setL11LogReconciliationModeSaving] =
+    useState(false);
+  const [pendingL11MoveRule, setPendingL11MoveRule] = useState({
+    enabled: false,
+    minutes: 30,
+  });
+  const [pendingL11MoveRuleLoading, setPendingL11MoveRuleLoading] =
+    useState(false);
+  const [pendingL11MoveRuleSaving, setPendingL11MoveRuleSaving] =
     useState(false);
 
   const normalizeDpns = (list = []) =>
@@ -247,6 +257,29 @@ function AdminPage() {
         console.error("Failed to load repairs_allowed:", e);
       } finally {
         if (alive) setRepairsAllowedLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setPendingL11MoveRuleLoading(true);
+        const res = await getPendingL11MoveRule();
+        if (!alive) return;
+        setPendingL11MoveRule({
+          enabled: !!res?.pending_l11_move_rule?.enabled,
+          minutes: Number.parseInt(res?.pending_l11_move_rule?.minutes, 10) || 30,
+        });
+      } catch (e) {
+        if (!alive) return;
+        console.error("Failed to load pending_l11_move_rule:", e);
+      } finally {
+        if (alive) setPendingL11MoveRuleLoading(false);
       }
     })();
     return () => {
@@ -1457,6 +1490,104 @@ function AdminPage() {
     }
   };
 
+  const handlePendingL11MoveRuleToggle = async () => {
+    const nextValue = !pendingL11MoveRule.enabled;
+    const confirmed = await confirm({
+      title: nextValue
+        ? "Enable Pending L11 Delay"
+        : "Disable Pending L11 Delay",
+      message: nextValue
+        ? "Require a wait period after a unit returns to Received before it can move into Pending L11 Logs?"
+        : "Remove the wait-period restriction for moves into Pending L11 Logs?",
+      confirmText: nextValue ? "Enable" : "Disable",
+      cancelText: "Cancel",
+      confirmClass: nextValue
+        ? "bg-indigo-600 text-white hover:bg-indigo-700"
+        : "bg-gray-700 text-white hover:bg-gray-800",
+      cancelClass: "bg-gray-200 text-gray-700 hover:bg-gray-300",
+    });
+    if (!confirmed) return;
+
+    try {
+      setPendingL11MoveRuleSaving(true);
+      const res = await updatePendingL11MoveRule({
+        ...pendingL11MoveRule,
+        enabled: nextValue,
+      });
+      const nextRule = res?.pending_l11_move_rule || {
+        enabled: nextValue,
+        minutes: pendingL11MoveRule.minutes,
+      };
+      setPendingL11MoveRule({
+        enabled: !!nextRule.enabled,
+        minutes: Number.parseInt(nextRule.minutes, 10) || 30,
+      });
+      showToast(
+        `Pending L11 delay ${nextRule.enabled ? "enabled" : "disabled"}`,
+        "success",
+        2200,
+        "bottom-right",
+      );
+    } catch (e) {
+      showToast(
+        e?.body?.error ||
+          e?.message ||
+          "Failed to update Pending L11 delay setting",
+        "error",
+        3200,
+        "bottom-right",
+      );
+    } finally {
+      setPendingL11MoveRuleSaving(false);
+    }
+  };
+
+  const handlePendingL11MoveRuleMinutesSave = async () => {
+    const parsedMinutes = Number.parseInt(pendingL11MoveRule.minutes, 10);
+    if (!Number.isInteger(parsedMinutes) || parsedMinutes <= 0) {
+      showToast(
+        "Pending L11 delay minutes must be a positive whole number.",
+        "error",
+        3200,
+        "bottom-right",
+      );
+      return;
+    }
+
+    try {
+      setPendingL11MoveRuleSaving(true);
+      const res = await updatePendingL11MoveRule({
+        ...pendingL11MoveRule,
+        minutes: parsedMinutes,
+      });
+      const nextRule = res?.pending_l11_move_rule || {
+        enabled: pendingL11MoveRule.enabled,
+        minutes: parsedMinutes,
+      };
+      setPendingL11MoveRule({
+        enabled: !!nextRule.enabled,
+        minutes: Number.parseInt(nextRule.minutes, 10) || 30,
+      });
+      showToast(
+        "Pending L11 delay updated",
+        "success",
+        2200,
+        "bottom-right",
+      );
+    } catch (e) {
+      showToast(
+        e?.body?.error ||
+          e?.message ||
+          "Failed to update Pending L11 delay minutes",
+        "error",
+        3200,
+        "bottom-right",
+      );
+    } finally {
+      setPendingL11MoveRuleSaving(false);
+    }
+  };
+
   return (
     <>
       <Toast />
@@ -1544,6 +1675,77 @@ function AdminPage() {
                   ? "Disable Reconciliation"
                   : "Enable Reconciliation"}
             </button>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-indigo-200 bg-indigo-50/70 p-4">
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-gray-900">
+                  Pending L11 Move Delay
+                </div>
+                <p className="mt-1 text-sm text-gray-700">
+                  Prevents moves into Pending L11 Logs for a configurable amount
+                  of time after a unit is moved back into Received.
+                  <br />
+                  Gives pending MFT log downloads time to complete.
+                </p>
+                <p className="mt-2 text-xs font-medium uppercase tracking-wide text-indigo-700">
+                  {pendingL11MoveRuleLoading
+                    ? "Loading current state..."
+                    : pendingL11MoveRule.enabled
+                      ? `Enabled for ${pendingL11MoveRule.minutes} minute(s)`
+                      : "Currently disabled"}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={pendingL11MoveRuleLoading || pendingL11MoveRuleSaving}
+                onClick={handlePendingL11MoveRuleToggle}
+                className={`inline-flex items-center justify-center rounded-xl px-4 py-2 text-sm font-semibold text-white shadow transition disabled:opacity-50 ${
+                  pendingL11MoveRule.enabled
+                    ? "bg-gray-700 hover:bg-gray-800"
+                    : "bg-indigo-600 hover:bg-indigo-700"
+                }`}
+              >
+                {pendingL11MoveRuleSaving
+                  ? "Saving..."
+                  : pendingL11MoveRule.enabled
+                    ? "Disable Delay"
+                    : "Enable Delay"}
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="flex max-w-xs flex-col gap-1 text-sm text-gray-700">
+                <span className="font-medium text-gray-900">Wait time (minutes)</span>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  disabled={pendingL11MoveRuleLoading || pendingL11MoveRuleSaving}
+                  value={pendingL11MoveRule.minutes}
+                  onChange={(e) =>
+                    setPendingL11MoveRule((prev) => ({
+                      ...prev,
+                      minutes: e.target.value,
+                    }))
+                  }
+                  className="rounded-xl border border-indigo-200 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-200 disabled:opacity-60"
+                />
+              </label>
+
+              <button
+                type="button"
+                disabled={pendingL11MoveRuleLoading || pendingL11MoveRuleSaving}
+                onClick={handlePendingL11MoveRuleMinutesSave}
+                className="inline-flex items-center justify-center rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow transition hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {pendingL11MoveRuleSaving ? "Saving..." : "Save Minutes"}
+              </button>
+            </div>
           </div>
         </section>
 

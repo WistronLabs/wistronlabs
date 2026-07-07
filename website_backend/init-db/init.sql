@@ -15,7 +15,8 @@ INSERT INTO location (name) VALUES
 ('RMA CID'),
 ('RMA PID'),
 ('Sent to L11'),
-('Sent for Dell Repair');
+('Sent for Dell Repair'),
+('Pending MRB');
 
 -- 📄 Create users table
 CREATE TABLE users (
@@ -37,6 +38,12 @@ VALUES ('deleted_user@example.com', '');
 
 INSERT INTO global_settings (key, value_json)
 VALUES ('repairs_allowed', 'true'::jsonb);
+
+INSERT INTO global_settings (key, value_json)
+VALUES (
+  'pending_l11_move_rule',
+  '{"enabled": false, "minutes": 30}'::jsonb
+);
 
 -- 📄 Create factory table
 CREATE TABLE factory (
