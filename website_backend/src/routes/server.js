@@ -7,6 +7,11 @@ const router = express.Router();
 
 const REPAIRS_ALLOWED_KEY = "repairs_allowed";
 const L11_LOG_RECONCILIATION_MODE_KEY = "l11_log_reconciliation_mode";
+const PENDING_L11_MOVE_RULE_KEY = "pending_l11_move_rule";
+const DEFAULT_PENDING_L11_MOVE_RULE = {
+  enabled: false,
+  minutes: 30,
+};
 
 async function getBooleanSettingValue(key, defaultValue) {
   const { rows } = await db.query(
@@ -39,12 +44,59 @@ async function upsertBooleanSettingValue(key, value) {
     : !!rows[0]?.value_json;
 }
 
+function normalizePendingL11MoveRule(value) {
+  const raw = value && typeof value === "object" ? value : {};
+  const parsedMinutes = Number.parseInt(raw.minutes, 10);
+  const minutes = Number.isInteger(parsedMinutes) && parsedMinutes > 0
+    ? parsedMinutes
+    : DEFAULT_PENDING_L11_MOVE_RULE.minutes;
+
+  return {
+    enabled: !!raw.enabled,
+    minutes,
+  };
+}
+
+async function getJsonSettingValue(key, defaultValue) {
+  const { rows } = await db.query(
+    `SELECT value_json FROM global_settings WHERE key = $1 LIMIT 1`,
+    [key],
+  );
+  if (!rows.length) return defaultValue;
+  return rows[0]?.value_json ?? defaultValue;
+}
+
+async function upsertJsonSettingValue(key, value) {
+  const { rows } = await db.query(
+    `
+    INSERT INTO global_settings (key, value_json, updated_at)
+    VALUES ($1, $2::jsonb, NOW())
+    ON CONFLICT (key)
+    DO UPDATE SET
+      value_json = EXCLUDED.value_json,
+      updated_at = NOW()
+    RETURNING value_json
+    `,
+    [key, JSON.stringify(value)],
+  );
+
+  return rows[0]?.value_json ?? value;
+}
+
 async function getRepairsAllowedValue() {
   return getBooleanSettingValue(REPAIRS_ALLOWED_KEY, true);
 }
 
 async function getL11LogReconciliationModeValue() {
   return getBooleanSettingValue(L11_LOG_RECONCILIATION_MODE_KEY, false);
+}
+
+async function getPendingL11MoveRuleValue() {
+  const value = await getJsonSettingValue(
+    PENDING_L11_MOVE_RULE_KEY,
+    DEFAULT_PENDING_L11_MOVE_RULE,
+  );
+  return normalizePendingL11MoveRule(value);
 }
 
 // API route for server time and CST/CDT
@@ -159,6 +211,62 @@ router.patch(
       return res
         .status(500)
         .json({ error: "Failed to update l11_log_reconciliation_mode" });
+    }
+  },
+);
+
+router.get(
+  "/pending_l11_move_rule",
+  async (_req, res) => {
+    try {
+      const pending_l11_move_rule = await getPendingL11MoveRuleValue();
+      return res.json({ pending_l11_move_rule });
+    } catch (err) {
+      console.error("Failed to fetch pending_l11_move_rule:", err);
+      return res
+        .status(500)
+        .json({ error: "Failed to fetch pending_l11_move_rule" });
+    }
+  },
+);
+
+router.patch(
+  "/pending_l11_move_rule",
+  authenticateToken,
+  ensureAdmin,
+  async (req, res) => {
+    const pendingL11MoveRule = req.body?.pending_l11_move_rule;
+    const enabled = pendingL11MoveRule?.enabled;
+    const parsedMinutes = Number.parseInt(pendingL11MoveRule?.minutes, 10);
+
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({
+        error: "pending_l11_move_rule.enabled must be a boolean",
+      });
+    }
+
+    if (!Number.isInteger(parsedMinutes) || parsedMinutes <= 0) {
+      return res.status(400).json({
+        error: "pending_l11_move_rule.minutes must be a positive integer",
+      });
+    }
+
+    try {
+      const value = await upsertJsonSettingValue(
+        PENDING_L11_MOVE_RULE_KEY,
+        normalizePendingL11MoveRule({
+          enabled,
+          minutes: parsedMinutes,
+        }),
+      );
+      return res.json({
+        pending_l11_move_rule: normalizePendingL11MoveRule(value),
+      });
+    } catch (err) {
+      console.error("Failed to update pending_l11_move_rule:", err);
+      return res
+        .status(500)
+        .json({ error: "Failed to update pending_l11_move_rule" });
     }
   },
 );

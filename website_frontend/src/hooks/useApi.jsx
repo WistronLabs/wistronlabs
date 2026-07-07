@@ -218,6 +218,18 @@ function useApi() {
         l11_log_reconciliation_mode: !!l11_log_reconciliation_mode,
       }),
     });
+  const getPendingL11MoveRule = () => fetchJSON(`/server/pending_l11_move_rule`);
+  const updatePendingL11MoveRule = (pending_l11_move_rule) =>
+    fetchJSON(`/server/pending_l11_move_rule`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pending_l11_move_rule: {
+          enabled: !!pending_l11_move_rule?.enabled,
+          minutes: pending_l11_move_rule?.minutes,
+        },
+      }),
+    });
 
   const createSystem = (payload) =>
     fetchJSON("/systems", {
@@ -980,6 +992,8 @@ function useApi() {
     updateRepairsAllowed,
     getL11LogReconciliationMode,
     updateL11LogReconciliationMode,
+    getPendingL11MoveRule,
+    updatePendingL11MoveRule,
     getSnapshot,
     updateSystemPPID,
     updateSystemDOA,

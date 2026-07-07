@@ -14,6 +14,12 @@ import { generateQRPNG } from "../utils/generateQR";
 
 const LABEL_WIDTH = 144;
 const LABEL_HEIGHT = 72;
+const formatPrintDate = () =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  }).format(new Date());
 
 const getDpnForLabel = (system = {}) => {
   const explicit = String(system.dpn || system.dpn_name || "").trim();
@@ -84,6 +90,16 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 10,
     top: 8,
+  },
+  footer_text: {
+    position: "absolute",
+    left: 7,
+    bottom: 3,
+    width: 80,
+    fontSize: 6,
+    fontFamily: "Helvetica",
+    color: "#374151",
+    lineHeight: 1.1,
   },
 });
 
@@ -236,6 +252,7 @@ function ShapeBadge({ shape, palletNumber, size = 18 }) {
 }
 
 const SystemRMALabel = ({ systems }) => {
+  const printDate = formatPrintDate();
   return (
     <Document>
       {systems.map((system, index) => {
@@ -265,6 +282,7 @@ const SystemRMALabel = ({ systems }) => {
               <Text style={styles.dpn_text}>{dpnConfigText}</Text>
 
               <Text style={styles.factory_text}>{system.dell_customer}</Text>
+              <Text style={styles.footer_text}>Printed: {printDate}</Text>
             </View>
           </Page>
         );

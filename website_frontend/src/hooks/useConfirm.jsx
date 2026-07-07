@@ -62,7 +62,9 @@ export default function useConfirm() {
           <h2 className="text-lg sm:text-xl font-semibold text-gray-800">
             {config.title}
           </h2>
-          <p className="text-gray-700 text-sm sm:text-base">{config.message}</p>
+          <p className="whitespace-pre-line text-gray-700 text-sm sm:text-base">
+            {config.message}
+          </p>
           <div className="flex flex-wrap justify-end gap-2">
             <button
               type="button"

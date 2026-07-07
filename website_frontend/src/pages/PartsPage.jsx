@@ -13,10 +13,13 @@ const buildGroupedPartOptions = (parts = []) => {
   const byCat = new Map();
   parts.forEach((p) => {
     const cat = p.category_name || "Uncategorized";
+    const dpn = (p.dpn || "").trim();
     if (!byCat.has(cat)) byCat.set(cat, []);
     byCat.get(cat).push({
       value: p.id,
-      label: p.name,
+      label: dpn ? `${p.name} [${dpn}]` : p.name,
+      rawLabel: p.name,
+      dpn,
       category_name: cat,
       part_category_id: p.part_category_id,
     });
@@ -33,12 +36,19 @@ const filterPartOption = (option, rawInput) => {
   if (!rawInput) return true;
   const term = rawInput.toLowerCase();
   const label = (option?.label || "").toLowerCase();
+  const rawLabel = (option?.data?.rawLabel ?? option?.rawLabel ?? "").toLowerCase();
   const cat = (
     option?.data?.category_name ??
     option?.category_name ??
     ""
   ).toLowerCase();
-  return label.includes(term) || cat.includes(term);
+  const dpn = (option?.data?.dpn ?? option?.dpn ?? "").toLowerCase();
+  return (
+    label.includes(term) ||
+    rawLabel.includes(term) ||
+    cat.includes(term) ||
+    dpn.includes(term)
+  );
 };
 
 const PartOption = (props) => {

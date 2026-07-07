@@ -13,6 +13,12 @@ const LABEL_WIDTH = 144;
 const LABEL_HEIGHT = 72;
 const SCALE = 0.9;
 const S = (n) => Math.round(n * SCALE * 100) / 100; // neat rounding
+const formatPrintDate = () =>
+  new Intl.DateTimeFormat("en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    year: "numeric",
+  }).format(new Date());
 
 const styles = StyleSheet.create({
   // Make the page act like a centering canvas
@@ -99,9 +105,20 @@ const styles = StyleSheet.create({
     fontFamily: "Helvetica",
     lineHeight: 1.2,
   },
+  footer_text: {
+    position: "absolute",
+    left: S(7),
+    bottom: S(2),
+    width: S(120),
+    fontSize: S(6),
+    fontFamily: "Helvetica",
+    color: "#374151",
+    lineHeight: 1.1,
+  },
 });
 
 const SystemPDFLabel = ({ systems }) => {
+  const printDate = formatPrintDate();
   return (
     <Document>
       {systems.map((system, index) => {
@@ -127,6 +144,8 @@ const SystemPDFLabel = ({ systems }) => {
                 <Text style={styles.dell_customer_text}>
                   {system.dell_customer}
                 </Text>
+
+                <Text style={styles.footer_text}>Printed: {printDate}</Text>
 
                 <Image style={styles.qr} src={qrDataUrl} />
               </View>
