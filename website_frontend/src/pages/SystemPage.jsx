@@ -245,18 +245,27 @@ function SystemPage() {
     );
     return latestReceivedEntry?.changed_at || null;
   }, [history]);
+  const latestReceivedMs = useMemo(
+    () => Date.parse(String(latestReceivedAt || "")),
+    [latestReceivedAt],
+  );
+  const wasPartUpdatedSinceLatestReceived = (item) => {
+    if (!Number.isFinite(latestReceivedMs)) return true;
+    const updatedMs = Date.parse(
+      String(item?.updated_at || item?.created_at || ""),
+    );
+    return Number.isFinite(updatedMs) && updatedMs > latestReceivedMs;
+  };
   const hasFreshPhotoEvidenceForCid = useMemo(() => {
-    const latestReceivedMs = Date.parse(String(latestReceivedAt || ""));
     if (!Number.isFinite(latestReceivedMs)) return false;
 
     return (photos || []).some((photo) => {
       const photoMs = Date.parse(String(photo?.modified_at || ""));
       return Number.isFinite(photoMs) && photoMs > latestReceivedMs;
     });
-  }, [latestReceivedAt, photos]);
+  }, [latestReceivedMs, photos]);
   const pendingL11MoveRuleRemainingMinutes = useMemo(() => {
     if (!pendingL11MoveRule.enabled) return 0;
-    const latestReceivedMs = Date.parse(String(latestReceivedAt || ""));
     if (!Number.isFinite(latestReceivedMs)) return 0;
 
     const requiredMs = Number(pendingL11MoveRule.minutes || 0) * 60 * 1000;
@@ -266,7 +275,7 @@ function SystemPage() {
       0,
       Math.ceil((requiredMs - (Date.now() - latestReceivedMs)) / 60000),
     );
-  }, [latestReceivedAt, pendingL11MoveRule]);
+  }, [latestReceivedMs, pendingL11MoveRule]);
   const hasSystemFolderEvidence =
     Number(system?.l10_logs_total_size_bytes || 0) > 0;
 
@@ -798,6 +807,41 @@ function SystemPage() {
     );
   }, [unitParts, goodActionByPPID, goodBlocks, replacementByOldPPID]);
 
+  const willHaveRecentGoodAfterSubmit = useMemo(() => {
+    const goodInUnitNow = new Set(
+      (unitParts || [])
+        .filter((i) => i.is_functional === true && wasPartUpdatedSinceLatestReceived(i))
+        .map((i) => normPPID(i.ppid)),
+    );
+
+    const gaEntries = Object.entries(goodActionByPPID).filter(
+      ([, cfg]) => !!cfg?.action && !!cfg?.original_bad_ppid,
+    );
+    for (const [g] of gaEntries) goodInUnitNow.delete(normPPID(g));
+
+    const addFromGoodBlocks = goodBlocks.filter((b) => {
+      if (!b.part_id || !(b.current_bad_ppid || "").trim()) return false;
+
+      if (b.ppid === PULL_FROM_UNIT_VALUE) {
+        return !!(b.donor_ppid || "").trim();
+      }
+      return !!(b.ppid || "").trim();
+    }).length;
+
+    const addFromReplacements =
+      Object.values(replacementByOldPPID).filter(Boolean).length;
+
+    return (
+      goodInUnitNow.size > 0 || addFromGoodBlocks > 0 || addFromReplacements > 0
+    );
+  }, [
+    unitParts,
+    goodActionByPPID,
+    goodBlocks,
+    replacementByOldPPID,
+    latestReceivedMs,
+  ]);
+
   useEffect(() => {
     if (!showRootCauseControls) {
       setSelectedRootCauseId(null);
@@ -1245,14 +1289,6 @@ function SystemPage() {
   const { openDetails, modal } = useDetailsModal(showToast, fetchData);
 
   // at top with other memos
-  const hasAnyBadReplacementChosen = useMemo(
-    () =>
-      Object.values(replacementByOldPPID || {}).some(
-        (v) => (v || "").trim() !== "",
-      ),
-    [replacementByOldPPID],
-  );
-
   const select40Styles = useMemo(
     () => ({
       control: (base, state) => ({
@@ -1954,6 +1990,52 @@ function SystemPage() {
     pendingBlocks,
     goodActionByPPID,
   ]);
+  const willHaveRecentBadAfterSubmit = useMemo(() => {
+    const bad = new Set(
+      (unitParts || [])
+        .filter((i) => i.is_functional === false && wasPartUpdatedSinceLatestReceived(i))
+        .map((i) => normPPID(i.ppid)),
+    );
+
+    for (const p of toRemovePPIDs) bad.delete(normPPID(p));
+
+    for (const oldBad of Object.keys(replacementByOldPPID || {})) {
+      if (replacementByOldPPID[oldBad]) bad.delete(normPPID(oldBad));
+    }
+
+    for (const b of pendingBlocks) {
+      if (b.part_id) bad.add(`TMP-${b.id}`);
+    }
+
+    for (const cfg of Object.values(goodActionByPPID || {})) {
+      if (cfg?.action && (cfg.original_bad_ppid || "").trim()) {
+        bad.add(normPPID(cfg.original_bad_ppid));
+      }
+    }
+
+    return bad.size > 0;
+  }, [
+    unitParts,
+    toRemovePPIDs,
+    replacementByOldPPID,
+    pendingBlocks,
+    goodActionByPPID,
+    latestReceivedMs,
+  ]);
+  const hasAnyRecentBadReplacementChosen = useMemo(
+    () =>
+      Object.entries(replacementByOldPPID || {}).some(
+        ([oldBadPPID, replPPID]) =>
+          !!replPPID &&
+          (unitParts || []).some(
+            (item) =>
+              item.is_functional === false &&
+              wasPartUpdatedSinceLatestReceived(item) &&
+              normPPID(item.ppid) === normPPID(oldBadPPID),
+          ),
+      ),
+    [replacementByOldPPID, unitParts, latestReceivedMs],
+  );
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -2055,20 +2137,13 @@ function SystemPage() {
     }
 
     const movingToRMA = RMA_LOCATION_IDS.includes(toId);
-    if (movingToRMA && willHaveGoodAfterSubmit) {
+    if (movingToRMA && willHaveRecentGoodAfterSubmit) {
       setFormError(
         "Remove or return all good parts before moving this unit to an RMA location.",
       );
       return;
     }
 
-    const badInUnit = (unitParts || []).filter(
-      (i) => i.is_functional === false,
-    );
-    const remainingBad = badInUnit.filter(
-      (item) =>
-        !toRemovePPIDs.has(item.ppid) && !replacementByOldPPID[item.ppid], // will be replaced (moved out) this submit
-    ).length;
     // Build part-change note lines before we mutate anything
     const toCreate = pendingBlocks.filter((b) => b.part_id);
     const removing = Array.from(toRemovePPIDs || []);
@@ -2218,7 +2293,7 @@ function SystemPage() {
         : note
     ).replace(/\r\n|\r|\n/g, ". ");
 
-    if (movingToL10 && remainingBad > 0 && !hasAnyBadReplacementChosen) {
+    if (movingToL10 && willHaveRecentBadAfterSubmit && !hasAnyRecentBadReplacementChosen) {
       setFormError(
         "Add a Replacement PPID for at least one defective part (or resolve/remove all) before moving to In L10.",
       );
@@ -3459,7 +3534,8 @@ function SystemPage() {
                           const isPendingL11Destination =
                             loc.name === "Pending L11 Logs";
 
-                          const rmaBlocked = isRMA && willHaveGoodAfterSubmit;
+                          const rmaBlocked =
+                            isRMA && willHaveRecentGoodAfterSubmit;
                           const cidPhotoBlocked =
                             isRmaCid && !hasFreshPhotoEvidenceForCid;
                           const evidenceBlocked =
@@ -3478,8 +3554,8 @@ function SystemPage() {
                           // Allow In L10 when at least one bad has a Replacement PPID chosen
                           const l10Blocked =
                             isL10 &&
-                            willHaveBadAfterSubmit &&
-                            !hasAnyBadReplacementChosen;
+                            willHaveRecentBadAfterSubmit &&
+                            !hasAnyRecentBadReplacementChosen;
                           const l11Blocked =
                             isPendingL11Destination && l11LogsAlreadyPresent;
                           const disabled =
@@ -4485,18 +4561,18 @@ function SystemPage() {
                                                 selectedMatch
                                               ) {
                                                 return (
-                                                  <div className="h-10 rounded-md border border-gray-300 bg-gray-50 px-3 flex items-center text-xs sm:text-sm font-mono">
-                                                    <span>
+                                                  <div className="h-10 rounded-md border border-gray-300 bg-gray-50 px-3 flex items-center overflow-x-auto text-xs sm:text-sm font-mono">
+                                                    <span className="whitespace-nowrap">
                                                       {selectedMatch.ppid}
+                                                      {selectedMatch.owner_service_tag && (
+                                                        <>
+                                                          {" - "}
+                                                          {
+                                                            selectedMatch.owner_service_tag
+                                                          }
+                                                        </>
+                                                      )}
                                                     </span>
-                                                    {selectedMatch.owner_service_tag && (
-                                                      <span className="ml-2 text-gray-500">
-                                                        –{" "}
-                                                        {
-                                                          selectedMatch.owner_service_tag
-                                                        }
-                                                      </span>
-                                                    )}
                                                   </div>
                                                 );
                                               }
@@ -4786,10 +4862,10 @@ function SystemPage() {
                                   <div className="mt-2 space-y-1 text-[10px] text-gray-500">
                                     {isCrossSwap && (
                                       <p className="italic">
-                                        This good part is currently borrowed
-                                        from another active unit. When you
-                                        submit, it will be reconciled with that
-                                        unit using the selected Original PPID.
+                                        This good part came from another active
+                                        unit. Submitting will move the selected
+                                        Original PPID back into this unit and
+                                        reconcile the swap.
                                       </p>
                                     )}
 
