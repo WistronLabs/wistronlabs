@@ -501,7 +501,7 @@ menuentry "${wis_folder}L10 Image" {
 }
 EOF
       ;;
-    2|4|6|A|A1|B|H1)
+    2|4|6|A|A1|B|H1|I|E)
       tee "$out" >/dev/null <<EOF
 set timeout=5
 

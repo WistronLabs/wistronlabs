@@ -642,7 +642,7 @@ if [[ "$CONFIG" == "2" || "$CONFIG" == "4" || "$CONFIG" == "6" ]]; then
 elif [[ "$CONFIG" == "7" ]]; then
     MASTER_MODULE_LIST=("${GB200_MASTER_MODULE_LIST[@]}")
      DIAG_FILE="diag_629-24975-0000-FLD-43749_rev13.tgz"
-elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "I" ]]; then
+elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "I" || "$CONFIG" == "E" ]]; then
     MASTER_MODULE_LIST=("${GB300_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-43538.tgz"
 elif [[ "$CONFIG" == "F" ]]; then
@@ -781,6 +781,10 @@ case "$CONFIG" in
             "Cx8CpuLoopback"
             "BF3PcieInterfaceTraffic"
         );;
+    E)
+        SKIPPED_MODULES=(
+            "BF3PcieInterfaceTraffic"
+        );;
     *)
         echo "Configuration $CONFIG is not valid on this server"
         exit 1
@@ -906,7 +910,7 @@ menuentry "${WIS_FOLDER}L10 Image" {
 }
 EOF
     ;;
-  2|4|6|A|B|I)
+  2|4|6|A|B|I|E)
     tee "$OUT" >/dev/null <<EOF
 set timeout=5
 

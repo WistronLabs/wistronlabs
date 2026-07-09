@@ -90,7 +90,7 @@ router.get("/", async (req, res) => {
         OR p.name ILIKE $${idx}
         OR p.dpn ILIKE $${idx}
         OR s.service_tag ILIKE $${idx}
-        OR pc.name ILIKE $${idx})`
+        OR pc.name ILIKE $${idx})`,
     );
   }
 
@@ -182,7 +182,7 @@ router.get("/", async (req, res) => {
       ${whereSQL}
       ORDER BY pl.created_at DESC
       `,
-      params
+      params,
     );
 
     res.json(rows);
@@ -279,7 +279,7 @@ router.get("/:ppid", async (req, res) => {
 
       WHERE pl.ppid = $1
       `,
-      [ppid]
+      [ppid],
     );
 
     if (!rows.length)
@@ -322,7 +322,7 @@ router.post("/:ppid", authenticateToken, async (req, res) => {
         const normalizedTag = String(unit_service_tag).trim().toUpperCase();
         const sys = await db.query(
           `SELECT id FROM system WHERE service_tag = $1`,
-          [normalizedTag]
+          [normalizedTag],
         );
         if (!sys.rows.length) {
           return res
@@ -351,7 +351,7 @@ router.post("/:ppid", authenticateToken, async (req, res) => {
         last_unit_id ?? null,
         !!is_functional,
         !!replacement_defective,
-      ]
+      ],
     );
 
     res.status(201).json(rows[0]);
@@ -415,7 +415,7 @@ router.patch("/:ppid", authenticateToken, async (req, res) => {
       FROM part_list
       WHERE ppid = $1
       `,
-      [current]
+      [current],
     );
 
     if (!existingResult.rows.length) {
@@ -439,7 +439,7 @@ router.patch("/:ppid", authenticateToken, async (req, res) => {
         const normalizedTag = String(unit_service_tag).trim().toUpperCase();
         const sys = await db.query(
           `SELECT id FROM system WHERE service_tag = $1`,
-          [normalizedTag]
+          [normalizedTag],
         );
         if (!sys.rows.length) {
           return res
@@ -512,7 +512,7 @@ router.patch("/:ppid", authenticateToken, async (req, res) => {
    SET ${fields.join(", ")}
    WHERE ppid = $${vals.length}
    RETURNING *`,
-      vals
+      vals,
     );
 
     if (!rows.length)
@@ -541,7 +541,7 @@ router.delete("/:ppid", authenticateToken, async (req, res) => {
   try {
     const { rows } = await db.query(
       `DELETE FROM part_list WHERE ppid = $1 AND place = 'inventory' RETURNING ppid`,
-      [ppid]
+      [ppid],
     );
     if (!rows.length) {
       return res.status(409).json({
