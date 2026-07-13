@@ -74,6 +74,8 @@ Usage:
 
 Notes:
 - Only PROD targets (is_dev=0) are allowed.
+- `all` deploys only PROD backend-mode targets (`deploy_mode=backend`).
+- Field targets must be deployed explicitly by site name.
 - Frontend is built per site (env differs per site).
 - Backend deploy is per site.
 
@@ -1101,7 +1103,9 @@ esac
 targets=()
 if [[ "$cmd" == "all" ]]; then
   for k in "${!HOST[@]}"; do
-    [[ "${IS_DEV[$k]:-}" == "0" ]] && targets+=("$k")
+    [[ "${IS_DEV[$k]:-}" == "0" ]] || continue
+    is_backend_deploy_target "$k" || continue
+    targets+=("$k")
   done
   IFS=$'\n' targets=($(printf "%s\n" "${targets[@]}" | sort)); unset IFS
 else
