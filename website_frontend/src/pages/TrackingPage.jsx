@@ -133,7 +133,7 @@ function TrackingPage() {
         ]);
 
       const activeLocationNames = locationsData
-        .filter((loc) => activeLocationIDs.includes(loc.id))
+        .filter((loc) => systemLocationChartIDs.includes(loc.id))
         .map((loc) => loc.name);
 
       // Base time in server’s local timezone
