@@ -18,6 +18,8 @@ set -euo pipefail
 #     * uploads dist/* to /var/www/html
 # - Backend:
 #     * rsync backend code (preserving remote .env + env/*)
+#     * creates a custom-format PostgreSQL backup before every existing-site deploy
+#       at /opt/docker/database_backups/<SITE>/
 #     * bootstraps missing backend dir by:
 #          - seeding runtime config if missing (SMTP_PASS prompted)
 #          - bootstrapping DB from another existing PROD site (pg_dump|psql stream)
@@ -668,6 +670,59 @@ ensure_db_running_remote() {
   remote_run "$host" "cd '$remote_dir' && (docker compose -p '$project' up -d db >/dev/null 2>&1 || sudo -n docker compose -p '$project' up -d db >/dev/null 2>&1 || true)"
 }
 
+backup_database_on_remote() {
+  local host="$1" site="$2"
+
+  echo ""
+  echo "------------------------------------------------------------"
+  echo "Database backup"
+  echo "  Site : $site"
+  echo "  Host : $host"
+  echo "  Path : /opt/docker/database_backups/$site"
+  echo "------------------------------------------------------------"
+
+  ssh -T $SSH_OPTS "$USER@$host" "LOCATION='$site' bash -s" <<'REMOTE'
+set -euo pipefail
+
+LOCATION="${LOCATION:?}"
+CONTAINER_NAME="website_backend-db-1"
+DB_NAME="mydb"
+BACKUP_DIR="/opt/docker/database_backups/${LOCATION}"
+TIMESTAMP="$(date '+%Y%m%d_%H%M%S')"
+BACKUP_FILE="${BACKUP_DIR}/db_backup_${LOCATION}_${CONTAINER_NAME}_${TIMESTAMP}.dump"
+
+DOCKER_BIN="docker"
+if ! command -v docker >/dev/null 2>&1 && command -v /usr/bin/docker >/dev/null 2>&1; then DOCKER_BIN="/usr/bin/docker"; fi
+SUDO=""
+if ! "$DOCKER_BIN" info >/dev/null 2>&1; then
+  if sudo -n "$DOCKER_BIN" info >/dev/null 2>&1; then SUDO="sudo -n"; else
+    echo "Error: cannot run docker here" >&2
+    exit 1
+  fi
+fi
+d(){ $SUDO "$DOCKER_BIN" "$@"; }
+
+if ! d ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
+  echo "Error: container '${CONTAINER_NAME}' is not running." >&2
+  exit 1
+fi
+
+mkdir -p "$BACKUP_DIR"
+echo "Creating backup of database '${DB_NAME}'..."
+echo "Backup file: ${BACKUP_FILE}"
+
+if ! d exec "$CONTAINER_NAME" \
+  pg_dump -U postgres -d "$DB_NAME" --format=custom --no-owner --no-acl \
+  > "$BACKUP_FILE"; then
+  echo "Error: database backup failed." >&2
+  rm -f "$BACKUP_FILE"
+  exit 1
+fi
+
+echo "Backup completed successfully."
+REMOTE
+}
+
 backend_apply_migrations_on_remote() {
   local host="$1" remote_dir="$2" project="$3"
 
@@ -967,6 +1022,11 @@ backend_deploy_one() {
   echo "============================================================"
 
   remote_check_backend_bootstrap_prereqs "$host" "$remote_dir"
+  if [[ "$existed_before" -eq 1 ]]; then
+    backup_database_on_remote "$host" "$site"
+  else
+    echo "Skipping database backup: first deploy has no existing backend directory."
+  fi
   remote_prepare_dir "$host" "$remote_dir"
   remote_seed_runtime_config_if_missing "$host" "$remote_dir" "$site" "$fe_url" "$app_port"
 

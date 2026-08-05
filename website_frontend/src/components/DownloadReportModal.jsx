@@ -14,6 +14,8 @@ export default function DownloadReportModal({
   reportDate,
   setReportDate,
   onDownload,
+  onCopyForOutlook,
+  copyingForOutlook,
   reportMode,
   setReportMode,
   idiotProof,
@@ -109,9 +111,17 @@ export default function DownloadReportModal({
               onDownload(); // reads idiotProof from parent
               onClose();
             }}
-            className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+            disabled={!reportDate}
+            className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
-            Download
+            Download Report
+          </button>
+          <button
+            onClick={onCopyForOutlook}
+            disabled={!reportDate || copyingForOutlook}
+            className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+          >
+            {copyingForOutlook ? "Copying…" : "Copy For Outlook"}
           </button>
         </div>
       </div>

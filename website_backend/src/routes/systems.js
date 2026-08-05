@@ -2664,6 +2664,133 @@ router.get("/", async (req, res) => {
   }
 });
 
+router.get("/outlook-report-summary", async (req, res) => {
+  const { start, date } = req.query;
+
+  if (!start || !date) {
+    return res.status(400).json({
+      error: "Both `start` (start of day) and `date` (end of day) are required",
+    });
+  }
+
+  try {
+    const { rows } = await db.query(
+      `
+      WITH latest_state AS (
+        SELECT DISTINCT ON (h.system_id)
+          h.system_id, h.to_location_id, h.changed_at
+        FROM system_location_history h
+        WHERE h.changed_at <= $2
+        ORDER BY h.system_id, h.changed_at DESC
+      ),
+      last_received AS (
+        SELECT h.system_id, MAX(h.changed_at) AS changed_at
+        FROM system_location_history h
+        WHERE h.to_location_id = $3
+          AND h.changed_at <= $2
+        GROUP BY h.system_id
+      ),
+      last_modified AS (
+        SELECT h.system_id, MAX(h.changed_at) AS changed_at
+        FROM system_location_history h
+        WHERE h.changed_at <= $2
+        GROUP BY h.system_id
+      ),
+      day_last_non_rma_move AS (
+        SELECT DISTINCT ON (h.system_id)
+          h.system_id, h.from_location_id, h.to_location_id, h.changed_at
+        FROM system_location_history h
+        WHERE h.changed_at >= $1
+          AND h.changed_at <= $2
+          AND NOT (
+            h.from_location_id = ANY($4::int[])
+            AND h.to_location_id = ANY($4::int[])
+          )
+        ORDER BY h.system_id, h.changed_at DESC
+      ),
+      day_rma_entries AS (
+        SELECT DISTINCT ON (h.system_id) h.system_id, h.changed_at
+        FROM system_location_history h
+        WHERE h.changed_at >= $1
+          AND h.changed_at <= $2
+          AND h.to_location_id = ANY($4::int[])
+          AND COALESCE(h.from_location_id = ANY($4::int[]), FALSE) = FALSE
+        ORDER BY h.system_id, h.changed_at DESC
+      ),
+      day_pending_parts_entries AS (
+        SELECT DISTINCT h.system_id
+        FROM system_location_history h
+        WHERE h.changed_at >= $1
+          AND h.changed_at <= $2
+          AND h.to_location_id = $9
+      ),
+      active_pallet_at_end AS (
+        SELECT DISTINCT ps.system_id
+        FROM pallet p
+        JOIN pallet_system ps ON ps.pallet_id = p.id
+        WHERE p.created_at <= $2
+          AND (p.released_at IS NULL OR p.released_at > $2)
+          AND ps.added_at <= $2
+          AND COALESCE(ps.removed_at, 'infinity'::timestamp) > $2
+      ),
+      released_from_rma AS (
+        SELECT DISTINCT ps.system_id
+        FROM pallet p
+        JOIN pallet_system ps ON ps.pallet_id = p.id
+        JOIN LATERAL (
+          SELECT h.to_location_id
+          FROM system_location_history h
+          WHERE h.system_id = ps.system_id
+            AND h.changed_at <= p.released_at
+          ORDER BY h.changed_at DESC
+          LIMIT 1
+        ) current_location ON TRUE
+        WHERE p.released_at >= $1
+          AND p.released_at <= $2
+          AND ps.added_at <= p.released_at
+          AND COALESCE(ps.removed_at, p.released_at) >= p.released_at
+          AND current_location.to_location_id = ANY($4::int[])
+      )
+      SELECT
+        (SELECT COUNT(*) FROM last_received WHERE changed_at >= $1) AS failures_received_today,
+        (SELECT COUNT(*) FROM last_modified WHERE changed_at >= $1) AS units_worked_today,
+        COUNT(*) FILTER (WHERE ls.to_location_id = $5) AS in_debug_wistron,
+        COUNT(*) FILTER (WHERE ls.to_location_id = $6) AS pending_l11_logs,
+        (SELECT COUNT(*) FROM day_last_non_rma_move WHERE to_location_id = $7) AS fixed_today,
+        (
+          SELECT COUNT(*)
+          FROM day_rma_entries dm
+          WHERE EXISTS (
+            SELECT 1
+            FROM pallet p
+            JOIN pallet_system ps ON ps.pallet_id = p.id
+            WHERE ps.system_id = dm.system_id
+              AND ps.added_at <= dm.changed_at
+              AND COALESCE(ps.removed_at, p.released_at, 'infinity'::timestamp) >= dm.changed_at
+              AND (p.released_at IS NULL OR p.released_at > dm.changed_at)
+          )
+        ) AS added_to_doa_return,
+        COUNT(*) FILTER (WHERE ls.to_location_id = $8) AS pending_mrb_approval,
+        COUNT(*) FILTER (
+          WHERE ls.to_location_id = ANY($4::int[])
+            AND active_pallet_at_end.system_id IS NOT NULL
+        ) AS total_queued_doa_return,
+        (SELECT COUNT(*) FROM released_from_rma) AS released_for_doa_return,
+        (SELECT COUNT(*) FROM day_pending_parts_entries) AS added_to_pending_parts_today,
+        COUNT(*) FILTER (WHERE ls.to_location_id = $9) AS total_pending_parts
+      FROM latest_state ls
+      LEFT JOIN active_pallet_at_end ON active_pallet_at_end.system_id = ls.system_id
+      `,
+      [start, date, RECEIVED_LOCATION_ID, RMA_LOCATION_IDS, 2, 3, 9, 11, 4],
+    );
+
+    return res.json(rows[0]);
+  } catch (err) {
+    console.error("Failed to generate Outlook report summary", err);
+    return res.status(500).json({ error: "Failed to generate Outlook report summary" });
+  }
+});
+
 router.get("/snapshot", async (req, res) => {
   const {
     date, // REQUIRED: EOD ISO

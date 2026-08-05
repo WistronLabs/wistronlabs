@@ -395,6 +395,13 @@ function useApi() {
     return fetchJSON(`/systems/snapshot${qs}`);
   };
 
+  const getOutlookReportSummary = ({ start, date } = {}) => {
+    if (!start || !date) {
+      throw new Error("getOutlookReportSummary requires start and date parameters");
+    }
+    return fetchJSON(`/systems/outlook-report-summary${buildQueryString({ start, date })}`);
+  };
+
   /**
    * Update the PPID of a system
    * @param {string} tag - service_tag
@@ -995,6 +1002,7 @@ function useApi() {
     getPendingL11MoveRule,
     updatePendingL11MoveRule,
     getSnapshot,
+    getOutlookReportSummary,
     updateSystemPPID,
     updateSystemDOA,
     getSystemPallet,
