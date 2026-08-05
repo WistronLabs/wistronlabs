@@ -153,6 +153,8 @@ function TrackingPage() {
   const [chartStartDate, setChartStartDate] = useState("");
   const [chartEndDate, setChartEndDate] = useState("");
   const [chartMinDate, setChartMinDate] = useState("");
+  const [chartsLoading, setChartsLoading] = useState(false);
+  const [chartsError, setChartsError] = useState(null);
   const [exportingChartsPng, setExportingChartsPng] = useState(false);
   const [repairsAllowed, setRepairsAllowed] = useState(null);
 
@@ -162,6 +164,8 @@ function TrackingPage() {
   const [copyingForOutlook, setCopyingForOutlook] = useState(false);
   const batchExportOptionsChangeSourceRef = useRef("external");
   const chartsPngRef = useRef(null);
+  const initialDataLoadedRef = useRef(false);
+  const chartRequestRef = useRef(0);
 
   const { token } = useContext(AuthContext);
 
@@ -194,6 +198,86 @@ function TrackingPage() {
     createBatchExportUnitData,
   } = useApi();
 
+  const fetchCharts = async ({
+    locationsData = locations,
+    serverTimeData = serverTime,
+    startDate = chartStartDate,
+    endDate = chartEndDate,
+  } = {}) => {
+    const requestId = ++chartRequestRef.current;
+    setChartsLoading(true);
+    setChartsError(null);
+
+    try {
+      const activeLocationNames = locationsData
+        .filter((loc) => systemLocationChartIDs.includes(loc.id))
+        .map((loc) => loc.name);
+      const serverLocalNow = DateTime.fromFormat(
+        serverTimeData.localtime,
+        "MM/dd/yyyy, hh:mm:ss a",
+        { zone: serverTimeData.zone },
+      );
+      const today = serverLocalNow.startOf("day");
+      const requestedStart = DateTime.fromISO(String(startDate || ""), {
+        zone: serverTimeData.zone,
+      }).startOf("day");
+      const requestedEnd = DateTime.fromISO(String(endDate || ""), {
+        zone: serverTimeData.zone,
+      }).startOf("day");
+      const startDay = requestedStart.isValid ? requestedStart : today.minus({ days: 6 });
+      const endDay = requestedEnd.isValid && requestedEnd <= today ? requestedEnd : today;
+
+      if (endDay < startDay.plus({ days: 1 })) {
+        throw new Error("Select a date range of at least two days.");
+      }
+
+      const snapshotDate = startDay
+        .set({ hour: 23, minute: 59, second: 59, millisecond: 999 })
+        .toUTC()
+        .toISO();
+      const historyBeginningDateISO = startDay.toUTC().toISO();
+      const historyEndDateISO = endDay.endOf("day").toUTC().toISO();
+      const [activeLocationSnapshotFirstDay, historyData] = await Promise.all([
+        getSnapshot({
+          date: snapshotDate,
+          locations: activeLocationNames,
+          simplified: idiotProof,
+        }),
+        fetchHistory({
+          all: true,
+          filters: {
+            op: "AND",
+            conditions: [
+              { field: "changed_at", values: [historyBeginningDateISO], op: ">=" },
+              { field: "changed_at", values: [historyEndDateISO], op: "<=" },
+            ],
+          },
+        }).then((res) => res.data),
+      ]);
+
+      if (requestId !== chartRequestRef.current) return;
+
+      const locationChartHistoryCutoffDateTime = startDay
+        .plus({ days: 1 })
+        .toUTC()
+        .toISO();
+      const filteredHistory = historyData.filter((h) =>
+        DateTime.fromISO(h.changed_at, { zone: "utc" }).toISO() >=
+        locationChartHistoryCutoffDateTime,
+      );
+      setInOutChartHistory(historyData);
+      setLocationChartHistory(filteredHistory);
+      setSnapshot(activeLocationSnapshotFirstDay);
+    } catch (err) {
+      if (requestId === chartRequestRef.current) {
+        setChartsError(err.message);
+        console.error(err.message);
+      }
+    } finally {
+      if (requestId === chartRequestRef.current) setChartsLoading(false);
+    }
+  };
+
   const fetchData = async () => {
     setLoading(true);
 
@@ -216,10 +300,6 @@ function TrackingPage() {
           getRepairsAllowed(),
           getFirstReceivedHistoryAt(),
         ]);
-
-      const activeLocationNames = locationsData
-        .filter((loc) => systemLocationChartIDs.includes(loc.id))
-        .map((loc) => loc.name);
 
       // Base time in server’s local timezone
       const serverLocalNow = DateTime.fromFormat(
@@ -258,66 +338,8 @@ function TrackingPage() {
       if (chartStartDate !== startDateKey) setChartStartDate(startDateKey);
       if (chartEndDate !== endDateKey) setChartEndDate(endDateKey);
 
-      let activeLocationSnapshotFirstDay, historyData;
-      const snapshotDate = startDay
-        .set({ hour: 23, minute: 59, second: 59, millisecond: 999 })
-        .toUTC()
-        .toISO();
-      const historyBeginningDateISO = startDay.toUTC().toISO();
-      const historyEndDateISO = endDay.endOf("day").toUTC().toISO();
-
-      [activeLocationSnapshotFirstDay, historyData] = await Promise.all([
-        getSnapshot({
-          date: snapshotDate,
-          locations: activeLocationNames,
-          simplified: idiotProof,
-        }),
-        fetchHistory({
-          all: true,
-          filters: {
-            op: "AND",
-            conditions: [
-              {
-                field: "changed_at",
-                values: [historyBeginningDateISO],
-                op: ">=",
-              },
-              {
-                field: "changed_at",
-                values: [historyEndDateISO],
-                op: "<=",
-              },
-            ],
-          },
-        }).then((res) => res.data),
-      ]);
-
-      //   if (
-      //     activeLocationSnapshotFirstDay &&
-      //     activeLocationSnapshotFirstDay.length > 0
-      //   ) {
-      //     break;
-      //   }
-      // }
-
-      // The snapshot represents the end of the first selected day, so later
-      // history starts on the following day.
-      const locationChartHistoryCutoffDateTime = startDay
-        .plus({
-          days: 1,
-        })
-        .toUTC()
-        .toISO();
-
-      const filteredHistory = historyData.filter((h) => {
-        const dt = DateTime.fromISO(h.changed_at, { zone: "utc" }).toISO();
-        return dt >= locationChartHistoryCutoffDateTime;
-      });
       setLocations(locationsData);
-      setInOutChartHistory(historyData);
-      setLocationChartHistory(filteredHistory);
       setServerTime(serverTimeData);
-      setSnapshot(activeLocationSnapshotFirstDay);
       setDellCustomers(
         dpnsData
           .flatMap((d) =>
@@ -336,6 +358,13 @@ function TrackingPage() {
           ? repairsAllowedData.repairs_allowed
           : null,
       );
+      await fetchCharts({
+        locationsData,
+        serverTimeData,
+        startDate: startDateKey,
+        endDate: endDateKey,
+      });
+      initialDataLoadedRef.current = true;
     } catch (err) {
       setError(err.message);
       console.error(err.message);
@@ -346,6 +375,11 @@ function TrackingPage() {
 
   useEffect(() => {
     fetchData();
+  }, []);
+
+  useEffect(() => {
+    if (!initialDataLoadedRef.current) return;
+    fetchCharts();
   }, [idiotProof, chartStartDate, chartEndDate]);
 
   const { confirm, ConfirmDialog } = useConfirm();
@@ -1356,34 +1390,49 @@ function TrackingPage() {
           <div className="text-red-600">{error}</div>
         ) : (
           <>
-            <div ref={chartsPngRef} className="bg-white">
-              <SystemLocationsChart
-                snapshot={snapshot}
-                history={locationChartHistory}
-                locations={locations}
-                activeLocationIDs={systemLocationChartIDs}
-                serverTime={serverTime}
-                chartStartDate={chartStartDate}
-                chartEndDate={chartEndDate}
-                printFriendly={printFriendly}
-                repairsAllowed={repairsAllowed}
-              />
-              <SystemInOutChart
-                history={InOutChartHistory}
-                locations={locations}
-                activeLocationIDs={activeLocationIDs}
-                serverTime={serverTime}
-                chartStartDate={chartStartDate}
-                chartEndDate={chartEndDate}
-                printFriendly={printFriendly}
-              />
+            <div ref={chartsPngRef} className="relative min-h-96 bg-white" aria-busy={chartsLoading}>
+              {chartsLoading ? (
+                <div className="animate-pulse space-y-6 p-4" aria-label="Loading charts">
+                  {[0, 1].map((index) => (
+                    <div key={index} className="rounded-lg border border-gray-200 p-4 space-y-4">
+                      <div className="h-5 w-1/3 rounded bg-gray-200" />
+                      <div className="h-56 rounded bg-gray-100" />
+                    </div>
+                  ))}
+                </div>
+              ) : chartsError ? (
+                <div className="p-4 text-red-600">{chartsError}</div>
+              ) : (
+                <>
+                  <SystemLocationsChart
+                    snapshot={snapshot}
+                    history={locationChartHistory}
+                    locations={locations}
+                    activeLocationIDs={systemLocationChartIDs}
+                    serverTime={serverTime}
+                    chartStartDate={chartStartDate}
+                    chartEndDate={chartEndDate}
+                    printFriendly={printFriendly}
+                    repairsAllowed={repairsAllowed}
+                  />
+                  <SystemInOutChart
+                    history={InOutChartHistory}
+                    locations={locations}
+                    activeLocationIDs={activeLocationIDs}
+                    serverTime={serverTime}
+                    chartStartDate={chartStartDate}
+                    chartEndDate={chartEndDate}
+                    printFriendly={printFriendly}
+                  />
+                </>
+              )}
             </div>
 
             <div className="flex flex-wrap justify-end items-center gap-4 mt-2">
               <button
                 type="button"
                 onClick={handleDownloadChartsPng}
-                disabled={exportingChartsPng}
+                disabled={exportingChartsPng || chartsLoading}
                 className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
               >
                 {exportingChartsPng ? "Creating PNG…" : "Download Charts PNG"}
