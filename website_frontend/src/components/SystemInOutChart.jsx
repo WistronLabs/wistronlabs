@@ -14,13 +14,30 @@ import {
   Legend, // <-- added
 } from "recharts";
 
+function shouldShowPointLabel(index, pointCount) {
+  if (pointCount <= 14 || index === 0 || index === pointCount - 1) return true;
+  return index % (pointCount <= 31 ? 2 : 7) === 0;
+}
+
+function AdaptivePointLabel({ index, pointCount, value, viewBox, offset = 4, style }) {
+  if (!shouldShowPointLabel(index, pointCount) || !viewBox) return null;
+  const x = viewBox.x + viewBox.width / 2;
+  const y = viewBox.y - offset;
+  return (
+    <text x={x} y={y} textAnchor="middle" style={style}>
+      {value}
+    </text>
+  );
+}
+
 function computeInOutCountsPerDay(
   history,
   activeLocationNames,
   timezone,
   locationID1Name,
   rmaLocationNames = [], // <-- NEW
-  chartDays = 7,
+  chartStartDate,
+  chartEndDate,
   serverTime = null,
 ) {
   const parsedServerNow = DateTime.fromFormat(
@@ -31,9 +48,16 @@ function computeInOutCountsPerDay(
   const today = (
     parsedServerNow.isValid ? parsedServerNow : DateTime.now().setZone(timezone)
   ).startOf("day");
-  const startDay = today.minus({ days: Math.max(1, Number(chartDays) || 7) - 1 });
+  const selectedStart = DateTime.fromISO(String(chartStartDate || ""), {
+    zone: timezone,
+  }).startOf("day");
+  const selectedEnd = DateTime.fromISO(String(chartEndDate || ""), {
+    zone: timezone,
+  }).startOf("day");
+  const startDay = selectedStart.isValid ? selectedStart : today.minus({ days: 6 });
+  const endDay = selectedEnd.isValid ? selectedEnd : today;
   const startKey = startDay.toISODate();
-  const endKey = today.toISODate();
+  const endKey = endDay.toISODate();
 
   const dayMap = new Map();
   const rmaSet = new Set(rmaLocationNames);
@@ -62,7 +86,7 @@ function computeInOutCountsPerDay(
   const results = [];
   let day = startDay;
 
-  while (day <= today) {
+  while (day <= endDay) {
     const dayKey = day.toISODate();
     const entries = dayMap.get(dayKey) || [];
 
@@ -108,7 +132,8 @@ function SystemInOutChart({
   locations,
   activeLocationIDs,
   serverTime,
-  chartDays = 7,
+  chartStartDate,
+  chartEndDate,
   printFriendly = false, // <-- NEW
 }) {
   const [hiddenSeries, setHiddenSeries] = useState({});
@@ -136,7 +161,8 @@ function SystemInOutChart({
       serverTime.zone,
       locationID1Name,
       rmaLocationNames, // <-- NEW
-      chartDays,
+      chartStartDate,
+      chartEndDate,
       serverTime,
     );
   }, [
@@ -146,7 +172,8 @@ function SystemInOutChart({
     serverTime.localtime,
     locationID1Name,
     rmaLocationNames,
-    chartDays,
+    chartStartDate,
+    chartEndDate,
   ]);
 
   if (!inOutCounts || inOutCounts.length === 0) return <div>No data</div>;
@@ -263,6 +290,9 @@ function SystemInOutChart({
                 dataKey="location1Firsts"
                 position="top"
                 offset={4}
+                content={(props) => (
+                  <AdaptivePointLabel {...props} pointCount={chartData.length} />
+                )}
                 style={{
                   fontSize: 10,
                   fill: ACTIVE_COLOR,
@@ -290,6 +320,9 @@ function SystemInOutChart({
                 dataKey="TotalResolved"
                 position="top"
                 offset={4}
+                content={(props) => (
+                  <AdaptivePointLabel {...props} pointCount={chartData.length} />
+                )}
                 style={{
                   fontSize: 10,
                   fill: TOTAL_COLOR,
