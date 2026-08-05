@@ -32,6 +32,74 @@ const DEFAULT_BATCH_EXPORT_OPTIONS = {
   include_l10_test_folders: true,
 };
 
+const OUTLOOK_REPORT_SECTIONS = [
+  {
+    rows: [
+      ["Failures Received Today:", "failures_received_today", "red"],
+      ["Units Worked on Today:", "units_worked_today", "red"],
+      ["In Debug - Wistron:", "in_debug_wistron", "red"],
+      ["Pending L11 Logs - Dell:", "pending_l11_logs", "green"],
+      ["Fixed Today:", "fixed_today", "green"],
+    ],
+  },
+  {
+    heading: "DOA Return:",
+    rows: [
+      ["Added to queued for DOA Return:", "added_to_doa_return", "red"],
+      ["Pending MRB Approval for CID DOA:", "pending_mrb_approval", "red"],
+      ["Total in queued for DOA Return:", "total_queued_doa_return", "red"],
+      ["Released for DOA Return:", "released_for_doa_return", "red"],
+    ],
+  },
+  {
+    heading: "Awaiting Parts",
+    rows: [
+      ["Added to Pending Parts Today:", "added_to_pending_parts_today", "red"],
+      ["Total Backlog of Pending Parts:", "total_pending_parts", "red"],
+    ],
+  },
+];
+
+function formatOutlookUnits(value) {
+  return `${String(Number(value) || 0).padStart(2, "0")} units`;
+}
+
+function buildOutlookClipboardContent(summary, reportDate, location) {
+  const dateLabel = DateTime.fromISO(reportDate).toFormat("MM/dd/yy");
+  const reportTitle = `${dateLabel} - ${location || "Site"} Daily Update`;
+  const htmlSections = OUTLOOK_REPORT_SECTIONS.map(({ heading, rows }) => {
+    const headingHtml = heading
+      ? `<p style="margin:14px 0 6px;"><strong>${heading}</strong></p>`
+      : "";
+    const tableRows = rows
+      .map(
+        ([label, key, color]) => `
+          <tr>
+            <td style="border:none;width:330px;padding:0 30px 3px 0;">${label}</td>
+            <td style="border:none;width:150px;padding:0 0 3px 0;text-align:right;color:${
+              color === "green" ? "#16a34a" : "#dc2626"
+            };">${formatOutlookUnits(summary[key])}</td>
+          </tr>`,
+      )
+      .join("");
+    return `${headingHtml}<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;border:none;table-layout:fixed;width:480px;">${tableRows}
+      </table>`;
+  }).join("\n");
+
+  const plainText = OUTLOOK_REPORT_SECTIONS.map(({ heading, rows }) => {
+    const headingText = heading ? `${heading}\n\n` : "";
+    const rowText = rows
+      .map(([label, key]) => `${label}\t${formatOutlookUnits(summary[key])}`)
+      .join("\n");
+    return `${headingText}${rowText}`;
+  }).join("\n\n");
+
+  return {
+    html: `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;width:480px;"><p style="margin:0 0 14px;"><strong>${reportTitle}</strong></p>${htmlSections}\n</div>`,
+    plainText: `${reportTitle}\n\n${plainText}`,
+  };
+}
+
 function TrackingPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
   const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
@@ -80,6 +148,7 @@ function TrackingPage() {
   const [serverTime, setServerTime] = useState([]);
 
   const [reportMode, setReportMode] = useState("perday");
+  const [copyingForOutlook, setCopyingForOutlook] = useState(false);
   const batchExportOptionsChangeSourceRef = useRef("external");
 
   const { token } = useContext(AuthContext);
@@ -100,6 +169,7 @@ function TrackingPage() {
     moveSystemToReceived,
     getServerTime,
     getSnapshot,
+    getOutlookReportSummary,
     getSystemHistory,
     getSystem,
     getTags,
@@ -969,6 +1039,52 @@ function TrackingPage() {
     }
   }
 
+  async function handleCopyForOutlook() {
+    if (!reportDate) return;
+
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      showToast(
+        "Your browser does not support formatted clipboard copying.",
+        "error",
+        4000,
+        "top-right",
+      );
+      return;
+    }
+
+    setCopyingForOutlook(true);
+    try {
+      const serverTimeReport = await getServerTime();
+      const serverLocal = DateTime.fromISO(reportDate, {
+        zone: serverTimeReport.zone,
+      });
+      const start = serverLocal.startOf("day").toUTC().toISO();
+      const end = serverLocal
+        .set({ hour: 23, minute: 59, second: 59, millisecond: 999 })
+        .toUTC()
+        .toISO();
+      const summary = await getOutlookReportSummary({ start, date: end });
+      const { html, plainText } = buildOutlookClipboardContent(
+        summary,
+        reportDate,
+        import.meta.env.VITE_LOCATION,
+      );
+
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([plainText], { type: "text/plain" }),
+        }),
+      ]);
+      showToast("Outlook report copied to clipboard.", "success", 3000, "top-right");
+    } catch (err) {
+      console.error("Failed to copy Outlook report", err);
+      showToast("Failed to copy Outlook report.", "error", 3000, "top-right");
+    } finally {
+      setCopyingForOutlook(false);
+    }
+  }
+
   const runBatchExportPreview = useCallback(
     async (options = {}) => {
       const {
@@ -1347,6 +1463,8 @@ function TrackingPage() {
             reportDate={reportDate}
             setReportDate={setReportDate}
             onDownload={handleDownloadReport}
+            onCopyForOutlook={handleCopyForOutlook}
+            copyingForOutlook={copyingForOutlook}
             reportMode={reportMode}
             setReportMode={setReportMode}
             idiotProof={idiotProof}
