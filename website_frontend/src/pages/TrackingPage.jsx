@@ -1,4 +1,7 @@
 import React, { useContext, useState, useEffect, useCallback, useRef } from "react";
+import ReactDatePicker from "react-datepicker";
+import "react-datepicker/dist/react-datepicker.css";
+import { toPng } from "html-to-image";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
 import LoadingSkeleton from "../components/LoadingSkeleton.jsx";
 import SystemInOutChart from "../components/SystemInOutChart.jsx";
@@ -100,6 +103,12 @@ function buildOutlookClipboardContent(summary, reportDate, location) {
   };
 }
 
+function parseLocalDateString(yyyyMmDd) {
+  if (!yyyyMmDd) return null;
+  const [year, month, day] = String(yyyyMmDd).split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
 function TrackingPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
   const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
@@ -141,8 +150,10 @@ function TrackingPage() {
   const [batchExportPreviewLoading, setBatchExportPreviewLoading] = useState(false);
   const [batchExportStartLoading, setBatchExportStartLoading] = useState(false);
   const [activeBatchExportJobId, setActiveBatchExportJobId] = useState(null);
-  const [chartDays, setChartDays] = useState(7);
-  const [chartDaysInput, setChartDaysInput] = useState("7");
+  const [chartStartDate, setChartStartDate] = useState("");
+  const [chartEndDate, setChartEndDate] = useState("");
+  const [chartMinDate, setChartMinDate] = useState("");
+  const [exportingChartsPng, setExportingChartsPng] = useState(false);
   const [repairsAllowed, setRepairsAllowed] = useState(null);
 
   const [serverTime, setServerTime] = useState([]);
@@ -150,6 +161,7 @@ function TrackingPage() {
   const [reportMode, setReportMode] = useState("perday");
   const [copyingForOutlook, setCopyingForOutlook] = useState(false);
   const batchExportOptionsChangeSourceRef = useRef("external");
+  const chartsPngRef = useRef(null);
 
   const { token } = useContext(AuthContext);
 
@@ -165,6 +177,7 @@ function TrackingPage() {
     getLocations,
     getFactories,
     getHistory,
+    getFirstReceivedHistoryAt,
     createSystem,
     moveSystemToReceived,
     getServerTime,
@@ -192,6 +205,7 @@ function TrackingPage() {
         factoriesData,
         tagsData,
         repairsAllowedData,
+        firstReceivedData,
       ] =
         await Promise.all([
           getLocations(),
@@ -200,6 +214,7 @@ function TrackingPage() {
           getFactories(),
           getTags(),
           getRepairsAllowed(),
+          getFirstReceivedHistoryAt(),
         ]);
 
       const activeLocationNames = locationsData
@@ -213,22 +228,43 @@ function TrackingPage() {
         { zone: serverTimeData.zone },
       );
 
-      let activeLocationSnapshotFirstDay,
-        historyData,
-        historyBeginningDateTime = null;
+      const today = serverLocalNow.startOf("day");
+      const firstReceivedDay = DateTime.fromISO(
+        String(firstReceivedData?.first_received_at || ""),
+        { zone: "utc" },
+      )
+        .setZone(serverTimeData.zone)
+        .startOf("day");
+      const minDay = firstReceivedDay.isValid ? firstReceivedDay : today.minus({ days: 1 });
+      const defaultStart = today.minus({ days: 6 });
+      const requestedStart = DateTime.fromISO(String(chartStartDate || ""), {
+        zone: serverTimeData.zone,
+      }).startOf("day");
+      const requestedEnd = DateTime.fromISO(String(chartEndDate || ""), {
+        zone: serverTimeData.zone,
+      }).startOf("day");
+      const startDay = (requestedStart.isValid ? requestedStart : defaultStart) < minDay
+        ? minDay
+        : (requestedStart.isValid ? requestedStart : defaultStart);
+      const endDay = requestedEnd.isValid && requestedEnd <= today ? requestedEnd : today;
 
-      //for (let daysBack = chartDays - 1; daysBack >= 0; daysBack--) {
-      const snapshotDate = serverLocalNow
-        .minus({ days: chartDays - 1 })
-        .set({ hour: 23, minute: 59, second: 59, millisecond: 59 })
+      if (endDay < startDay.plus({ days: 1 })) {
+        throw new Error("Select a date range of at least two days.");
+      }
+
+      const startDateKey = startDay.toISODate();
+      const endDateKey = endDay.toISODate();
+      setChartMinDate(minDay.toISODate());
+      if (chartStartDate !== startDateKey) setChartStartDate(startDateKey);
+      if (chartEndDate !== endDateKey) setChartEndDate(endDateKey);
+
+      let activeLocationSnapshotFirstDay, historyData;
+      const snapshotDate = startDay
+        .set({ hour: 23, minute: 59, second: 59, millisecond: 999 })
         .toUTC()
         .toISO();
-
-      historyBeginningDateTime = serverLocalNow
-        .minus({ days: chartDays - 1 })
-        .set({ hour: 0, minute: 0, second: 0, millisecond: 0 });
-
-      const historyBeginningDateISO = historyBeginningDateTime.toUTC().toISO();
+      const historyBeginningDateISO = startDay.toUTC().toISO();
+      const historyEndDateISO = endDay.endOf("day").toUTC().toISO();
 
       [activeLocationSnapshotFirstDay, historyData] = await Promise.all([
         getSnapshot({
@@ -246,6 +282,11 @@ function TrackingPage() {
                 values: [historyBeginningDateISO],
                 op: ">=",
               },
+              {
+                field: "changed_at",
+                values: [historyEndDateISO],
+                op: "<=",
+              },
             ],
           },
         }).then((res) => res.data),
@@ -259,8 +300,9 @@ function TrackingPage() {
       //   }
       // }
 
-      // cutoff for Location Chart: *one day after historyBeginningDateTime*
-      const locationChartHistoryCutoffDateTime = historyBeginningDateTime
+      // The snapshot represents the end of the first selected day, so later
+      // history starts on the following day.
+      const locationChartHistoryCutoffDateTime = startDay
         .plus({
           days: 1,
         })
@@ -304,15 +346,67 @@ function TrackingPage() {
 
   useEffect(() => {
     fetchData();
-  }, [idiotProof, chartDays]);
-
-  useEffect(() => {
-    setChartDaysInput(String(chartDays));
-  }, [chartDays]);
+  }, [idiotProof, chartStartDate, chartEndDate]);
 
   const { confirm, ConfirmDialog } = useConfirm();
   const { showToast, Toast } = useToast();
   const isMobile = useIsMobile();
+
+  const handleDownloadChartsPng = async () => {
+    const chartsElement = chartsPngRef.current;
+    if (!chartsElement || exportingChartsPng) return;
+
+    setExportingChartsPng(true);
+    try {
+      const pngDataUrl = await toPng(chartsElement, {
+        backgroundColor: "#ffffff",
+        pixelRatio: 2,
+        cacheBust: true,
+      });
+      const link = document.createElement("a");
+      link.download = `tracking_charts_${chartStartDate}_to_${chartEndDate}.png`;
+      link.href = pngDataUrl;
+      link.click();
+      showToast("Charts downloaded as PNG.", "success", 3000, "top-right");
+    } catch (err) {
+      console.error("Failed to export charts as PNG", err);
+      showToast("Failed to export charts as PNG.", "error", 3000, "top-right");
+    } finally {
+      setExportingChartsPng(false);
+    }
+  };
+
+  const getDefaultChartRange = () => {
+    const serverNow = DateTime.fromFormat(
+      String(serverTime?.localtime || ""),
+      "MM/dd/yyyy, hh:mm:ss a",
+      { zone: serverTime?.zone },
+    );
+    const today = (serverNow.isValid
+      ? serverNow
+      : DateTime.now().setZone(serverTime?.zone || "UTC")
+    ).startOf("day");
+    const earliestDay = DateTime.fromISO(chartMinDate, {
+      zone: serverTime?.zone,
+    }).startOf("day");
+    const defaultStart = today.minus({ days: 6 });
+    const startDay = earliestDay.isValid && earliestDay > defaultStart
+      ? earliestDay
+      : defaultStart;
+
+    return { startDate: startDay.toISODate(), endDate: today.toISODate() };
+  };
+
+  const handleResetChartRange = () => {
+    const { startDate, endDate } = getDefaultChartRange();
+    setChartStartDate(startDate);
+    setChartEndDate(endDate);
+  };
+
+  const defaultChartRange = getDefaultChartRange();
+  const isChartRangeDefault =
+    chartStartDate === defaultChartRange.startDate &&
+    chartEndDate === defaultChartRange.endDate;
 
   const fetchBatchExports = useCallback(async ({ showLoading = false } = {}) => {
     if (showLoading) {
@@ -1262,71 +1356,105 @@ function TrackingPage() {
           <div className="text-red-600">{error}</div>
         ) : (
           <>
-            <SystemLocationsChart
-              snapshot={snapshot}
-              history={locationChartHistory}
-              locations={locations}
-              activeLocationIDs={systemLocationChartIDs}
-              serverTime={serverTime}
-              chartDays={chartDays}
-              printFriendly={printFriendly}
-              repairsAllowed={repairsAllowed}
-            />
-            <SystemInOutChart
-              history={InOutChartHistory}
-              locations={locations}
-              activeLocationIDs={activeLocationIDs}
-              serverTime={serverTime}
-              chartDays={chartDays}
-              printFriendly={printFriendly}
-            />
+            <div ref={chartsPngRef} className="bg-white">
+              <SystemLocationsChart
+                snapshot={snapshot}
+                history={locationChartHistory}
+                locations={locations}
+                activeLocationIDs={systemLocationChartIDs}
+                serverTime={serverTime}
+                chartStartDate={chartStartDate}
+                chartEndDate={chartEndDate}
+                printFriendly={printFriendly}
+                repairsAllowed={repairsAllowed}
+              />
+              <SystemInOutChart
+                history={InOutChartHistory}
+                locations={locations}
+                activeLocationIDs={activeLocationIDs}
+                serverTime={serverTime}
+                chartStartDate={chartStartDate}
+                chartEndDate={chartEndDate}
+                printFriendly={printFriendly}
+              />
+            </div>
 
             <div className="flex flex-wrap justify-end items-center gap-4 mt-2">
+              <button
+                type="button"
+                onClick={handleDownloadChartsPng}
+                disabled={exportingChartsPng}
+                className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+              >
+                {exportingChartsPng ? "Creating PNG…" : "Download Charts PNG"}
+              </button>
               <label className="inline-flex items-center gap-2 text-xs text-gray-500">
-                Days
-                <input
-                  type="number"
-                  min={1}
-                  max={60}
-                  step={1}
-                  value={chartDaysInput}
-                  onChange={(e) => {
-                    const raw = e.target.value.replace(/[^\d]/g, "");
-                    setChartDaysInput(raw);
+                From
+                <ReactDatePicker
+                  selected={parseLocalDateString(chartStartDate)}
+                  minDate={parseLocalDateString(chartMinDate)}
+                  maxDate={parseLocalDateString(
+                    chartEndDate
+                      ? DateTime.fromISO(chartEndDate).minus({ days: 1 }).toISODate()
+                      : "",
+                  )}
+                  onChange={(date) => {
+                    if (!date) return;
+                    const nextStart = date.toLocaleDateString("en-CA");
+                    const minimumEnd = DateTime.fromISO(nextStart)
+                      .plus({ days: 1 })
+                      .toISODate();
+                    setChartStartDate(nextStart);
+                    if (!chartEndDate || chartEndDate < minimumEnd) {
+                      setChartEndDate(minimumEnd);
+                    }
                   }}
-                  onBlur={() => {
-                    const raw = String(chartDaysInput || "").trim();
-                    if (!raw) {
-                      setChartDaysInput(String(chartDays));
-                      return;
-                    }
-                    const parsed = Number.parseInt(raw, 10);
-                    if (!Number.isFinite(parsed)) {
-                      setChartDaysInput(String(chartDays));
-                      return;
-                    }
-                    const next = Math.min(60, Math.max(1, parsed));
-                    setChartDays(next);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key !== "Enter") return;
-                    e.preventDefault();
-                    const raw = String(chartDaysInput || "").trim();
-                    if (!raw) {
-                      setChartDaysInput(String(chartDays));
-                      return;
-                    }
-                    const parsed = Number.parseInt(raw, 10);
-                    if (!Number.isFinite(parsed)) {
-                      setChartDaysInput(String(chartDays));
-                      return;
-                    }
-                    const next = Math.min(60, Math.max(1, parsed));
-                    setChartDays(next);
-                  }}
-                  className="w-16 border border-gray-300 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  dateFormat="MM/dd/yyyy"
+                  fixedHeight
+                  className="border rounded p-1 text-xs"
+                  popperPlacement="bottom-start"
+                  showPopperArrow={false}
                 />
               </label>
+              <label className="inline-flex items-center gap-2 text-xs text-gray-500">
+                To
+                <ReactDatePicker
+                  selected={parseLocalDateString(chartEndDate)}
+                  minDate={parseLocalDateString(
+                    chartStartDate
+                      ? DateTime.fromISO(chartStartDate).plus({ days: 1 }).toISODate()
+                      : "",
+                  )}
+                  maxDate={serverTime?.localtime
+                    ? parseLocalDateString(
+                        DateTime.fromFormat(
+                          serverTime.localtime,
+                          "MM/dd/yyyy, hh:mm:ss a",
+                          { zone: serverTime.zone },
+                        ).toISODate(),
+                      )
+                    : null}
+                  onChange={(date) => {
+                    if (date) setChartEndDate(date.toLocaleDateString("en-CA"));
+                  }}
+                  dateFormat="MM/dd/yyyy"
+                  fixedHeight
+                  className="border rounded p-1 text-xs"
+                  popperPlacement="bottom-start"
+                  showPopperArrow={false}
+                />
+              </label>
+              {!isChartRangeDefault && (
+                <button
+                  type="button"
+                  onClick={handleResetChartRange}
+                  className="inline-flex items-center justify-center rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700 shadow-sm hover:bg-gray-50"
+                  title="Reset to the last seven days"
+                  aria-label="Reset to the last seven days"
+                >
+                  <span aria-hidden="true">↺</span>
+                </button>
+              )}
             </div>
 
             <div className="flex justify-end gap-4 mt-4">

@@ -46,6 +46,7 @@ export default function DownloadReportModal({
               setReportDate(date ? date.toLocaleDateString("en-CA") : "")
             }
             dateFormat="MM/dd/yyyy"
+            fixedHeight
             className="border rounded p-1 w-full mt-1"
             placeholderText="Select a date"
             isClearable

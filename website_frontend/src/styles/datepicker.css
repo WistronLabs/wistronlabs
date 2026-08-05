@@ -35,3 +35,8 @@
   color: #9ca3af; /* Tailwind gray-400 */
   pointer-events: none;
 }
+
+/* Reserve space for six weeks so short months do not shrink the calendar. */
+.react-datepicker__month {
+  min-height: 13rem;
+}

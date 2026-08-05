@@ -16,13 +16,30 @@ import {
 
 const REPAIR_ONLY_ZERO_SERIES = new Set(["Pending L11 Logs", "Pending Parts"]);
 
+function shouldShowPointLabel(index, pointCount) {
+  if (pointCount <= 14 || index === 0 || index === pointCount - 1) return true;
+  return index % (pointCount <= 31 ? 2 : 7) === 0;
+}
+
+function AdaptivePointLabel({ index, pointCount, value, viewBox, offset = 4, style }) {
+  if (!shouldShowPointLabel(index, pointCount) || !viewBox) return null;
+  const x = viewBox.x + viewBox.width / 2;
+  const y = viewBox.y - offset;
+  return (
+    <text x={x} y={y} textAnchor="middle" style={style}>
+      {value}
+    </text>
+  );
+}
+
 function computeActiveLocationsPerDay(
   snapshot,
   history,
   activeLocationNames,
   timezone,
   serverTime,
-  chartDays = 7,
+  chartStartDate,
+  chartEndDate,
 ) {
   function normalize(entry) {
     return {
@@ -40,9 +57,16 @@ function computeActiveLocationsPerDay(
   const today = (
     parsedServerNow.isValid ? parsedServerNow : DateTime.now().setZone(timezone)
   ).startOf("day");
-  const startDay = today.minus({ days: Math.max(1, Number(chartDays) || 7) - 1 });
+  const selectedStart = DateTime.fromISO(String(chartStartDate || ""), {
+    zone: timezone,
+  }).startOf("day");
+  const selectedEnd = DateTime.fromISO(String(chartEndDate || ""), {
+    zone: timezone,
+  }).startOf("day");
+  const startDay = selectedStart.isValid ? selectedStart : today.minus({ days: 6 });
+  const endDay = selectedEnd.isValid ? selectedEnd : today;
   const startKey = startDay.toISODate();
-  const endKey = today.toISODate();
+  const endKey = endDay.toISODate();
 
   const historyByDay = new Map();
 
@@ -103,7 +127,7 @@ function computeActiveLocationsPerDay(
 
   let day = startDay.plus({ days: 1 });
 
-  while (day <= today) {
+  while (day <= endDay) {
     const dayKey = day.toISODate();
 
     if (historyByDay.has(dayKey)) {
@@ -150,7 +174,8 @@ function SystemLocationsChart({
   locations,
   activeLocationIDs,
   serverTime,
-  chartDays = 7,
+  chartStartDate,
+  chartEndDate,
   printFriendly = false,
   repairsAllowed = null,
 }) {
@@ -170,14 +195,16 @@ function SystemLocationsChart({
       activeLocationNames,
       serverTime.zone,
       serverTime,
-      chartDays,
+      chartStartDate,
+      chartEndDate,
     );
   }, [
     snapshot,
     history,
     activeLocationNames,
     serverTime,
-    chartDays,
+    chartStartDate,
+    chartEndDate,
   ]);
 
   const chartData = useMemo(() => {
@@ -265,6 +292,9 @@ function SystemLocationsChart({
                   dataKey={loc}
                   position="top"
                   offset={4}
+                  content={(props) => (
+                    <AdaptivePointLabel {...props} pointCount={chartData.length} />
+                  )}
                   style={{
                     fontSize: 10,
                     fill: CHART_COLORS[idx % CHART_COLORS.length],

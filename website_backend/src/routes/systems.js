@@ -3453,6 +3453,22 @@ router.get("/history", async (req, res) => {
   }
 });
 
+// Earliest time any unit was received. Used as the lower bound for Tracking
+// page history charts.
+router.get("/history/first-received-at", async (_req, res) => {
+  try {
+    const { rows } = await db.query(`
+      SELECT MIN(changed_at) AS first_received_at
+      FROM system_location_history
+      WHERE to_location_id = 1
+    `);
+    return res.json({ first_received_at: rows[0]?.first_received_at || null });
+  } catch (err) {
+    console.error("Failed to fetch first received history timestamp", err);
+    return res.status(500).json({ error: "Failed to fetch first received history timestamp" });
+  }
+});
+
 // GET /api/v1/systems/history/:id - get single history entry by ID
 router.get("/history/:id", async (req, res) => {
   const { id } = req.params;

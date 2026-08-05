@@ -194,6 +194,8 @@ function useApi() {
     return fetchJSON(`/systems/history${qs}`);
   };
 
+  const getFirstReceivedHistoryAt = () =>
+    fetchJSON(`/systems/history/first-received-at`);
   const getHistoryById = (id) => fetchJSON(`/systems/history/${id}`);
   const getSystem = (tag) => fetchJSON(`/systems/${tag}`);
   const getSystemHistory = (tag) => fetchJSON(`/systems/${tag}/history`);
@@ -978,6 +980,7 @@ function useApi() {
   return {
     getSystems,
     getHistory,
+    getFirstReceivedHistoryAt,
     getSystem,
     getSystemHistory,
     createSystem,
