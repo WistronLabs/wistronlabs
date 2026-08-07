@@ -274,6 +274,31 @@ function AddInventoryModal({ onClose, parts, onAdd, busy }) {
   );
 }
 
+function PartsListSkeleton() {
+  return (
+    <div className="animate-pulse overflow-hidden rounded-xl border border-gray-200" aria-label="Loading parts list">
+      <div className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white p-4">
+        <div className="h-9 w-64 rounded bg-gray-100" />
+        <div className="h-9 w-24 rounded bg-gray-100" />
+      </div>
+      <div className="min-w-[720px]">
+        <div className="grid grid-cols-7 gap-4 bg-gray-50 px-4 py-3">
+          {Array.from({ length: 7 }).map((_, index) => (
+            <div key={index} className="h-3 rounded bg-gray-200" />
+          ))}
+        </div>
+        {Array.from({ length: 10 }).map((_, rowIndex) => (
+          <div key={rowIndex} className="grid grid-cols-7 gap-4 border-t border-gray-100 px-4 py-4">
+            {Array.from({ length: 7 }).map((_, columnIndex) => (
+              <div key={columnIndex} className="h-4 rounded bg-gray-100" />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────
 // Page: PartsInventory
 // ─────────────────────────────────────────────────────────────
@@ -774,13 +799,16 @@ export default function PartsInventory() {
       </div>
 
       {/* Data Table */}
-      <SearchContainer
-        data={loading ? [] : filtered}
-        title=""
-        displayOrder={displayOrder}
-        defaultSortBy="part_name"
-        defaultSortAsc={true}
-        fieldStyles={{
+      {loading ? (
+        <PartsListSkeleton />
+      ) : (
+        <SearchContainer
+          data={filtered}
+          title=""
+          displayOrder={displayOrder}
+          defaultSortBy="part_name"
+          defaultSortAsc={true}
+          fieldStyles={{
           place: (v) =>
             v === "Inventory"
               ? {
@@ -829,19 +857,20 @@ export default function PartsInventory() {
                   : "text-gray-400 text-xs italic",
 
           ppid: "font-mono text-xs tracking-tight",
-        }}
-        visibleFields={visibleFields}
-        linkType="none"
-        allowSort={true}
-        allowSearch={true}
-        defaultPage="first"
-        truncate={true}
-        alignByField={{
-          place: "center",
-          functional: "center",
-          unit_scope: "center",
-        }}
-      />
+          }}
+          visibleFields={visibleFields}
+          linkType="none"
+          allowSort={true}
+          allowSearch={true}
+          defaultPage="first"
+          truncate={true}
+          alignByField={{
+            place: "center",
+            functional: "center",
+            unit_scope: "center",
+          }}
+        />
+      )}
       {showAdd && (
         <AddInventoryModal
           onClose={() => setShowAdd(false)}

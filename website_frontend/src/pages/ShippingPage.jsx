@@ -440,12 +440,47 @@ const PalletGrid = ({
   );
 };
 
+function PalletGridSkeleton() {
+  return (
+    <div className="border border-gray-200 rounded-2xl shadow-md p-4 bg-white animate-pulse" aria-hidden="true">
+      <div className="mb-4">
+        <div className="h-5 w-1/2 rounded bg-gray-200" />
+        <div className="mt-2 h-3 w-1/3 rounded bg-gray-100" />
+        <div className="grid grid-cols-3 grid-rows-3 gap-2 my-4">
+          {Array.from({ length: 9 }).map((_, index) => (
+            <div key={index} className="h-16 rounded-lg border border-gray-200 bg-gray-100" />
+          ))}
+        </div>
+        <div className="mt-2 h-10 rounded-lg bg-gray-200" />
+      </div>
+    </div>
+  );
+}
+
+function ReleasedPalletsSkeleton() {
+  return (
+    <div className="animate-pulse space-y-2 p-4" aria-label="Loading released pallets">
+      <div className="flex items-center gap-4 rounded border border-gray-200 bg-white px-4 py-3">
+        <div className="h-4 flex-1 rounded bg-gray-200" />
+        <div className="h-4 flex-1 rounded bg-gray-200" />
+      </div>
+      {Array.from({ length: 7 }).map((_, index) => (
+        <div key={index} className="flex items-center gap-4 rounded border border-gray-200 bg-white px-4 py-3">
+          <div className="h-4 flex-1 rounded bg-gray-100" />
+          <div className="h-4 flex-1 rounded bg-gray-100" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function ShippingPage() {
   const { showToast, Toast } = useToast();
   const { confirm, ConfirmDialog } = useConfirm();
   const [pallets, setPallets] = useState([]);
   const [initialPallets, setInitialPallets] = useState([]);
   const [activeDragData, setActiveDragData] = useState(null);
+  const [palletsLoading, setPalletsLoading] = useState(true);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingPallet, setCreatingPallet] = useState(false);
@@ -756,6 +791,7 @@ export default function ShippingPage() {
   // ---- Initial load (open pallets) ----
   useEffect(() => {
     const loadPallets = async () => {
+      setPalletsLoading(true);
       try {
         const normalized = await loadOpenPallets();
         setPallets(normalized);
@@ -763,6 +799,8 @@ export default function ShippingPage() {
       } catch (err) {
         console.error("Failed to load pallets:", err);
         showToast("Failed to load pallets", "error");
+      } finally {
+        setPalletsLoading(false);
       }
     };
 
@@ -1837,7 +1875,11 @@ export default function ShippingPage() {
               onDragEnd={handleDragEnd}
             >
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {Array.isArray(pallets) && pallets.length > 0 ? (
+                {palletsLoading ? (
+                  Array.from({ length: 3 }).map((_, index) => (
+                    <PalletGridSkeleton key={index} />
+                  ))
+                ) : Array.isArray(pallets) && pallets.length > 0 ? (
                   pallets.map((pallet) => (
                     <PalletGrid
                       key={`${pallet.id}-${!!releaseFlags[pallet.id]}-${
@@ -1926,6 +1968,7 @@ export default function ShippingPage() {
             truncate={true}
             defaultSortBy="released_at"
             defaultSortAsc={false}
+            loadingSkeleton={<ReleasedPalletsSkeleton />}
           />
         )}
       </main>

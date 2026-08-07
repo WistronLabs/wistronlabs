@@ -67,7 +67,7 @@ function formatOutlookUnits(value) {
   return `${String(Number(value) || 0).padStart(2, "0")} units`;
 }
 
-function buildOutlookClipboardContent(summary, reportDate, location) {
+function buildOutlookClipboardContent(summary, reportDate, location, chartPngDataUrl) {
   const dateLabel = DateTime.fromISO(reportDate).toFormat("MM/dd/yy");
   const reportTitle = `${dateLabel} - ${location || "Site"} Daily Update`;
   const htmlSections = OUTLOOK_REPORT_SECTIONS.map(({ heading, rows }) => {
@@ -97,8 +97,12 @@ function buildOutlookClipboardContent(summary, reportDate, location) {
     return `${headingText}${rowText}`;
   }).join("\n\n");
 
+  const chartHtml = chartPngDataUrl
+    ? `<img src="${chartPngDataUrl}" alt="Tracking charts" style="display:block;width:100%;height:auto;margin:0 0 14px;" />`
+    : "";
+
   return {
-    html: `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;width:480px;"><p style="margin:0 0 14px;"><strong>${reportTitle}</strong></p>${htmlSections}\n</div>`,
+    html: `<div style="font-family:Calibri,Arial,sans-serif;font-size:11pt;width:480px;"><p style="margin:0 0 14px;"><strong>${reportTitle}</strong></p>${chartHtml}${htmlSections}\n</div>`,
     plainText: `${reportTitle}\n\n${plainText}`,
   };
 }
@@ -386,17 +390,24 @@ function TrackingPage() {
   const { showToast, Toast } = useToast();
   const isMobile = useIsMobile();
 
-  const handleDownloadChartsPng = async () => {
+  const createChartsPng = async () => {
     const chartsElement = chartsPngRef.current;
-    if (!chartsElement || exportingChartsPng) return;
+    if (!chartsElement) {
+      throw new Error("Charts are not available yet.");
+    }
 
+    return toPng(chartsElement, {
+      backgroundColor: "#ffffff",
+      pixelRatio: 2,
+      cacheBust: true,
+    });
+  };
+
+  const handleDownloadChartsPng = async () => {
+    if (exportingChartsPng) return;
     setExportingChartsPng(true);
     try {
-      const pngDataUrl = await toPng(chartsElement, {
-        backgroundColor: "#ffffff",
-        pixelRatio: 2,
-        cacheBust: true,
-      });
+      const pngDataUrl = await createChartsPng();
       const link = document.createElement("a");
       link.download = `tracking_charts_${chartStartDate}_to_${chartEndDate}.png`;
       link.href = pngDataUrl;
@@ -435,6 +446,33 @@ function TrackingPage() {
     const { startDate, endDate } = getDefaultChartRange();
     setChartStartDate(startDate);
     setChartEndDate(endDate);
+  };
+
+  const handleReportDateChange = (nextReportDate) => {
+    setReportDate(nextReportDate);
+    if (!nextReportDate) return;
+
+    const endDay = DateTime.fromISO(nextReportDate, {
+      zone: serverTime?.zone || "UTC",
+    }).startOf("day");
+    if (!endDay.isValid) return;
+
+    const earliestChartDay = DateTime.fromISO(chartMinDate, {
+      zone: serverTime?.zone || "UTC",
+    }).startOf("day");
+    const requestedStartDay = endDay.minus({ days: 7 });
+    const startDay =
+      earliestChartDay.isValid && requestedStartDay < earliestChartDay
+        ? earliestChartDay
+        : requestedStartDay;
+
+    setChartStartDate(startDay.toISODate());
+    setChartEndDate(endDay.toISODate());
+  };
+
+  const handleCloseReportModal = () => {
+    setIsModalOpen(false);
+    handleResetChartRange();
   };
 
   const defaultChartRange = getDefaultChartRange();
@@ -1167,8 +1205,12 @@ function TrackingPage() {
     }
   }
 
-  async function handleCopyForOutlook() {
+  function handleCopyForOutlook() {
     if (!reportDate) return;
+    if (chartsLoading) {
+      showToast("Wait for the charts to finish loading.", "info", 3000, "top-right");
+      return;
+    }
 
     if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
       showToast(
@@ -1181,7 +1223,11 @@ function TrackingPage() {
     }
 
     setCopyingForOutlook(true);
-    try {
+    // Safari only permits clipboard writes started during the click event. The
+    // report data and PNG are supplied as promises, so generation can finish
+    // after the clipboard request has already been authorized.
+    const chartPngDataUrlPromise = createChartsPng();
+    const clipboardContentPromise = (async () => {
       const serverTimeReport = await getServerTime();
       const serverLocal = DateTime.fromISO(reportDate, {
         zone: serverTimeReport.zone,
@@ -1192,25 +1238,37 @@ function TrackingPage() {
         .toUTC()
         .toISO();
       const summary = await getOutlookReportSummary({ start, date: end });
+      const chartPngDataUrl = await chartPngDataUrlPromise;
       const { html, plainText } = buildOutlookClipboardContent(
         summary,
         reportDate,
         import.meta.env.VITE_LOCATION,
+        chartPngDataUrl,
       );
+      return { html, plainText };
+    })();
 
-      await navigator.clipboard.write([
-        new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([plainText], { type: "text/plain" }),
-        }),
-      ]);
-      showToast("Outlook report copied to clipboard.", "success", 3000, "top-right");
-    } catch (err) {
-      console.error("Failed to copy Outlook report", err);
-      showToast("Failed to copy Outlook report.", "error", 3000, "top-right");
-    } finally {
-      setCopyingForOutlook(false);
-    }
+    const clipboardItem = new ClipboardItem({
+      "text/html": clipboardContentPromise.then(
+        ({ html }) => new Blob([html], { type: "text/html" }),
+      ),
+      "text/plain": clipboardContentPromise.then(
+        ({ plainText }) => new Blob([plainText], { type: "text/plain" }),
+      ),
+    });
+
+    navigator.clipboard
+      .write([clipboardItem])
+      .then(() => {
+        showToast("Outlook report copied to clipboard.", "success", 3000, "top-right");
+      })
+      .catch((err) => {
+        console.error("Failed to copy Outlook report", err);
+        showToast("Failed to copy Outlook report.", "error", 3000, "top-right");
+      })
+      .finally(() => {
+        setCopyingForOutlook(false);
+      });
   }
 
   const runBatchExportPreview = useCallback(
@@ -1636,12 +1694,13 @@ function TrackingPage() {
         )}
         {isModalOpen && (
           <DownloadReportModal
-            onClose={() => setIsModalOpen(false)}
+            onClose={handleCloseReportModal}
             reportDate={reportDate}
-            setReportDate={setReportDate}
+            setReportDate={handleReportDateChange}
             onDownload={handleDownloadReport}
             onCopyForOutlook={handleCopyForOutlook}
             copyingForOutlook={copyingForOutlook}
+            chartsLoading={chartsLoading}
             reportMode={reportMode}
             setReportMode={setReportMode}
             idiotProof={idiotProof}

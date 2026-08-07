@@ -474,6 +474,7 @@ function useApi() {
     all,
     sort_by,
     sort_order,
+    search,
   } = {}) => {
     const params = {
       page,
@@ -481,6 +482,7 @@ function useApi() {
       all,
       sort_by,
       sort_order,
+      search,
     };
 
     if (filters) {

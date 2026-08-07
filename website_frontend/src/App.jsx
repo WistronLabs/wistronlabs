@@ -56,7 +56,7 @@ function App() {
   }, [location.pathname, location.search, location.hash]);
 
   return (
-    <div className="bg-gray-100 min-h-screen overflow-hidden text-gray-800 font-roboto">
+    <div className="bg-gray-100 min-h-screen overflow-x-clip text-gray-800 font-roboto">
       {/* <ScrollToTop /> */}
       <Header />
       <div className="pb-10">

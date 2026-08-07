@@ -65,7 +65,7 @@ function Header() {
   // ...
   const url = `ssh://falab@tss.wistronlabs.com:22`;
   return (
-    <header className="sticky top-0 z-10 bg-blue-900 text-white px-4 py-2 ">
+    <header className="sticky top-0 z-40 bg-blue-900 text-white px-4 py-2">
       <div className="flex items-center justify-between h-[60px]">
         {/* Left: logo + title */}
         <div className="flex items-center gap-2">
