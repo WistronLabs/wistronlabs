@@ -16,6 +16,7 @@ router.get("/", async (req, res) => {
     all,
     sort_by,
     sort_order,
+    search,
   } = req.query;
 
   const params = [];
@@ -40,6 +41,34 @@ router.get("/", async (req, res) => {
             locked_by: "p.locked_by",
           })}`
         : "";
+  }
+
+  const normalizedSearch = String(search || "").trim();
+  if (normalizedSearch) {
+    params.push(`%${normalizedSearch}%`);
+    const searchParam = `$${params.length}`;
+    const searchSQL = `(
+      p.pallet_number ILIKE ${searchParam}
+      OR COALESCE(p.doa_number, '') ILIKE ${searchParam}
+      OR COALESCE(d.name, '') ILIKE ${searchParam}
+      OR COALESCE(f.code, '') ILIKE ${searchParam}
+      OR EXISTS (
+        SELECT 1
+        FROM pallet_system ps_search
+        INNER JOIN system s_search ON s_search.id = ps_search.system_id
+        WHERE ps_search.pallet_id = p.id
+          AND s_search.service_tag ILIKE ${searchParam}
+          AND (
+            (p.status = 'open' AND ps_search.removed_at IS NULL)
+            OR (
+              p.status = 'released'
+              AND ps_search.added_at <= p.released_at
+              AND COALESCE(ps_search.removed_at, 'infinity'::timestamptz) >= p.released_at
+            )
+          )
+      )
+    )`;
+    whereSQL = whereSQL ? `${whereSQL} AND ${searchSQL}` : `WHERE ${searchSQL}`;
   }
 
   const allowedSortColumns = {

@@ -9,6 +9,44 @@ import Table from "../components/Table.jsx";
 
 import { formatDateHumanReadable } from "../utils/date_format.js";
 
+function StationTableSkeleton({ rows }) {
+  return (
+    <section className="animate-pulse pb-4" aria-hidden="true">
+      <div className="mb-4 h-7 w-36 rounded bg-gray-200" />
+      <div className="overflow-hidden rounded border border-gray-200 shadow-sm">
+        <div className="grid grid-cols-3 gap-3 bg-gray-50 p-3">
+          <div className="h-3 rounded bg-gray-200" />
+          <div className="h-3 rounded bg-gray-200" />
+          <div className="h-3 rounded bg-gray-200" />
+        </div>
+        {Array.from({ length: rows }).map((_, index) => (
+          <div key={index} className="grid grid-cols-3 gap-3 border-t border-gray-100 p-3">
+            <div className="h-4 rounded bg-gray-100" />
+            <div className="h-4 rounded bg-gray-100" />
+            <div className="h-4 rounded bg-gray-100" />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function StationStatusSkeleton({ isTss }) {
+  const leftColumnRows = isTss ? [2, 19] : [2, 2, 2, 4, 2];
+  const rightColumnRows = isTss ? [2, 19] : [2, 2, 4, 2];
+
+  return (
+    <div className="flex flex-col md:flex-row justify-between gap-8 mt-8 w-full" aria-label="Loading station status">
+      <div className="flex flex-col w-full">
+        {leftColumnRows.map((rows, index) => <StationTableSkeleton key={index} rows={rows} />)}
+      </div>
+      <div className="flex flex-col w-full">
+        {rightColumnRows.map((rows, index) => <StationTableSkeleton key={index} rows={rows} />)}
+      </div>
+    </div>
+  );
+}
+
 function StationPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
   const LOCATION = import.meta.env.VITE_LOCATION;
@@ -114,7 +152,10 @@ function StationPage() {
       {/* Station Status */}
       <main className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6">
         <h1 className="text-3xl font-semibold text-gray-800">Station Status</h1>
-        <div className="flex flex-col md:flex-row justify-between gap-8 mt-8 w-full">
+        {loading ? (
+          <StationStatusSkeleton isTss={LOCATION === "TSS"} />
+        ) : (
+          <div className="flex flex-col md:flex-row justify-between gap-8 mt-8 w-full">
           {LOCATION === "TSS" ? (
             <>
               <div className="flex flex-col w-full">
@@ -202,7 +243,8 @@ function StationPage() {
               </div>
             </>
           )}
-        </div>
+          </div>
+        )}
       </main>
       {/* Available Downloads */}
       {/* <section className="md:max-w-10/12 mx-auto mt-8 bg-white rounded shadow-md p-4">

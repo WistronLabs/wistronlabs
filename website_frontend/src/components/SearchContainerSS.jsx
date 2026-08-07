@@ -28,6 +28,7 @@ export default function SearchContainerSS({
   onPageChange,
   possibleSearchTags = [],
   persistStateKey = null,
+  loadingSkeleton = null,
 }) {
   const persistedState = persistStateKey
     ? searchContainerSSStateCache.get(persistStateKey)
@@ -43,7 +44,7 @@ export default function SearchContainerSS({
   const [data, setData] = useState([]);
   const [displayedData, setDisplayedData] = useState([]);
   const [totalCount, setTotalCount] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [pageSize, setPageSize] = useState(itemsPerPage);
 
   const [open, setOpen] = useState(false);
@@ -418,9 +419,11 @@ export default function SearchContainerSS({
       <div className=" bg-gray-100 rounded border border-gray-300 shadow-sm p-4">
         <div className="relative min-h-[300px]">
           {loading && displayedData.length === 0 && (
-            <div className="absolute inset-0 flex justify-center items-center bg-gray-50 bg-opacity-50 z-10">
-              <p className="text-sm text-gray-500">Loading…</p>
-            </div>
+            loadingSkeleton || (
+              <div className="absolute inset-0 flex justify-center items-center bg-gray-50 bg-opacity-50 z-10">
+                <p className="text-sm text-gray-500">Loading…</p>
+              </div>
+            )
           )}
 
           {!loading && displayedData.length === 0 && (

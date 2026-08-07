@@ -16,6 +16,7 @@ export default function DownloadReportModal({
   onDownload,
   onCopyForOutlook,
   copyingForOutlook,
+  chartsLoading,
   reportMode,
   setReportMode,
   idiotProof,
@@ -98,6 +99,10 @@ export default function DownloadReportModal({
             completed items up to that day, or only the items completed on that
             specific day.
           </p>
+          <p className="text-sm text-gray-500 mt-2">
+            Copy for Outlook includes charts from the selected date and the
+            preceding seven days.
+          </p>
         </div>
 
         <div className="flex justify-end space-x-2 mt-4">
@@ -119,10 +124,14 @@ export default function DownloadReportModal({
           </button>
           <button
             onClick={onCopyForOutlook}
-            disabled={!reportDate || copyingForOutlook}
+            disabled={!reportDate || copyingForOutlook || chartsLoading}
             className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
-            {copyingForOutlook ? "Copying…" : "Copy For Outlook"}
+            {chartsLoading
+              ? "Loading Charts…"
+              : copyingForOutlook
+                ? "Copying…"
+                : "Copy For Outlook"}
           </button>
         </div>
       </div>
