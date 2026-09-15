@@ -635,6 +635,17 @@ function serializeBatchExport(meta) {
     processed_count: meta.processed_count || 0,
     export_options: normalizeBatchExportOptions(meta.export_options),
     service_tags: Array.isArray(meta.service_tags) ? meta.service_tags : [],
+    review_rows: Array.isArray(meta.review_rows)
+      ? meta.review_rows.map((row) => ({
+          service_tag: row.service_tag,
+          // Older batches stored the found categories only in review details.
+          found_types: row.found_types || {
+            include_l11_logs: row.details?.includes("L11 log tgzs") || false,
+            include_support_photos: row.details?.includes("support photos") || false,
+            include_l10_test_folders: row.details?.includes("L10 test folders") || false,
+          },
+        }))
+      : null,
     skipped_not_found: Array.isArray(meta.skipped_not_found)
       ? meta.skipped_not_found
       : [],
@@ -825,6 +836,7 @@ function buildBatchExportReviewRows(serviceTags = [], preview = {}) {
 
   return serviceTags.map((serviceTag) => ({
     service_tag: serviceTag,
+    found_types: availabilityByTag[serviceTag]?.found_types || {},
     status: willExport.has(serviceTag)
       ? "Will Proceed"
       : skippedNotFound.has(serviceTag)
@@ -881,6 +893,11 @@ async function runBatchExportJob(jobId, serviceTags = [], options = {}) {
       meta = await persistBatchExportMeta({
         ...meta,
         processed_count: i + 1,
+        review_rows: meta.review_rows.map((row) =>
+          row.service_tag === serviceTag
+            ? { ...row, found_types: selection.found_types }
+            : row,
+        ),
       });
     }
 

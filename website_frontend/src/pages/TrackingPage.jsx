@@ -20,6 +20,7 @@ import Tooltip from "../components/Tooltip.jsx";
 
 import { formatDateHumanReadable } from "../utils/date_format.js";
 import { downloadCSV } from "../utils/csv.js";
+import { buildBatchExportOutlookContent } from "../utils/batchExportOutlook.js";
 import { delay } from "../utils/delay.js";
 
 import useConfirm from "../hooks/useConfirm";
@@ -154,6 +155,7 @@ function TrackingPage() {
   const [batchExportPreviewLoading, setBatchExportPreviewLoading] = useState(false);
   const [batchExportStartLoading, setBatchExportStartLoading] = useState(false);
   const [activeBatchExportJobId, setActiveBatchExportJobId] = useState(null);
+  const [copyingBatchExportJobId, setCopyingBatchExportJobId] = useState(null);
   const [chartStartDate, setChartStartDate] = useState("");
   const [chartEndDate, setChartEndDate] = useState("");
   const [chartMinDate, setChartMinDate] = useState("");
@@ -1353,6 +1355,32 @@ function TrackingPage() {
     }
   }
 
+  async function handleCopyBatchExportForOutlook(job) {
+    if (job.status !== "ready" || !job.review_rows?.length) return;
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      showToast(
+        "Your browser does not support formatted clipboard copying.",
+        "error", 4000, "top-right",
+      );
+      return;
+    }
+
+    setCopyingBatchExportJobId(job.job_id);
+    try {
+      const { html, plainText } = buildBatchExportOutlookContent(job.review_rows);
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+      })]);
+      showToast("Batch table copied for Outlook.", "success", 3000, "top-right");
+    } catch (err) {
+      console.error("Failed to copy batch table for Outlook", err);
+      showToast("Failed to copy batch table for Outlook.", "error", 3000, "top-right");
+    } finally {
+      setCopyingBatchExportJobId(null);
+    }
+  }
+
   async function handleDownloadBatchExport(job) {
     try {
       const url = `${BACKEND_URL}/systems/batch-export-unit-data/${encodeURIComponent(job.job_id)}/download`;
@@ -1735,6 +1763,8 @@ function TrackingPage() {
             jobs={batchExports}
             jobsLoading={batchExportsLoading}
             onDownload={handleDownloadBatchExport}
+            onCopyForOutlook={handleCopyBatchExportForOutlook}
+            copyingJobId={copyingBatchExportJobId}
             activeJobId={activeBatchExportJobId}
           />
         )}
