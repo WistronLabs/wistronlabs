@@ -874,6 +874,12 @@ function useApi() {
       body: JSON.stringify({ admin: !!isAdmin }),
     });
 
+  const setUserTerminalAccess = (username, terminalAccess) =>
+    fetchJSON(`/auth/users/${encodeURIComponent(username)}/terminal-access`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ terminalAccess }),
+    });
+
   // tiny convenience wrappers
   const lockPallet = (pallet_number) => setPalletLock(pallet_number, true);
   const unlockPallet = (pallet_number) => setPalletLock(pallet_number, false);
@@ -1060,6 +1066,7 @@ function useApi() {
     getMe,
     getUsers,
     setUserAdmin,
+    setUserTerminalAccess,
     getParts,
     createPart,
     updatePart,

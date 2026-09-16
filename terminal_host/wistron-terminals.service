@@ -1,0 +1,22 @@
+[Unit]
+Description=Wistron shared station web terminals
+After=network.target
+
+[Service]
+Type=simple
+User=falab
+Group=falab
+RuntimeDirectory=wistron-terminals
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+WorkingDirectory=/home/falab
+Environment=TERMINAL_WORKING_DIRECTORY=/home/falab
+ExecStart=/usr/bin/node /opt/wistron-terminals/server.cjs
+Restart=on-failure
+RestartSec=2
+# Detach web clients on service restart; leave tmux and test processes running.
+KillMode=process
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

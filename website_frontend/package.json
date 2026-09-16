@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test:batch": "node --test test/submitBatchUpdate.test.mjs test/l11ScanStatus.test.mjs"
+    "test:batch": "node --test test/submitBatchUpdate.test.mjs test/l11ScanStatus.test.mjs",
+    "test:terminals": "node --test test/terminalLayout.test.mjs test/devApiProxy.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

@@ -6,7 +6,7 @@ import SmartSearchBar from "../components/SmartSearchBar.jsx";
 
 function Header() {
   const LOCATION = import.meta.env.VITE_LOCATION;
-  const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+  const BACKEND_URL = import.meta.env.VITE_DEV_BACKEND_TARGET || import.meta.env.VITE_BACKEND_URL;
 
   const { pathname } = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -22,6 +22,7 @@ function Header() {
   const { getMe, getRepairsAllowed } = useApi();
 
   useEffect(() => {
+    if (!token) { setUser(null); return; }
     let isMounted = true;
     (async () => {
       try {

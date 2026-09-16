@@ -232,7 +232,7 @@ router.post("/change-password", authenticateToken, async (req, res) => {
 
 router.get("/me", authenticateToken, async (req, res) => {
   const { rows } = await db.query(
-    `SELECT username, admin FROM users WHERE id = $1`,
+    `SELECT username, admin, terminal_access FROM users WHERE id = $1`,
     [req.user.userId],
   );
   if (!rows.length) return res.status(404).json({ error: "User not found" });
@@ -242,6 +242,7 @@ router.get("/me", authenticateToken, async (req, res) => {
       userId: req.user.userId,
       username: rows[0].username,
       isAdmin: !!rows[0].admin,
+      terminalAccess: !!rows[0].terminal_access,
     },
   });
 });
@@ -275,7 +276,7 @@ router.get("/users", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const { rows } = await db.query(
       `
-      SELECT id, username, admin, created_at
+      SELECT id, username, admin, terminal_access, created_at
       FROM users
       ${whereSQL}
       ORDER BY created_at DESC
@@ -299,6 +300,7 @@ router.get("/users", authenticateToken, requireAdmin, async (req, res) => {
         id: u.id,
         username: u.username,
         isAdmin: !!u.admin,
+        terminalAccess: !!u.terminal_access,
         createdAt: u.created_at,
       })),
     });
@@ -348,6 +350,27 @@ function authenticateToken(req, res, next) {
     next();
   });
 }
+
+router.patch(
+  "/users/:username/terminal-access",
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    if (typeof req.body.terminalAccess !== "boolean")
+      return res.status(400).json({ error: "terminalAccess must be boolean" });
+    try {
+      const result = await db.query(
+        "UPDATE users SET terminal_access = $1 WHERE LOWER(username) = LOWER($2) RETURNING username, terminal_access",
+        [req.body.terminalAccess, req.params.username],
+      );
+      if (!result.rows.length)
+        return res.status(404).json({ error: "User not found" });
+      res.json({ terminalAccess: result.rows[0].terminal_access });
+    } catch {
+      res.status(500).json({ error: "Unable to update terminal access" });
+    }
+  },
+);
 
 // PATCH /auth/users/:username/admin { admin: boolean }
 router.patch(

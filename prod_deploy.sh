@@ -58,8 +58,6 @@ err(){ echo -e "${RED}Error:${NC} $*" >&2; }
 die(){ err "$*"; exit 1; }
 
 [[ -f "$CONF" ]] || die "Missing backend_locations.conf at $CONF"
-[[ -d "$BACKEND_LOCAL" ]] || die "Missing website_backend dir at $BACKEND_LOCAL"
-[[ -d "$FRONTEND_LOCAL" ]] || die "Missing website_frontend dir at $FRONTEND_LOCAL"
 
 GIT_EMAIL="$(git -C "$SCRIPT_DIR" config user.email || true)"
 [[ -n "${GIT_EMAIL:-}" ]] || die "git user.email not set in this repo. Set it: git config user.email you@company.com"
@@ -72,11 +70,15 @@ Usage:
   $0 list
   $0 all
   $0 <SITE> [MORE...]
+  $0 --only scripts|website|frontend|backend <SITE|all> [MORE...]
   $0 --bootstrap-from <SITE> <SITE> [MORE...]
 
 Notes:
 - Only PROD targets (is_dev=0) are allowed.
-- `all` deploys only PROD backend-mode targets (`deploy_mode=backend`).
+- all deploys only PROD backend-mode targets (deploy_mode=backend).
+- Default: frontend + backend + scripts. --only website means frontend + backend.
+- Field targets accept the default scope or --only scripts.
+- Options may appear before or after site names.
 - Field targets must be deployed explicitly by site name.
 - Frontend is built per site (env differs per site).
 - Backend deploy is per site.
@@ -87,6 +89,9 @@ Examples:
   $0 TSS FRK
   $0 all
   $0 --bootstrap-from FRK TSS
+  $0 --only scripts TSS FRK
+  $0 --only website all
+  $0 --only backend --bootstrap-from FRK TSS
 
 Bootstrap:
 - If backend dir is missing, DB will be bootstrapped from another PROD site via:
@@ -140,18 +145,33 @@ print_prod_locations() {
   done | sed '/^$/N;/^\n$/D'
 }
 
+deploys() {
+  case "$DEPLOY_SCOPE:$1" in
+    full:*|website:frontend|website:backend|scripts:scripts|frontend:frontend|backend:backend) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 require_prod_targets() {
   for n in "$@"; do
     is_known "$n" || die "Unknown site '$n' (check backend_locations.conf)"
     is_prod_target "$n" || die "Refusing non-prod site '$n' in prod_deploy.sh"
-    [[ -n "${DIR[$n]:-}" ]] || die "Config error: '$n' missing backend_dir"
-    [[ -n "${PROJ[$n]:-}" ]] || die "Config error: '$n' missing compose_project"
     [[ -n "${HOST[$n]:-}" ]] || die "Config error: '$n' missing host"
-    [[ -n "${FRONTEND[$n]:-}" ]] || die "Config error: '$n' missing frontend_url"
     case "${DEPLOY_MODE[$n]:-backend}" in
       backend|field) ;;
       *) die "Config error: '$n' has invalid deploy_mode '${DEPLOY_MODE[$n]}' (expected backend or field)" ;;
     esac
+    if is_field_deploy_target "$n"; then
+      [[ "$DEPLOY_SCOPE" == "full" || "$DEPLOY_SCOPE" == "scripts" ]] || die "Field target '$n' supports only default deployment or --only scripts"
+    else
+      if deploys backend; then
+        [[ -n "${DIR[$n]:-}" ]] || die "Config error: '$n' missing backend_dir"
+        [[ -n "${PROJ[$n]:-}" ]] || die "Config error: '$n' missing compose_project"
+      fi
+      if deploys frontend || deploys backend; then
+        [[ -n "${FRONTEND[$n]:-}" ]] || die "Config error: '$n' missing frontend_url"
+      fi
+    fi
   done
 }
 
@@ -1102,10 +1122,11 @@ preflight_auth_and_prereqs() {
 
   for site in "${targets[@]}"; do
     local host="${HOST[$site]}"
-    if [[ " $seen " == *" $host "* ]]; then
+    local check_key="$host:${DEPLOY_MODE[$site]:-backend}"
+    if [[ " $seen " == *" $check_key "* ]]; then
       continue
     fi
-    seen+=" $host"
+    seen+=" $check_key"
 
     echo "Checking SSH auth for $USER@$host ..."
     if ! check_host_reachable "$host"; then
@@ -1114,20 +1135,21 @@ preflight_auth_and_prereqs() {
       continue
     fi
 
-    if is_backend_deploy_target "$site"; then
+    if is_backend_deploy_target "$site" && deploys frontend; then
       echo "Checking /var/www/html exists on $host ..."
       if ! remote_check_var_www_html "$host" >/dev/null 2>&1; then
         err "/var/www/html missing on $host"
         failed+=("$site")
       fi
 
+    fi
+
+    if is_backend_deploy_target "$site" && deploys backend; then
       echo "Checking docker & docker compose runnable on $host ..."
       if ! remote_check_docker_compose_runnable "$host" >/dev/null 2>&1; then
         err "docker/compose not runnable for $USER@$host (need docker group or sudoers NOPASSWD)"
         failed+=("$site")
       fi
-    else
-      echo "Field deploy target detected for $site; skipping frontend/backend host checks."
     fi
   done
 
@@ -1144,21 +1166,35 @@ preflight_auth_and_prereqs() {
 # Parse args
 # -----------------------------------------------------------------------------
 BOOTSTRAP_FROM_OVERRIDE=""
-args=("$@")
+DEPLOY_SCOPE="full"
+args=()
+while (($#)); do
+  case "$1" in
+    --only)
+      [[ -n "${2:-}" ]] || die "--only requires scripts, website, frontend, or backend"
+      [[ "$DEPLOY_SCOPE" == "full" ]] || die "Specify --only once"
+      case "$2" in scripts|website|frontend|backend) DEPLOY_SCOPE="$2" ;; *) die "Invalid --only scope '$2'" ;; esac
+      shift 2 ;;
+    --bootstrap-from)
+      [[ -n "${2:-}" && "$2" != --* ]] || die "--bootstrap-from requires a SITE"
+      [[ -z "$BOOTSTRAP_FROM_OVERRIDE" ]] || die "Specify --bootstrap-from once"
+      BOOTSTRAP_FROM_OVERRIDE="$2"
+      shift 2 ;;
+    help|-h|--help) usage ;;
+    --*) die "Unknown option '$1'" ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
 [[ ${#args[@]} -gt 0 ]] || usage
-
-if [[ "${args[0]}" == "--bootstrap-from" ]]; then
-  [[ -n "${args[1]:-}" ]] || die "--bootstrap-from requires a SITE"
-  BOOTSTRAP_FROM_OVERRIDE="${args[1]}"
-  args=("${args[@]:2}")
-  [[ ${#args[@]} -gt 0 ]] || usage
+cmd="${args[0]}"
+if [[ "$cmd" == "list" ]]; then
+  [[ ${#args[@]} -eq 1 ]] || die "list cannot be combined with sites"
+  print_prod_locations
+  exit 0
 fi
-
-cmd="${args[0]:-}"
-case "$cmd" in
-  help|-h|--help) usage ;;
-  list) print_prod_locations; exit 0 ;;
-esac
+if [[ " ${args[*]} " == *" all "* && ${#args[@]} -ne 1 ]]; then
+  die "Use all by itself, or specify individual sites"
+fi
 
 targets=()
 if [[ "$cmd" == "all" ]]; then
@@ -1176,13 +1212,27 @@ fi
 require_prod_targets "${targets[@]}"
 
 if [[ -n "$BOOTSTRAP_FROM_OVERRIDE" ]]; then
+  deploys backend || die "--bootstrap-from requires a backend deployment (default, --only website, or --only backend)"
+  for site in "${targets[@]}"; do
+    is_backend_deploy_target "$site" || die "--bootstrap-from cannot be used with field targets"
+  done
   is_known "$BOOTSTRAP_FROM_OVERRIDE" || die "Unknown --bootstrap-from '$BOOTSTRAP_FROM_OVERRIDE'"
   is_prod_target "$BOOTSTRAP_FROM_OVERRIDE" || die "--bootstrap-from must be a PROD site (is_dev=0)"
+  is_backend_deploy_target "$BOOTSTRAP_FROM_OVERRIDE" || die "--bootstrap-from must name a backend-mode site"
 fi
 
 # -----------------------------------------------------------------------------
 # Execute
 # -----------------------------------------------------------------------------
+for site in "${targets[@]}"; do
+  if is_backend_deploy_target "$site"; then
+    if deploys frontend; then [[ -d "$FRONTEND_LOCAL" ]] || die "Missing website_frontend dir at $FRONTEND_LOCAL"; fi
+    if deploys backend; then [[ -d "$BACKEND_LOCAL" ]] || die "Missing website_backend dir at $BACKEND_LOCAL"; fi
+  fi
+done
+if deploys scripts; then [[ -d "$SCRIPTS_DIR" ]] || die "Missing scripts directory at $SCRIPTS_DIR"; fi
+
+echo "Deployment scope: $DEPLOY_SCOPE"
 verify_git_main_clean_synced
 preflight_auth_and_prereqs "${targets[@]}"
 
@@ -1203,10 +1253,12 @@ for site in "${targets[@]}"; do
     echo "  /home/$USER/.wistronlabs_field.env"
     echo "  /home/$USER/config/field_stations.json"
   else
-    frontend_build_for_site "$site"
-    frontend_upload_to_site "$site"
-    backend_deploy_one "$site"
-    deploy_scripts_to_site "$site"
+    if deploys frontend; then
+      frontend_build_for_site "$site"
+      frontend_upload_to_site "$site"
+    fi
+    if deploys backend; then backend_deploy_one "$site"; fi
+    if deploys scripts; then deploy_scripts_to_site "$site"; fi
   fi
 
   echo ""

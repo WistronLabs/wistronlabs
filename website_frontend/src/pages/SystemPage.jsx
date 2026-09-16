@@ -1022,7 +1022,8 @@ function SystemPage() {
           if (
             !prev ||
             prev.id !== newUser?.id ||
-            prev.isAdmin !== newUser?.isAdmin
+            prev.isAdmin !== newUser?.isAdmin ||
+            prev.terminalAccess !== newUser?.terminalAccess
           ) {
             return newUser;
           }
@@ -1237,6 +1238,12 @@ function SystemPage() {
       setLoading(false);
     }
   };
+
+  const assignedStation = system?.service_tag
+    ? stations.find((station) => station.system_service_tag === system.service_tag)
+    : null;
+  const canOpenAssignedTerminal =
+    !!token && !!assignedStation && (!!me?.isAdmin || !!me?.terminalAccess);
 
   let selectedStationObj = null;
   if (system?.location === "In L10") {
@@ -3335,6 +3342,16 @@ function SystemPage() {
               </div>
 
               <div className="flex flex-col sm:flex-row sm:items-start gap-2">
+                {canOpenAssignedTerminal && (
+                  <Link
+                    to={`/stations?terminal=${encodeURIComponent(assignedStation.station_name)}&popout=1`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow"
+                  >
+                    Open Terminal · Station {assignedStation.station_name}
+                  </Link>
+                )}
                 {!isRMA || (isRMA && isInPalletNumber) ? (
                   <button
                     type="button"

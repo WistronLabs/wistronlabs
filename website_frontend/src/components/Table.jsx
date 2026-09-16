@@ -1,10 +1,10 @@
 import Station from "./Station";
 
-function Table({ stations, stationNumbers, tableNumber, link }) {
+function Table({ stations, stationNumbers, tableNumber, link, onOpenTerminal }) {
   return (
     <>
       <h2 className="text-xl font-medium mb-4">Debug Table {tableNumber}</h2>
-      <div className="pb-4 w-full rounded overflow-visible shadow-sm">
+      <div className="mb-4 w-full rounded overflow-visible shadow-sm">
         <table className="w-full bg-white rounded border-collapse overflow-visible">
           <thead>
             <tr>
@@ -27,7 +27,7 @@ function Table({ stations, stationNumbers, tableNumber, link }) {
                 )
               )
               .map((s, index) => (
-                <Station key={index} stationInfo={s} link={link} />
+                <Station key={index} stationInfo={s} link={link} onOpenTerminal={onOpenTerminal} />
               ))}
           </tbody>
         </table>

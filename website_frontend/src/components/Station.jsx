@@ -7,6 +7,7 @@ const PROGRESS_WINDOW_MIN = 110; // how long until the bar reaches 100%
 
 function Station({
   stationInfo,
+  onOpenTerminal,
   link = false,
   progressWindowMin = PROGRESS_WINDOW_MIN,
 }) {
@@ -177,7 +178,38 @@ function Station({
   return (
     <tr key={stationInfo.station}>
       <td className="p-3 border-b border-gray-200 text-left">
-        Station {stationInfo.station_name}
+        <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
+          <span
+            className={onOpenTerminal ? "w-28 shrink-0 truncate tabular-nums" : undefined}
+            title={`Station ${stationInfo.station_name}`}
+          >
+            Station {stationInfo.station_name}
+          </span>
+          {onOpenTerminal && (
+            <button
+              type="button"
+              onClick={() => onOpenTerminal(stationInfo.station_name)}
+              aria-label={`Open terminal for Station ${stationInfo.station_name}`}
+              title={`Open terminal for Station ${stationInfo.station_name}`}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-400 transition-colors hover:bg-blue-50 hover:text-blue-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >
+              <svg
+                aria-hidden="true"
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.75"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <rect x="3" y="4" width="18" height="16" rx="2" />
+                <path d="m7 9 3 3-3 3M13 15h4" />
+              </svg>
+            </button>
+          )}
+        </div>
       </td>
 
       <td className="relative overflow-visible p-3 border-b border-gray-200 text-center">

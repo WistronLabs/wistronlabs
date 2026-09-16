@@ -1,12 +1,12 @@
 import Station from "./Station";
 
-function Rack({ stations, rackNumber, link }) {
+function Rack({ stations, rackNumber, link, onOpenTerminal }) {
   const stationsPlace = rackNumber * 100;
 
   return (
     <>
       <h2 className="text-xl font-medium mb-4">Debug Rack {rackNumber}</h2>
-      <div className="pb-4 w-full rounded overflow-visible shadow-sm">
+      <div className="mb-4 w-full rounded overflow-visible shadow-sm">
         <table className="w-full bg-white rounded border-collapse overflow-visible">
           <thead>
             <tr>
@@ -32,7 +32,7 @@ function Rack({ stations, rackNumber, link }) {
               )
               .reverse()
               .map((s, index) => (
-                <Station key={index} stationInfo={s} link={link} />
+                <Station key={index} stationInfo={s} link={link} onOpenTerminal={onOpenTerminal} />
               ))}
             <tr
               className="bg-gray-50 font-semibold uppercase text-xs text-gray-600 p-3"
@@ -54,7 +54,7 @@ function Rack({ stations, rackNumber, link }) {
               )
               .reverse()
               .map((s, index) => (
-                <Station key={index} stationInfo={s} link={link} />
+                <Station key={index} stationInfo={s} link={link} onOpenTerminal={onOpenTerminal} />
               ))}
           </tbody>
         </table>

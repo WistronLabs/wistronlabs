@@ -12,6 +12,9 @@ app.use(cookieParser());
 app.use(
   cors({
     origin: [
+      ...(process.env.FRONTEND_URL
+        ? [new URL(process.env.FRONTEND_URL).origin]
+        : []),
       "http://localhost:5174",
       "http://100.122.156.49:5173", // IP address of Gios macbook
       "http://tss.wistronlabs.com",
@@ -29,7 +32,7 @@ const locationsRouter = require("./routes/locations");
 const serverRouter = require("./routes/server");
 const stationsRouter = require("./routes/stations");
 const palletRouter = require("./routes/pallets");
-const { router: authRouter } = require("./routes/auth");
+const { router: authRouter, authenticateToken } = require("./routes/auth");
 const partItemsRouter = require("./routes/partItems");
 const partsRouter = require("./routes/parts");
 const partCategoriesRouter = require("./routes/partCategories");
@@ -50,7 +53,21 @@ app.use("/api/v1/migrations", migrationsRouter);
 app.use("/api/v1/tags", tagsRouter);
 app.use("/api/v1/systems", systemTagsRouter);
 
+const { createTerminals } = require("./services/terminals");
+const terminals = createTerminals({
+  db: require("./db"),
+  authenticateToken,
+  socketPath: process.env.TERMINAL_HOST_SOCKET,
+  publicOrigin: process.env.TERMINAL_PUBLIC_ORIGIN,
+  frontendOrigin: process.env.FRONTEND_URL
+    ? new URL(process.env.FRONTEND_URL).origin
+    : undefined,
+});
+app.use("/api/v1/terminals", terminals.router);
+app.get(/^\/api\/v1\/terminals\/views\/[a-f0-9-]{36}\/.*$/, terminals.view);
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`API running on port ${PORT}`);
 });
+
+server.on("upgrade", terminals.upgrade);
