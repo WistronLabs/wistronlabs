@@ -98,6 +98,8 @@ export default function BatchExportSystemFilesModal({
   jobs,
   jobsLoading,
   onDownload,
+  onCopyForOutlook,
+  copyingJobId,
   activeJobId,
 }) {
   useBodyScrollLock(true);
@@ -328,6 +330,17 @@ export default function BatchExportSystemFilesModal({
                           className="rounded-md bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           Download Batch Files
+                        </button>
+                        <button
+                          type="button"
+                          disabled={job.status !== "ready" || !job.review_rows?.length || !!copyingJobId}
+                          onClick={() => onCopyForOutlook(job)}
+                          title={job.status === "ready" && !job.review_rows?.length
+                            ? "Create a new batch to copy its file availability."
+                            : undefined}
+                          className="rounded-md bg-green-600 px-3 py-1.5 text-sm text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {copyingJobId === job.job_id ? "Copying…" : "Copy for Outlook"}
                         </button>
                       </div>
 

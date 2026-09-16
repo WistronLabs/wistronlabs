@@ -6,9 +6,11 @@ function UsersSection({
   loading,
   users,
   baselineMap,
+  terminalBaselineMap,
   me,
   showToast,
   handleLocalToggle,
+  handleTerminalToggle,
   handleDiscard,
   handleSave,
   hasChanges,
@@ -28,19 +30,22 @@ function UsersSection({
             <tr>
               <th className="text-left font-medium px-3 py-2">Username</th>
               <th className="text-left font-medium px-3 py-2">Created</th>
+              <th className="text-right font-medium px-3 py-2">
+                Terminal Access
+              </th>
               <th className="text-right font-medium px-3 py-2 w-52">Access</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {loading ? (
               <tr>
-                <td colSpan={3} className="px-3 py-6 text-center text-gray-500">
+                <td colSpan={4} className="px-3 py-6 text-center text-gray-500">
                   Loading…
                 </td>
               </tr>
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={3} className="px-3 py-6 text-center text-gray-500">
+                <td colSpan={4} className="px-3 py-6 text-center text-gray-500">
                   No users.
                 </td>
               </tr>
@@ -48,20 +53,44 @@ function UsersSection({
               users.map((u) => {
                 const checked = !!u.isAdmin;
                 const original = baselineMap?.[u.username?.toLowerCase()];
-                const changed = typeof original === "boolean" && original !== checked;
+                const changed =
+                  (typeof original === "boolean" && original !== checked) ||
+                  !!terminalBaselineMap?.[u.username.toLowerCase()] !==
+                    !!u.terminalAccess;
                 const isSelf =
                   me?.username?.toLowerCase() === u.username?.toLowerCase();
 
                 return (
-                  <tr key={u.username} className={changed ? "bg-amber-100/50" : ""}>
+                  <tr
+                    key={u.username}
+                    className={changed ? "bg-amber-100/50" : ""}
+                  >
                     <td className="px-3 py-2 align-middle">
-                      <span className="font-medium text-gray-900">{u.username}</span>
+                      <span className="font-medium text-gray-900">
+                        {u.username}
+                      </span>
                       {isSelf && (
-                        <span className="ml-2 text-xs text-gray-500">(you)</span>
+                        <span className="ml-2 text-xs text-gray-500">
+                          (you)
+                        </span>
                       )}
                     </td>
                     <td className="px-3 py-2 align-middle text-gray-600">
-                      {u.createdAt ? new Date(u.createdAt).toLocaleString() : ""}
+                      {u.createdAt
+                        ? new Date(u.createdAt).toLocaleString()
+                        : ""}
+                    </td>
+                    <td className="px-3 py-2 text-right">
+                      <label className="inline-flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          aria-label={`Terminal access for ${u.username}`}
+                          checked={!!u.isAdmin || !!u.terminalAccess}
+                          disabled={!!u.isAdmin || !me?.isAdmin || saving}
+                          onChange={() => handleTerminalToggle(u)}
+                        />
+                        {u.isAdmin ? "Included with Admin" : "Allowed"}
+                      </label>
                     </td>
                     <td className="px-3 py-2 align-middle">
                       <div className="flex justify-end">

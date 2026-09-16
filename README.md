@@ -40,6 +40,8 @@ Access the web portal via:
 http://[location].wistronlabs.com
 ```
 
+Web terminal installation and configuration: [Station web terminals](TERMINALS.md).
+
 #### Station Statuses
 ![Stations Screenshot](https://github.com/giovannirleon/wistronlabs/blob/main/media/station_statuses.png)
 

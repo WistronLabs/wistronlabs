@@ -19,6 +19,7 @@ function AdminPage() {
     getUsers,
     getMe,
     setUserAdmin,
+    setUserTerminalAccess,
     getDpns,
     createDpn,
     updateDpn,
@@ -1132,7 +1133,8 @@ function AdminPage() {
     return changes;
   }, [users, baselineMap]);
 
-  const hasChanges = pendingChanges.length > 0;
+  const pendingTerminalChanges = users.filter((u) => !!u.terminalAccess !== !!baselineUsers.find((b) => b.username === u.username)?.terminalAccess);
+  const hasChanges = pendingChanges.length > 0 || pendingTerminalChanges.length > 0;
 
   const handleSave = async (e) => {
     e.preventDefault(); // prevent page reload
@@ -1159,6 +1161,9 @@ function AdminPage() {
       // Loop over single-user PATCH endpoint (sequential for easier error handling)
       for (const c of pendingChanges) {
         await setUserAdmin(c.username, c.admin);
+      }
+      for (const u of pendingTerminalChanges) {
+        await setUserTerminalAccess(u.username, !!u.terminalAccess);
       }
       // On success, reset baseline to current
       setBaselineUsers(users);
@@ -1757,8 +1762,10 @@ function AdminPage() {
             loading={loading}
             users={users}
             baselineMap={baselineMap}
+            terminalBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.terminalAccess]))}
             me={me}
             showToast={showToast}
+            handleTerminalToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, terminalAccess: !x.terminalAccess } : x))}
             handleLocalToggle={handleLocalToggle}
             handleDiscard={handleDiscard}
             handleSave={handleSave}

@@ -15,11 +15,13 @@ import SystemPDFLabel from "../components/SystemPDFLabel.jsx";
 
 import AddSystemModal from "../components/AddSystemModal.jsx";
 import DownloadReportModal from "../components/DownloadReportModal.jsx";
+import BatchUpdatesPanel from "../components/BatchUpdatesPanel.jsx";
 import BatchExportSystemFilesModal from "../components/BatchExportSystemFilesModal.jsx";
 import Tooltip from "../components/Tooltip.jsx";
 
 import { formatDateHumanReadable } from "../utils/date_format.js";
 import { downloadCSV } from "../utils/csv.js";
+import { buildBatchExportOutlookContent } from "../utils/batchExportOutlook.js";
 import { delay } from "../utils/delay.js";
 
 import useConfirm from "../hooks/useConfirm";
@@ -143,6 +145,7 @@ function TrackingPage() {
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkStoppedTag, setBulkStoppedTag] = useState(null);
   const [bulkRetryWarning, setBulkRetryWarning] = useState(null);
+  const [systemsTab, setSystemsTab] = useState("systems");
   const [isBatchExportModalOpen, setIsBatchExportModalOpen] = useState(false);
   const [batchExportCsv, setBatchExportCsv] = useState("");
   const [batchExportOptions, setBatchExportOptions] = useState(
@@ -154,6 +157,7 @@ function TrackingPage() {
   const [batchExportPreviewLoading, setBatchExportPreviewLoading] = useState(false);
   const [batchExportStartLoading, setBatchExportStartLoading] = useState(false);
   const [activeBatchExportJobId, setActiveBatchExportJobId] = useState(null);
+  const [copyingBatchExportJobId, setCopyingBatchExportJobId] = useState(null);
   const [chartStartDate, setChartStartDate] = useState("");
   const [chartEndDate, setChartEndDate] = useState("");
   const [chartMinDate, setChartMinDate] = useState("");
@@ -1353,6 +1357,32 @@ function TrackingPage() {
     }
   }
 
+  async function handleCopyBatchExportForOutlook(job) {
+    if (job.status !== "ready" || !job.review_rows?.length) return;
+    if (!navigator.clipboard?.write || typeof ClipboardItem === "undefined") {
+      showToast(
+        "Your browser does not support formatted clipboard copying.",
+        "error", 4000, "top-right",
+      );
+      return;
+    }
+
+    setCopyingBatchExportJobId(job.job_id);
+    try {
+      const { html, plainText } = buildBatchExportOutlookContent(job.review_rows);
+      await navigator.clipboard.write([new ClipboardItem({
+        "text/html": new Blob([html], { type: "text/html" }),
+        "text/plain": new Blob([plainText], { type: "text/plain" }),
+      })]);
+      showToast("Batch table copied for Outlook.", "success", 3000, "top-right");
+    } catch (err) {
+      console.error("Failed to copy batch table for Outlook", err);
+      showToast("Failed to copy batch table for Outlook.", "error", 3000, "top-right");
+    } finally {
+      setCopyingBatchExportJobId(null);
+    }
+  }
+
   async function handleDownloadBatchExport(job) {
     try {
       const url = `${BACKEND_URL}/systems/batch-export-unit-data/${encodeURIComponent(job.job_id)}/download`;
@@ -1418,31 +1448,33 @@ function TrackingPage() {
       <Toast />
 
       <main className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6">
-        <div className="flex justify-between items-center mb-4">
-          <h1 className="text-3xl font-semibold text-gray-800">Systems</h1>
-          <Tooltip
-            text="Please log in to add a unit"
-            position="botom"
-            show={!token == true}
-          >
-            {token && (
-              <button
-                onClick={() => {
-                  resetBulkReviewState();
-                  setAddSystemFormError(null);
-                  setShowModal(true);
-                }}
-                className={`bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow-s ${
-                  !token ? "opacity-30 pointer-events-none" : ""
-                }`}
-              >
-                + Add System
-              </button>
-            )}
-          </Tooltip>
-        </div>
+        <h1 className="text-3xl font-semibold text-gray-800">Systems</h1>
 
-        {loading ? (
+        <div className="flex items-center justify-between gap-3 border-b border-gray-200 pb-3">
+          <div className="flex gap-2" role="tablist" aria-label="Systems views">
+            {[["systems", "Systems List"], ["batch", "Batch Updates"]].map(([key, label]) => (
+              <button key={key} type="button" role="tab" aria-selected={systemsTab === key}
+                onClick={() => setSystemsTab(key)}
+                className={`rounded-md px-4 py-2 text-sm font-medium ${systemsTab === key ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {systemsTab === "systems" && token && (
+            <button
+              type="button"
+              onClick={() => {
+                resetBulkReviewState();
+                setAddSystemFormError(null);
+                setShowModal(true);
+              }}
+              className="shrink-0 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+            >
+              + Add System
+            </button>
+          )}
+        </div>
+        {systemsTab === "batch" ? <BatchUpdatesPanel token={token} /> : loading ? (
           <LoadingSkeleton rows={10} />
         ) : error ? (
           <div className="text-red-600">{error}</div>
@@ -1735,6 +1767,8 @@ function TrackingPage() {
             jobs={batchExports}
             jobsLoading={batchExportsLoading}
             onDownload={handleDownloadBatchExport}
+            onCopyForOutlook={handleCopyBatchExportForOutlook}
+            copyingJobId={copyingBatchExportJobId}
             activeJobId={activeBatchExportJobId}
           />
         )}

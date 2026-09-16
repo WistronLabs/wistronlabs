@@ -1,3 +1,5 @@
+import useL11ScanJobs, { isActiveScan } from "../hooks/useL11ScanJobs.js";
+import L11ScanHistory, { ScanEntry } from "../components/L11ScanHistory.jsx";
 import { useEffect, useState, useContext, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import Select, { components as SelectComponents } from "react-select";
@@ -6,6 +8,8 @@ import { Link } from "react-router-dom";
 import { DateTime } from "luxon";
 import { QRCodeSVG } from "qrcode.react";
 
+import { MRB_APPROVAL_ACCEPT } from "../components/MrbApprovalPanel.jsx";
+import useMrbApprovals from "../hooks/useMrbApprovals.js";
 import Flowchart from "../components/Flowchart";
 import { useParams } from "react-router-dom";
 import SearchContainer from "../components/SearchContainer";
@@ -46,66 +50,6 @@ import {
   filterPartOption,
 } from "../utils/partSelectHelpers.js";
 
-function summarizeRunnerText(text, maxLines = 4) {
-  const cleaned = String(text || "").trim();
-  if (!cleaned) return "";
-  const lines = cleaned.split(/\r?\n/).filter(Boolean);
-  const clipped = lines.slice(-maxLines);
-  const suffix = lines.length > maxLines ? "\n..." : "";
-  return `${clipped.join("\n")}${suffix}`;
-}
-
-function getL11ScanDisplayStatus(status, stdout = "") {
-  const rawStatus = String(status || "").toLowerCase();
-  const output = String(stdout || "").toLowerCase();
-
-  if (rawStatus === "queued") return "Starting";
-  if (rawStatus === "running") return "Running";
-  if (rawStatus === "failed") return "Failed";
-  if (rawStatus === "succeeded") {
-    if (
-      output.includes("nothing to collect") ||
-      output.includes("nothing to do") ||
-      output.includes("no extracted folder tree contains")
-    ) {
-      return "Complete";
-    }
-    return "Complete";
-  }
-  return "Unknown";
-}
-
-function getL11ScanSummary(stdout = "") {
-  const output = String(stdout || "");
-  const normalized = output.toLowerCase();
-
-  if (!output.trim()) return "";
-  if (
-    normalized.includes("nothing to collect") ||
-    normalized.includes("nothing to do") ||
-    normalized.includes("no extracted folder tree contains")
-  ) {
-    return "No matching L11 fail logs were found for this unit.";
-  }
-  if (
-    normalized.includes("moving tar to") ||
-    normalized.includes("[hook] done.") ||
-    normalized.includes("creating tar")
-  ) {
-    return "L11 logs were found and processed.";
-  }
-  return summarizeRunnerText(output);
-}
-
-function formatL11ScanToastMessage({ status, stdout = "" }) {
-  const lines = [
-    "L11 Log Scan",
-    `Status: ${getL11ScanDisplayStatus(status, stdout)}`,
-  ];
-  const output = getL11ScanSummary(stdout);
-  return output ? `${lines.join("\n")}\n\n${output}` : lines.join("\n");
-}
-
 function SystemPage() {
   const FRONTEND_URL = import.meta.env.VITE_URL;
   const PENDING_PARTS_NAME = "Pending Parts";
@@ -118,6 +62,7 @@ function SystemPage() {
     "Remove or return all good parts added or updated since the most recent Received before moving to Pending L11 Logs.";
 
   const { serviceTag } = useParams();
+  const { token } = useContext(AuthContext);
 
   const [history, setHistory] = useState([]);
   const [system, setSystem] = useState(null); // new
@@ -139,6 +84,7 @@ function SystemPage() {
   const [photos, setPhotos] = useState([]);
   const [hasLogsTab, setHasLogsTab] = useState(false);
   const [hasPhotosTab, setHasPhotosTab] = useState(false);
+  const mrbApprovalInput = useRef(null);
   const [hasL11RackLogs, setHasL11RackLogs] = useState(false);
   const [repairsAllowed, setRepairsAllowed] = useState(null);
   const [l11LogReconciliationMode, setL11LogReconciliationMode] =
@@ -152,7 +98,7 @@ function SystemPage() {
   const [showPhoneQr, setShowPhoneQr] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [uploadingL11Logs, setUploadingL11Logs] = useState(false);
-  const [runningL11Scan, setRunningL11Scan] = useState(false);
+
   const [exportingUnitData, setExportingUnitData] = useState(false);
   const [releasedPallets, setreleasedPallets] = useState([]);
 
@@ -176,11 +122,15 @@ function SystemPage() {
   const [tab, setTab] = useState("history");
   const [logsDir, setLogsDir] = useState(""); // e.g. "2025-09-25/"
   const [logsRefreshNonce, setLogsRefreshNonce] = useState(0);
+  const scanJobs = useL11ScanJobs(serviceTag, !!token, () => setLogsRefreshNonce((value) => value + 1));
+  const activeScans = scanJobs.jobs.filter((job) => !["succeeded", "failed", "outdated"].includes(job.status));
+  const currentScan = scanJobs.jobs.find((job) => job.current);
+  const runningL11Scan = isActiveScan(currentScan);
+
   const photoMenuRef = useRef(null);
   const l11MenuRef = useRef(null);
   const photoInputRef = useRef(null);
   const l11LogsInputRef = useRef(null);
-  const l11ScanPollTimeoutRef = useRef(null);
 
   const { confirmPrint, ConfirPrintmModal } = usePrintConfirm();
   const { confirmPrintPendingParts, ConfirPrintmModalPendingParts } =
@@ -243,10 +193,13 @@ function SystemPage() {
   );
   const latestReceivedAt = useMemo(() => {
     const latestReceivedEntry = (history || []).find(
-      (entry) => String(entry?.to_location || "") === "Received",
+      (entry) => String(entry?.to_location || "") === "Received" && String(entry?.from_location || "") !== "Received",
     );
     return latestReceivedEntry?.changed_at || null;
   }, [history]);
+  const mrbApprovals = useMrbApprovals(serviceTag, latestReceivedAt);
+  const hasMrbApproval = mrbApprovals.found;
+  const showMrbUpload = currentLocation === "Pending MRB" && mrbApprovals.loaded && !hasMrbApproval;
   const latestReceivedMs = useMemo(
     () => Date.parse(String(latestReceivedAt || "")),
     [latestReceivedAt],
@@ -281,14 +234,13 @@ function SystemPage() {
   const hasSystemFolderEvidence =
     Number(system?.l10_logs_total_size_bytes || 0) > 0;
 
-  const { token } = useContext(AuthContext);
   const canAddPhoto = !isResolved && !!token;
   const canUseL11LogReconciliationMode =
     l11LogReconciliationMode && !!me?.isAdmin;
   const canUseL11LogActions =
     isPendingL11Logs || canUseL11LogReconciliationMode;
   const canUploadL11Logs =
-    !!token &&
+    !!token && !runningL11Scan &&
     (!isResolved || canUseL11LogReconciliationMode) &&
     (!hasL11RackLogs || canUseL11LogReconciliationMode) &&
     !!String(system?.rack_id || "").trim();
@@ -341,12 +293,21 @@ function SystemPage() {
     getSystemL11LogsFound,
     uploadSystemL11LogArchive,
     startSystemL11Scan,
-    getSystemL11ScanStatus,
     exportSystemUnitData,
     getRepairsAllowed,
     getL11LogReconciliationMode,
     getPendingL11MoveRule,
   } = useApi();
+  const historyApiRef = useRef(getSystemHistory);
+  historyApiRef.current = getSystemHistory;
+  useEffect(() => {
+    let active = true;
+    historyApiRef.current(serviceTag).then((entries) => {
+      if (active) setHistory(entries);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [serviceTag, logsRefreshNonce, mrbApprovals.found]);
+
 
   const { confirm, ConfirmDialog } = useConfirm();
   const { showToast, Toast } = useToast();
@@ -1061,7 +1022,8 @@ function SystemPage() {
           if (
             !prev ||
             prev.id !== newUser?.id ||
-            prev.isAdmin !== newUser?.isAdmin
+            prev.isAdmin !== newUser?.isAdmin ||
+            prev.terminalAccess !== newUser?.terminalAccess
           ) {
             return newUser;
           }
@@ -1276,6 +1238,12 @@ function SystemPage() {
       setLoading(false);
     }
   };
+
+  const assignedStation = system?.service_tag
+    ? stations.find((station) => station.system_service_tag === system.service_tag)
+    : null;
+  const canOpenAssignedTerminal =
+    !!token && !!assignedStation && (!!me?.isAdmin || !!me?.terminalAccess);
 
   let selectedStationObj = null;
   if (system?.location === "In L10") {
@@ -1764,12 +1732,12 @@ function SystemPage() {
   }, [serviceTag]);
 
   useEffect(() => {
-    if (tab === "logs" && !hasLogsTab) {
+    if (tab === "logs" && !hasLogsTab && !token) {
       setTab(hasPhotosTab ? "photos" : "history");
     } else if (tab === "photos" && !hasPhotosTab) {
       setTab(hasLogsTab ? "logs" : "history");
     }
-  }, [tab, hasLogsTab, hasPhotosTab]);
+  }, [tab, hasLogsTab, hasPhotosTab, token]);
 
   useEffect(() => {
     const onDocClick = (e) => {
@@ -1795,15 +1763,6 @@ function SystemPage() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, []);
-
-  useEffect(
-    () => () => {
-      if (l11ScanPollTimeoutRef.current) {
-        window.clearTimeout(l11ScanPollTimeoutRef.current);
-      }
-    },
-    [],
-  );
 
   const handleLocalPhotoPick = async (evt) => {
     const file = evt?.target?.files?.[0];
@@ -1847,83 +1806,10 @@ function SystemPage() {
 
   const handleRunL11Scan = async () => {
     if (!canRunL11Scan || runningL11Scan) return;
-
-    if (l11ScanPollTimeoutRef.current) {
-      window.clearTimeout(l11ScanPollTimeoutRef.current);
-      l11ScanPollTimeoutRef.current = null;
-    }
-
-    setRunningL11Scan(true);
     try {
-      const started = await startSystemL11Scan(serviceTag);
-      setShowL11Menu(false);
-      const jobId = started?.job_id;
-      if (!jobId)
-        throw new Error("L11 scan started but no job id was returned");
-
-      const renderProgress = (job) => {
-        showToast(
-          formatL11ScanToastMessage({
-            status: job?.status || "queued",
-            stdout: job?.stdout || "",
-          }),
-          "info",
-          0,
-          "bottom-right",
-        );
-      };
-
-      renderProgress({ status: started?.status || "queued" });
-
-      const poll = async () => {
-        try {
-          const job = await getSystemL11ScanStatus(serviceTag, jobId);
-          renderProgress(job);
-
-          if (job?.status === "queued" || job?.status === "running") {
-            l11ScanPollTimeoutRef.current = window.setTimeout(poll, 2000);
-            return;
-          }
-
-          l11ScanPollTimeoutRef.current = null;
-          setRunningL11Scan(false);
-          setLogsRefreshNonce((n) => n + 1);
-
-          const finalType = job?.status === "succeeded" ? "success" : "error";
-          showToast(
-            formatL11ScanToastMessage({
-              status: job?.status || "unknown",
-              stdout: job?.stdout || "",
-            }),
-            finalType,
-            12000,
-            "bottom-right",
-          );
-        } catch (e) {
-          l11ScanPollTimeoutRef.current = null;
-          setRunningL11Scan(false);
-          const msg =
-            e?.body?.error || e?.message || "Failed to fetch L11 scan status";
-          showToast(
-            `L11 Log Scan\nStatus: FAILED\n\n${msg}`,
-            "error",
-            8000,
-            "bottom-right",
-          );
-        }
-      };
-
-      l11ScanPollTimeoutRef.current = window.setTimeout(poll, 1500);
-    } catch (e) {
-      setRunningL11Scan(false);
-      const msg = e?.body?.error || e?.message || "Failed to start L11 scan";
-      showToast(
-        `L11 Log Scan\nStatus: FAILED\n\n${msg}`,
-        "error",
-        8000,
-        "bottom-right",
-      );
-    }
+      await startSystemL11Scan(serviceTag);
+      setShowL11Menu(false); scanJobs.refresh();
+    } catch (error) { showToast(error.body?.error || error.message, "error", 5000, "bottom-right"); }
   };
 
   const handleExportUnitData = async () => {
@@ -2055,6 +1941,15 @@ function SystemPage() {
       return;
     }
 
+    const destinationName = locations.find((location) => location.id === toId)?.name;
+    if (isPendingL11Logs && destinationName === "RMA PID" && !hasL11RackLogs) {
+      setFormError("Current L11 logs required to move to RMA PID.");
+      return;
+    }
+    if (destinationName === "RMA CID" && !hasMrbApproval) {
+      setFormError("Upload MRB approval after the latest Received event before moving to RMA CID.");
+      return;
+    }
     const movingToPendingParts = toId === pendingPartsLocationId;
     const movingToPendingMrb =
       pendingMrbLocationId != null && toId === pendingMrbLocationId;
@@ -3226,8 +3121,22 @@ function SystemPage() {
       ? String(system.root_cause_sub_category_id)
       : null);
 
+  const renderMrbApprovalAction = () => showMrbUpload ? (
+    <button type="button" disabled={!token || mrbApprovals.busy}
+      onClick={() => mrbApprovalInput.current?.click()}
+      className="w-full sm:w-auto bg-sky-600 hover:bg-sky-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow disabled:opacity-50 transition">
+      {mrbApprovals.busy ? "Uploading…" : "Upload MRB Approval"}
+    </button>
+  ) : null;
+
+  const renderActiveScans = () => activeScans.length > 0 && (
+    <div className="mt-3 w-full min-w-0 space-y-2 text-left" aria-label="Active L11 scans">
+      {activeScans.map((job) => <ScanEntry key={job.job_id} job={job} timeZone={serverTimeZone} />)}
+    </div>
+  );
+
   const renderL11LogActions = () =>
-    canUseL11LogActions ? (
+    (canUseL11LogActions || activeScans.length > 0) ? (
       <div className="relative" ref={l11MenuRef}>
         <button
           type="button"
@@ -3433,6 +3342,16 @@ function SystemPage() {
               </div>
 
               <div className="flex flex-col sm:flex-row sm:items-start gap-2">
+                {canOpenAssignedTerminal && (
+                  <Link
+                    to={`/stations?terminal=${encodeURIComponent(assignedStation.station_name)}&popout=1`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-medium px-3 py-1.5 text-sm rounded shadow"
+                  >
+                    Open Terminal · Station {assignedStation.station_name}
+                  </Link>
+                )}
                 {!isRMA || (isRMA && isInPalletNumber) ? (
                   <button
                     type="button"
@@ -3538,6 +3457,8 @@ function SystemPage() {
 
                           const rmaBlocked =
                             isRMA && willHaveRecentGoodAfterSubmit;
+                          const mrbApprovalBlocked = isRmaCid && !hasMrbApproval;
+                          const missingL11Blocked = isPendingL11Logs && loc.name === "RMA PID" && !hasL11RackLogs;
                           const cidPhotoBlocked =
                             isRmaCid && !hasFreshPhotoEvidenceForCid;
                           const evidenceBlocked =
@@ -3564,6 +3485,8 @@ function SystemPage() {
                             isPendingL11Destination && l11LogsAlreadyPresent;
                           const disabled =
                             isResolved ||
+                            mrbApprovalBlocked ||
+                            missingL11Blocked ||
                             rmaBlocked ||
                             cidPhotoBlocked ||
                             evidenceBlocked ||
@@ -3574,7 +3497,11 @@ function SystemPage() {
                             pendingMrbGoodPartsBlocked ||
                             pendingMrbPhotoBlocked;
 
-                          const title = l11Blocked
+                          const title = mrbApprovalBlocked
+                            ? "Upload MRB approval after the latest Received event before moving to RMA CID."
+                            : missingL11Blocked
+                              ? "Current L11 logs required to move to RMA PID."
+                              : l11Blocked
                             ? "L11 Logs Already Present"
                             : rmaBlocked
                               ? "Remove/return all good parts before moving to an RMA location."
@@ -5205,7 +5132,11 @@ function SystemPage() {
                   )}
 
                   {!formDisabled && renderL11LogActions()}
+
+                  {!formDisabled && renderMrbApprovalAction()}
                 </div>
+
+                {!formDisabled && renderActiveScans()}
 
                 {isRMA ? (
                   isInPalletNumber ? (
@@ -5231,11 +5162,19 @@ function SystemPage() {
                   <></>
                 )}
               </fieldset>
-              {formDisabled && canUseL11LogActions && (
+              {formDisabled && (canUseL11LogActions || activeScans.length > 0 || showMrbUpload) && (
                 <div className="w-full sm:w-auto flex flex-wrap items-start gap-2">
                   {renderL11LogActions()}
+                  {renderMrbApprovalAction()}
                 </div>
               )}
+              {formDisabled && renderActiveScans()}
+              <input ref={mrbApprovalInput} type="file" accept={MRB_APPROVAL_ACCEPT} className="hidden"
+                onChange={(event) => {
+                  if (showMrbUpload && token) mrbApprovals.upload(event.target.files?.[0]);
+                  event.target.value = "";
+                }} />
+              {mrbApprovals.error && <p role="alert" className="rounded bg-red-50 p-3 text-sm text-red-700">{mrbApprovals.error}</p>}
               <input
                 ref={l11LogsInputRef}
                 type="file"
@@ -5262,7 +5201,7 @@ function SystemPage() {
                 >
                   Location History
                 </button>
-                {hasLogsTab && (
+                {(hasLogsTab || !!token) && (
                   <button
                     onClick={() => setTab("logs")}
                     className={`px-4 py-2 -mb-px  border-b-2 text-3xl font-bold ${
@@ -5286,9 +5225,39 @@ function SystemPage() {
                     Support Photos
                   </button>
                 )}
+                <button
+                  onClick={() => setTab("mrb-approval")}
+                  className={`px-4 py-2 -mb-px border-b-2 text-3xl font-bold ${
+                    tab === "mrb-approval"
+                      ? "border-blue-600 text-blue-600"
+                      : "border-transparent text-gray-500 hover:text-gray-700"
+                  }`}
+                >
+                  MRB Approval
+                </button>
               </div>
 
-              {tab === "history" ? (
+              {tab === "mrb-approval" ? (
+                mrbApprovals.loading ? <p role="status" className="py-4 text-gray-500">Loading MRB approvals…</p> :
+                <SearchContainer
+                  key="system-mrb-approvals-search"
+                  data={mrbApprovals.files.map((file) => ({
+                    name: file.name.replace(/^\d+_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_/i, "").replace(/_/g, " ")
+                      + (file.current ? "" : " (Previous Received cycle)"),
+                    name_title: "MRB Approval",
+                    date: formatDateHumanReadable(file.uploaded_at, serverTimeZone),
+                    date_title: "Date Uploaded",
+                    href: `${import.meta.env.VITE_BACKEND_URL}/systems/${encodeURIComponent(serviceTag)}/mrb-approvals/file?name=${encodeURIComponent(file.name)}`,
+                  }))}
+                  displayOrder={["name", "date"]}
+                  defaultSortBy="date"
+                  defaultSortAsc={false}
+                  fieldStyles={{ name: "text-blue-600 font-medium", date: "text-gray-500 text-sm" }}
+                  linkType="external"
+                  visibleFields={["name", "date"]}
+                  allowSearch={false}
+                />
+              ) : tab === "history" ? (
                 <>
                   <SearchContainer
                     key="system-history-search"
@@ -5394,6 +5363,8 @@ function SystemPage() {
                 </>
               ) : tab === "logs" ? (
                 <>
+                  <L11ScanHistory jobs={scanJobs.jobs} timeZone={serverTimeZone} />
+                  {scanJobs.error && <p role="alert" className="text-sm text-red-700">{scanJobs.error}</p>}
                   <SearchContainer
                     key="system-logs-search"
                     data={downloads}

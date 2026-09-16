@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "test:batch": "node --test test/batchUpdates.test.js test/l11Scans.test.js test/evidenceHistory.test.js && python3 -B -m unittest discover -s test -p \"*_test.py\"",
+    "test:terminals": "node --test test/terminals.test.js test/terminalHost.test.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
@@ -19,6 +21,7 @@
     "pg": "^8"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "nodemon": "^3"
   }
 }

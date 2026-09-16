@@ -870,7 +870,7 @@ export default function ShippingPage() {
         const receivedEntry =
           [...history]
             .reverse()
-            .find((entry) => String(entry?.to_location || "") === "Received") ||
+            .find((entry) => String(entry?.to_location || "") === "Received" && String(entry?.from_location || "") !== "Received") ||
           [...history].reverse()[0];
         return receivedEntry?.changed_at
           ? fmtDate.format(new Date(receivedEntry.changed_at))
@@ -923,7 +923,7 @@ export default function ShippingPage() {
                 getSystemHistory(s.service_tag),
               ]);
               const receivedCount = (history || []).filter(
-                (entry) => String(entry?.to_location || "") === "Received",
+                (entry) => String(entry?.to_location || "") === "Received" && String(entry?.from_location || "") !== "Received",
               ).length;
               const rmaCount = (history || []).filter((entry) => {
                 const toLoc = String(entry?.to_location || "");

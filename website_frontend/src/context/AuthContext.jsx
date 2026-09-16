@@ -27,6 +27,13 @@ export function AuthProvider({ children }) {
 
   const logout = useCallback(
     (redirectToAuth = true) => {
+      const previousToken = localStorage.getItem("token");
+      if (previousToken)
+        fetch(`${import.meta.env.VITE_BACKEND_URL}/terminals/disconnect`, {
+          method: "POST",
+          keepalive: true,
+          headers: { Authorization: `Bearer ${previousToken}` },
+        }).catch(() => {});
       clearAuthState();
       if (redirectToAuth) navigate("/auth");
     },
@@ -82,11 +89,11 @@ export function AuthProvider({ children }) {
 
         console.log(
           "✅ Token loaded. Current time:",
-          new Date(Date.now()).toLocaleString()
+          new Date(Date.now()).toLocaleString(),
         );
         console.log(
           "🕒 Token expiry:",
-          new Date(decoded.exp * 1000).toLocaleString()
+          new Date(decoded.exp * 1000).toLocaleString(),
         );
       } catch (err) {
         console.error("Invalid token:", err);
@@ -97,6 +104,15 @@ export function AuthProvider({ children }) {
     }
   }, [token, logout, refreshToken]);
 
+  // Keep logout consistent across tabs, including popped-out station terminals.
+  useEffect(() => {
+    const sync = (event) => {
+      if (event.key === "token") setToken(event.newValue);
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
+
   // Auto-refresh check
   useEffect(() => {
     const interval = setInterval(() => {
@@ -104,7 +120,7 @@ export function AuthProvider({ children }) {
         console.log("⏳ Current time:", new Date(Date.now()).toLocaleString());
         console.log(
           "🕒 Token expiry:",
-          new Date(user.exp * 1000).toLocaleString()
+          new Date(user.exp * 1000).toLocaleString(),
         );
 
         if (Date.now() >= user.exp * 1000 - 5 * 60 * 1000) {
