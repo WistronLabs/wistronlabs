@@ -51,7 +51,8 @@ async function ensure(station) {
     }
     // Use tmux history for wheel scrolling in the browser terminal. Scope this
     // to the station session rather than changing the falab account globally.
-    execFileSync("tmux", ["set-option", "-t", `=stn_${station}`, "mouse", "on"]);
+    // The colon makes the session target explicit for tmux 3.2a as well.
+    execFileSync("tmux", ["set-option", "-t", `=stn_${station}:`, "mouse", "on"]);
     // Largest viewport avoids shrinking all viewers to the smallest browser panel.
     execFileSync("tmux", [
       "set-window-option",
