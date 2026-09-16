@@ -103,6 +103,29 @@ function useApi() {
     return data;
   }
 
+  const getBatchUpdateSystems = (flow) => fetchJSON(`/systems/batch-updates?flow=${encodeURIComponent(flow)}`);
+  const moveBatchSystems = (payload) => fetchJSON("/systems/batch-updates/move", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+  const previewBatchL11Archive = (file) => {
+    const form = new FormData();
+    form.append("archive", file);
+    return fetchJSON("/systems/batch-updates/l11-archive/preview", { method: "POST", body: form });
+  };
+  const uploadBatchL11Archive = (file, tags) => {
+    const form = new FormData();
+    form.append("service_tags", tags.join(","));
+    form.append("archive", file);
+    return fetchJSON("/systems/batch-updates/l11-archive", { method: "POST", body: form });
+  };
+  const getMrbApprovals = (tag) => fetchJSON(`/systems/${encodeURIComponent(tag)}/mrb-approvals`);
+  const uploadMrbApproval = (tags, file) => {
+    const form = new FormData();
+    form.append("service_tags", tags.join(","));
+    form.append("approval", file);
+    return fetchJSON("/systems/batch-updates/mrb-approval", { method: "POST", body: form });
+  };
+
   // System API
 
   function buildQueryString(params) {
@@ -616,6 +639,9 @@ function useApi() {
     return data;
   };
 
+  const getSystemL11Scans = (tag) => fetchJSON(`/systems/${encodeURIComponent(tag)}/l11-scans`);
+  const getBatchL11Scans = () => fetchJSON("/systems/batch-updates/l11-scans");
+  const startBatchL11Scans = () => fetchJSON("/systems/batch-updates/l11-scans", { method: "POST" });
   const startSystemL11Scan = (service_tag) =>
     fetchJSON(`/systems/${encodeURIComponent(service_tag)}/l11-scan`, {
       method: "POST",
@@ -980,6 +1006,7 @@ function useApi() {
     });
 
   return {
+    getBatchUpdateSystems, moveBatchSystems, previewBatchL11Archive, uploadBatchL11Archive, getMrbApprovals, uploadMrbApproval,
     getSystems,
     getHistory,
     getFirstReceivedHistoryAt,
@@ -1067,6 +1094,7 @@ function useApi() {
     getSystemPhotos,
     getSystemL11LogsFound,
     uploadSystemL11LogArchive,
+    getSystemL11Scans, getBatchL11Scans, startBatchL11Scans,
     startSystemL11Scan,
     getSystemL11ScanStatus,
     exportSystemUnitData,

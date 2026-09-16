@@ -37,7 +37,7 @@ export function allowedNextLocations(
       );
     case "Pending MRB":
       return locations.filter((l) =>
-        ["Pending MRB", "In Debug - Wistron", "RMA CID"].includes(l.name),
+        ["In Debug - Wistron", "RMA CID"].includes(l.name),
       );
     case "Pending L11 Logs":
       return locations.filter((l) =>

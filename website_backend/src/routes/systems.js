@@ -188,7 +188,13 @@ async function hasL11ArchiveForServiceTagAndRack(
             : Number.NaN;
 
           if (Number.isFinite(archiveMillis) && Number.isFinite(thresholdMillis)) {
-            return archiveMillis > thresholdMillis;
+            if (archiveMillis <= thresholdMillis) return false;
+            const outdated = await db.query(`SELECT 1 FROM l11_scan_job j JOIN system s ON s.id=j.system_id
+              WHERE s.service_tag=$1 AND j.rack_service_tag=$2 AND j.received_at < $3
+              AND j.started_at <= $4 AND (j.ended_at IS NULL OR j.ended_at >= $4)
+              AND j.status IN ('running','dispatching','unknown','succeeded','failed') LIMIT 1`,
+              [st, rack, minCreatedAt, stat.mtime]);
+            return outdated.rows.length === 0;
           }
         } catch {
           // ignore unreadable archive and keep searching
@@ -216,6 +222,7 @@ async function getLatestReceivedAt(client, systemId) {
     FROM system_location_history
     WHERE system_id = $1
       AND to_location_id = $2
+          AND from_location_id IS DISTINCT FROM to_location_id
     ORDER BY changed_at DESC
     LIMIT 1
     `,
@@ -569,7 +576,7 @@ async function collectBatchExportEntries(serviceTag, options = {}) {
     const l10Directories = [];
     for (const entry of serviceEntries) {
       if (!entry.isDirectory()) continue;
-      if (entry.name.toLowerCase() === "photos") continue;
+      if (["photos", "mrb approvals"].includes(entry.name.toLowerCase())) continue;
 
       const fullPath = path.join(serviceDir, entry.name);
       if (await hasAnyFilesInDir(fullPath)) {
@@ -1025,6 +1032,7 @@ async function getHostRunnerJob(jobId) {
   const resp = await fetch(
     `${HOST_RUNNER_URL}/jobs/${encodeURIComponent(jobId)}`,
     {
+      signal: AbortSignal.timeout(10000),
       headers: {
         "X-Auth-Token":
           process.env.WEBHOOK_TOKEN || process.env.HOST_RUNNER_TOKEN || "",
@@ -1112,7 +1120,7 @@ async function listLogsEntries(serviceTag, relativeDir = "") {
 
   const data = await Promise.all(
     entries
-      .filter((entry) => entry.name.toLowerCase() !== "photos")
+      .filter((entry) => !["photos", "mrb approvals"].includes(entry.name.toLowerCase()))
       .map(async (entry) => {
         const childRelativeDir = cleanDir
           ? `${cleanDir.replace(/\/$/, "")}/${entry.name}`
@@ -1613,6 +1621,48 @@ async function getDellCustomerById(client, idRaw) {
 
 // GET factories (optional ?q= search by code or name)
 // GET factories (optional ?q= search by code or name)
+const { recordEvidenceHistory, hasDownloadedArchive } = require("../services/evidenceHistory");
+const { createL11Scans } = require("../services/l11Scans");
+const l11Scans = createL11Scans({ db, submit: submitL11ScanJob, getJob: getHostRunnerJob,
+  hasDownloaded: (job, stdout) => hasDownloadedArchive(PHOTO_UPLOAD_ROOT, job, stdout),
+});
+l11Scans.start();
+const { createBatchUpdates } = require("../services/batchUpdates");
+const batchUpdates = createBatchUpdates({
+  db, root: PHOTO_UPLOAD_ROOT, getLatestReceivedAt, hasL11ArchiveForServiceTagAndRack,
+  hasAnyFileNewerThan, systemOnLockedPallet, runTar, moveSystemLocation,
+});
+batchUpdates.register(router, authenticateToken);
+router.post("/batch-updates/l11-scans", authenticateToken, async (req, res) => {
+  try {
+    const batchId = require("crypto").randomUUID();
+    const { rows } = await db.query(`SELECT s.service_tag FROM system s JOIN location l ON l.id=s.location_id
+      WHERE l.name='Pending L11 Logs' AND coalesce(trim(s.rack_service_tag),'')<>'' ORDER BY s.service_tag`);
+    const results = [];
+    for (const row of rows) {
+      const system = (await db.query("SELECT id,rack_service_tag FROM system WHERE service_tag=$1", [row.service_tag])).rows[0];
+      if (await hasL11ArchiveForServiceTagAndRack(PHOTO_UPLOAD_ROOT,row.service_tag,system.rack_service_tag,await getLatestReceivedAt(db,system.id))) continue;
+      try { const job = await l11Scans.request(row.service_tag,req.user.userId,"batch",batchId);
+        results.push({ service_tag:row.service_tag,...job,job_id:job.id });
+      } catch (error) { results.push({service_tag:row.service_tag,status:'failed',error:error.message}); }
+    }
+    res.status(202).json({ batch_id:batchId,results });
+  } catch(error) { res.status(500).json({error:error.message}); }
+});
+router.get("/batch-updates/l11-scans", authenticateToken, async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT s.service_tag FROM system s JOIN location l ON l.id=s.location_id WHERE l.name='Pending L11 Logs'`);
+    const data = [];
+    for (const row of rows) {
+      const jobs = await l11Scans.history(row.service_tag);
+      const job = jobs.find((item) => item.current);
+      if (job) data.push({service_tag:row.service_tag,...job});
+    }
+    res.json({data});
+  } catch(error) { res.status(500).json({error:error.message}); }
+});
+
+
 router.get("/factory", async (req, res) => {
   const { q } = req.query;
   try {
@@ -2703,7 +2753,7 @@ router.get("/outlook-report-summary", async (req, res) => {
       last_received AS (
         SELECT h.system_id, MAX(h.changed_at) AS changed_at
         FROM system_location_history h
-        WHERE h.to_location_id = $3
+        WHERE h.to_location_id = $3 AND h.from_location_id IS DISTINCT FROM h.to_location_id
           AND h.changed_at <= $2
         GROUP BY h.system_id
       ),
@@ -2717,7 +2767,7 @@ router.get("/outlook-report-summary", async (req, res) => {
         SELECT DISTINCT ON (h.system_id)
           h.system_id, h.from_location_id, h.to_location_id, h.changed_at
         FROM system_location_history h
-        WHERE h.changed_at >= $1
+        WHERE h.from_location_id IS DISTINCT FROM h.to_location_id AND h.changed_at >= $1
           AND h.changed_at <= $2
           AND NOT (
             h.from_location_id = ANY($4::int[])
@@ -2739,7 +2789,7 @@ router.get("/outlook-report-summary", async (req, res) => {
         FROM system_location_history h
         WHERE h.changed_at >= $1
           AND h.changed_at <= $2
-          AND h.to_location_id = $9
+          AND h.to_location_id = $9 AND h.from_location_id IS DISTINCT FROM h.to_location_id
       ),
       active_pallet_at_end AS (
         SELECT DISTINCT ps.system_id
@@ -3062,7 +3112,7 @@ router.get("/snapshot", async (req, res) => {
       LEFT JOIN LATERAL (
         SELECT
           COUNT(*) FILTER (
-            WHERE h4.to_location_id = ${RECEIVED_LOCATION_ID}
+            WHERE h4.to_location_id = ${RECEIVED_LOCATION_ID} AND h4.from_location_id IS DISTINCT FROM h4.to_location_id
               AND h4.changed_at <= $1
           )::int AS times_received,
           COUNT(*) FILTER (
@@ -3084,7 +3134,7 @@ router.get("/snapshot", async (req, res) => {
         FROM system_location_history h3
         WHERE h3.system_id = s.id
           AND h3.changed_at <= $1
-          AND h3.to_location_id = ${RECEIVED_LOCATION_ID}
+          AND h3.to_location_id = ${RECEIVED_LOCATION_ID} AND h3.from_location_id IS DISTINCT FROM h3.to_location_id
         ORDER BY h3.changed_at DESC
         LIMIT 1
       ) AS last_recv ON TRUE`
@@ -3477,7 +3527,7 @@ router.get("/history/first-received-at", async (_req, res) => {
     const { rows } = await db.query(`
       SELECT MIN(changed_at) AS first_received_at
       FROM system_location_history
-      WHERE to_location_id = 1
+      WHERE to_location_id = 1 AND from_location_id IS DISTINCT FROM to_location_id
     `);
     return res.json({ first_received_at: rows[0]?.first_received_at || null });
   } catch (err) {
@@ -3547,7 +3597,7 @@ router.delete(
       // 2. Get history entries newest → oldest
       const historyResult = await client.query(
         `
-        SELECT id, moved_by, to_location_id
+        SELECT id, moved_by, from_location_id, to_location_id
         FROM system_location_history
         WHERE system_id = $1
         ORDER BY changed_at DESC
@@ -3569,6 +3619,7 @@ router.delete(
         id: history_id,
         moved_by,
         to_location_id: deletedToLocationId,
+        from_location_id: deletedFromLocationId,
       } = historyResult.rows[0];
 
       // 3. Who is deleting? (check admin flag from DB)
@@ -3599,6 +3650,11 @@ router.delete(
           error:
             "Not authorized. Only the note author or an other authorized users can delete this entry.",
         });
+      }
+      if (deletedFromLocationId === deletedToLocationId) {
+        await client.query("DELETE FROM system_location_history WHERE id=$1", [history_id]);
+        await client.query("COMMIT");
+        return res.json({ message: "History note deleted", new_location_id: deletedToLocationId });
       }
       const onLocked = await systemOnLockedPallet(client, system_id);
       if (onLocked) {
@@ -3850,18 +3906,10 @@ router.post("/", authenticateToken, async (req, res) => {
       ],
     );
 
-    await client.query("COMMIT");
-
     const stUpper = service_tag.trim().toUpperCase();
+    await l11Scans.enqueue(client, stUpper, req.user.userId, "received");
+    await client.query("COMMIT");
     res.status(201).json({ service_tag: stUpper });
-
-    // fire-and-forget webhook AFTER response
-    try {
-      const ack = await submitL11ScanJob(stUpper, rackUpper, { wait: "ack" });
-      console.log(`host-runner ack: ${JSON.stringify(ack)}`);
-    } catch (e) {
-      console.error("host-runner call failed:", e);
-    }
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
@@ -4500,101 +4548,26 @@ router.get("/:service_tag/l11-logs-found", async (req, res) => {
 });
 
 router.post("/:service_tag/l11-scan", authenticateToken, async (req, res) => {
-  const serviceTag = safeServiceTagSegment(req.params.service_tag);
-  if (!serviceTag) {
-    return res.status(400).json({ error: "Invalid service_tag" });
-  }
-
   try {
-    const { rows } = await db.query(
-      `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
-      [serviceTag],
-    );
-    if (!rows.length) {
-      return res.status(404).json({ error: "System not found" });
-    }
-
-    const rackServiceTag = safeServiceTagSegment(rows[0].rack_service_tag);
-    if (!rackServiceTag) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "Current rack service tag is required before scanning L11 logs",
-        });
-    }
-
-    const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
-
-    const found = await hasL11ArchiveForServiceTagAndRack(
-      PHOTO_UPLOAD_ROOT,
-      serviceTag,
-      rackServiceTag,
-      latestReceivedAt,
-    );
-    if (found) {
-      return res.status(409).json({
-        error: "L11 logs already exist for this unit and current rack tag",
-      });
-    }
-
-    const ack = await submitL11ScanJob(serviceTag, rackServiceTag, {
-      wait: "ack",
-    });
-    return res.status(202).json({
-      service_tag: serviceTag,
-      rack_service_tag: rackServiceTag,
-      job_id: ack?.job_id || null,
-      status: ack?.status || "queued",
-    });
-  } catch (err) {
-    console.error("Failed to start L11 scan:", err);
-    const { status, details } = summarizeUpstreamError(
-      err,
-      "Failed to start L11 scan",
-    );
-    return res.status(status).json({ error: details });
-  }
+    const tag = safeServiceTagSegment(req.params.service_tag);
+    if (!tag) return res.status(400).json({ error: "Invalid service tag" });
+    const job = await l11Scans.request(tag, req.user.userId);
+    res.status(202).json({ ...job, job_id: job.id });
+  } catch (error) { res.status(error.status || 500).json({ error: error.message }); }
+});
+router.get("/:service_tag/l11-scans", authenticateToken, async (req, res) => {
+  try { res.json({ data: await l11Scans.history(req.params.service_tag) }); }
+  catch (error) { res.status(500).json({ error: error.message }); }
+});
+router.get("/:service_tag/l11-scan/:job_id", authenticateToken, async (req, res) => {
+  try {
+    const jobs = await l11Scans.history(req.params.service_tag, 1000);
+    const job = jobs.find((item) => item.id === req.params.job_id);
+    if (!job) return res.status(404).json({ error: "L11 scan job not found" });
+    res.json({ ...job, status: job.status === "dispatching" ? "queued" : job.status });
+  } catch (error) { res.status(500).json({ error: error.message }); }
 });
 
-router.get(
-  "/:service_tag/l11-scan/:job_id",
-  authenticateToken,
-  async (req, res) => {
-    const serviceTag = safeServiceTagSegment(req.params.service_tag);
-    const jobId = String(req.params.job_id || "").trim();
-    if (!serviceTag) {
-      return res.status(400).json({ error: "Invalid service_tag" });
-    }
-    if (!jobId) {
-      return res.status(400).json({ error: "job_id is required" });
-    }
-
-    try {
-      const job = await getHostRunnerJob(jobId);
-      return res.json({
-        service_tag: serviceTag,
-        job_id: job?.job_id || jobId,
-        status: job?.status || "unknown",
-        returncode: job?.returncode ?? null,
-        stdout: job?.stdout || "",
-        stderr: job?.stderr || "",
-        started_at: job?.started_at || null,
-        ended_at: job?.ended_at || null,
-      });
-    } catch (err) {
-      if (err?.status === 404) {
-        return res.status(404).json({ error: "L11 scan job not found" });
-      }
-      console.error("Failed to fetch L11 scan status:", err);
-      const { status, details } = summarizeUpstreamError(
-        err,
-        "Failed to fetch L11 scan status",
-      );
-      return res.status(status).json({ error: details });
-    }
-  },
-);
 
 router.post(
   "/:service_tag/photos",
@@ -4626,9 +4599,12 @@ router.post(
       return res.status(400).json({ error: "Unsupported photo type" });
     }
 
+    let client, written, transactionOpen = false;
     try {
-      const { rows } = await db.query(
-        `SELECT 1 FROM system WHERE service_tag = $1 LIMIT 1`,
+      client = await db.connect();
+      await client.query("BEGIN"); transactionOpen = true;
+      const { rows } = await client.query(
+        `SELECT id FROM system WHERE service_tag = $1 LIMIT 1 FOR UPDATE`,
         [serviceTag],
       );
       if (!rows.length) {
@@ -4646,7 +4622,10 @@ router.post(
       const base = sanitizeBaseName(file.originalname);
       const fileName = `${base}_${timestampSuffix()}${safeExt}`;
       const fullPath = path.join(photosDir, fileName);
-      await fs.writeFile(fullPath, file.buffer);
+      await fs.writeFile(fullPath, file.buffer, { flag: "wx" });
+      written = fullPath;
+      await recordEvidenceHistory(client, rows[0].id, "Support photo uploaded.", req.user.userId);
+      await client.query("COMMIT"); transactionOpen = false;
 
       return res.status(201).json({
         message: "Photo uploaded",
@@ -4655,8 +4634,12 @@ router.post(
         relative_path: `/l10_logs/${serviceTag}/photos/${fileName}`,
       });
     } catch (err) {
+      if (transactionOpen) { await client.query("ROLLBACK"); transactionOpen = false; }
+      if (written) await fs.rm(written, { force: true });
       console.error("Photo upload failed:", err);
       return res.status(500).json({ error: "Failed to upload photo" });
+    } finally {
+      if (client) { if (transactionOpen) await client.query("ROLLBACK").catch(() => {}); client.release(); }
     }
   },
 );
@@ -4696,9 +4679,12 @@ router.post(
     }
 
     let tempDir = null;
+    let publishedPath = null, backupPath = null, transactionOpen = false;
+    const client = await db.connect();
     try {
-      const { rows } = await db.query(
-        `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1`,
+      await client.query("BEGIN"); transactionOpen = true;
+      const { rows } = await client.query(
+        `SELECT id, service_tag, rack_service_tag FROM system WHERE service_tag = $1 LIMIT 1 FOR UPDATE`,
         [serviceTag],
       );
       if (!rows.length) {
@@ -4715,7 +4701,7 @@ router.post(
           });
       }
 
-      const latestReceivedAt = await getLatestReceivedAt(db, rows[0].id);
+      const latestReceivedAt = await getLatestReceivedAt(client, rows[0].id);
 
       const existingArchive = await hasL11ArchiveForServiceTagAndRack(
         PHOTO_UPLOAD_ROOT,
@@ -4749,7 +4735,17 @@ router.post(
         await fs.writeFile(path.join(archiveSourceDir, safeName), file.buffer);
       }
 
-      await runTar(["-czf", archivePath, "-C", tempDir, archiveBaseName]);
+      const stagedArchive = path.join(tempDir, archiveName);
+      await runTar(["-czf", stagedArchive, "-C", tempDir, archiveBaseName]);
+      await recordEvidenceHistory(client, rows[0].id,
+        `L11 logs from rack ${rackServiceTag} uploaded manually.`, req.user.userId);
+      try {
+        const previous = path.join(tempDir, "previous.tgz");
+        await fs.copyFile(archivePath, previous); backupPath = previous;
+      } catch (error) { if (error.code !== "ENOENT") throw error; }
+      publishedPath = archivePath;
+      await fs.copyFile(stagedArchive, archivePath);
+      await client.query("COMMIT"); transactionOpen = false;
 
       return res.status(201).json({
         message: "L11 logs archived",
@@ -4759,9 +4755,16 @@ router.post(
         relative_path: `/l10_logs/${serviceTag}/${encodeURIComponent(archiveName)}`,
       });
     } catch (err) {
+      if (transactionOpen) { await client.query("ROLLBACK"); transactionOpen = false; }
+      if (publishedPath) {
+        if (backupPath) await fs.copyFile(backupPath, publishedPath);
+        else await fs.rm(publishedPath, { force: true });
+      }
       console.error("L11 log archive upload failed:", err);
       return res.status(500).json({ error: "Failed to archive L11 logs" });
     } finally {
+      if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+      client.release();
       if (tempDir) {
         await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
       }
@@ -4938,15 +4941,11 @@ router.patch(
 );
 
 // PATCH /api/v1/systems/:service_tag/location
-router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
-  const { service_tag } = req.params;
-  const { to_location_id, note } = req.body;
+async function moveSystemLocation({ service_tag, to_location_id, note, userId, expectedFrom }) {
   const targetLocationId = Number(to_location_id);
 
   if (!Number.isInteger(targetLocationId) || !note) {
-    return res
-      .status(400)
-      .json({ error: "to_location_id and note are required" });
+    throw Object.assign(new Error("to_location_id and note are required"), { status: 400 });
   }
 
   const client = await db.connect();
@@ -4964,15 +4963,15 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
          dpn_id, 
          manufactured_date, 
          serial, 
-         rev
+         rev,
+         rack_service_tag
        FROM system 
-       WHERE service_tag = $1`,
+       WHERE service_tag = $1 FOR UPDATE`,
       [service_tag],
     );
 
     if (!rows.length) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "System not found" });
+      throw Object.assign(new Error("System not found"), { status: 404 });
     }
 
     const {
@@ -4991,6 +4990,24 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
     );
     const targetLocationName = targetLocationResult.rows[0]?.name || "";
 
+    const currentLocation = await client.query("SELECT name FROM location WHERE id = $1", [from_location_id]);
+    const fromName = currentLocation.rows[0]?.name;
+    if (expectedFrom && fromName !== expectedFrom) {
+      throw Object.assign(new Error("Location changed since review. Refresh the batch."), { status: 409 });
+    }
+    const permitted = {
+      "Pending L11 Logs": ["RMA PID", "In Debug - Wistron"],
+      "Pending MRB": ["RMA CID", "In Debug - Wistron"],
+    };
+    if (permitted[fromName] && !permitted[fromName].includes(targetLocationName)) {
+      throw Object.assign(new Error(`Cannot move from ${fromName} to ${targetLocationName}.`), { status: 400 });
+    }
+    if (RMA_LOCATION_IDS.includes(targetLocationId)) {
+      const readiness = await batchUpdates.inspect(client, { ...rows[0], service_tag, location: fromName }, targetLocationName);
+      if (readiness.reasons.length) {
+        throw Object.assign(new Error(readiness.reasons.join(" ")), { status: 400 });
+      }
+    }
     let receivedAt = null;
 
     if (targetLocationId === PENDING_L11_LOGS_LOCATION_ID) {
@@ -5000,11 +5017,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         const latestReceivedAt = await getLatestReceivedAt(client, system_id);
 
         if (!latestReceivedAt) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            error:
-              "Cannot move into Pending L11 Logs: no Received timestamp found for this system.",
-          });
+          throw Object.assign(new Error("Cannot move into Pending L11 Logs: no Received timestamp found for this system."), { status: 400 });
         }
 
         const receivedMs = new Date(latestReceivedAt).getTime();
@@ -5012,21 +5025,14 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         const requiredMs = pendingL11MoveRule.minutes * 60 * 1000;
 
         if (!Number.isFinite(receivedMs)) {
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            error:
-              "Cannot move into Pending L11 Logs: the latest Received timestamp is invalid.",
-          });
+          throw Object.assign(new Error("Cannot move into Pending L11 Logs: the latest Received timestamp is invalid."), { status: 400 });
         }
 
         if (elapsedMs < requiredMs) {
           const remainingMinutes = Math.ceil(
             (requiredMs - Math.max(0, elapsedMs)) / 60000,
           );
-          await client.query("ROLLBACK");
-          return res.status(400).json({
-            error: `Need to wait ${remainingMinutes} more minute(s) before moving into Pending L11 Logs so that any pending log downloads from MFT can complete.`,
-          });
+          throw Object.assign(new Error(`Need to wait ${remainingMinutes} more minute(s) before moving into Pending L11 Logs so that any pending log downloads from MFT can complete.`), { status: 400 });
         }
       }
     }
@@ -5042,6 +5048,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         FROM system_location_history
         WHERE system_id = $1
           AND to_location_id = $2
+          AND from_location_id IS DISTINCT FROM to_location_id
         ORDER BY changed_at DESC
         LIMIT 1
         `,
@@ -5049,16 +5056,12 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       );
 
       if (!latestReceived.rows.length) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error:
-            "Cannot move to resolved location: no Received timestamp found for this system.",
-        });
+        throw Object.assign(new Error("Cannot move to resolved location: no Received timestamp found for this system."), { status: 400 });
       }
 
       receivedAt = latestReceived.rows[0].changed_at;
       const logsRoot = await firstExistingDir([
-        process.env.L10_LOGS_ROOT,
+        PHOTO_UPLOAD_ROOT,
         path.resolve(process.cwd(), "../l10_logs"),
         path.resolve(process.cwd(), "../website_frontend/public/l10_logs"),
         path.resolve(process.cwd(), "l10_logs"),
@@ -5069,12 +5072,9 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       const hasNewFile = await hasAnyFileNewerThan(serviceTagDir, receivedAt);
 
       if (!hasNewFile) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: isPendingMrbLocationName(targetLocationName)
+        throw Object.assign(new Error(isPendingMrbLocationName(targetLocationName)
             ? "Add evidence (logs or photos) before moving to Pending MRB."
-            : "Add evidence (logs or photos) before resolving this unit.",
-        });
+            : "Add evidence (logs or photos) before resolving this unit."), { status: 400 });
       }
     }
 
@@ -5091,23 +5091,16 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         receivedAt && (await hasAnyFileNewerThan(photosDir, receivedAt));
 
       if (!hasFreshPhotoEvidence) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: isPendingMrbLocationName(targetLocationName)
+        throw Object.assign(new Error(isPendingMrbLocationName(targetLocationName)
             ? "Photo evidence of the damage must be uploaded before Pending MRB."
-            : "Photo evidence of the damage must be uploaded before RMA CID.",
-        });
+            : "Photo evidence of the damage must be uploaded before RMA CID."), { status: 400 });
       }
     }
 
     //check if system is on a locked pallet
     const onLocked = await systemOnLockedPallet(client, system_id);
     if (onLocked) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        error:
-          "System is on a locked pallet — location changes are not allowed",
-      });
+      throw Object.assign(new Error("System is on a locked pallet — location changes are not allowed"), { status: 400 });
     }
 
     if (targetLocationName === PENDING_MRB_LOCATION_NAME) {
@@ -5122,11 +5115,7 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       );
       const badPartCount = trackedBadParts.rows[0]?.count || 0;
       if (badPartCount <= 0) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error:
-            "Track all estimated CID-damaged parts before moving to Pending MRB.",
-        });
+        throw Object.assign(new Error("Track all estimated CID-damaged parts before moving to Pending MRB."), { status: 400 });
       }
     }
 
@@ -5141,12 +5130,9 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
       if (!rev) missingFields.push("rev");
 
       if (missingFields.length) {
-        await client.query("ROLLBACK");
-        return res.status(400).json({
-          error: `Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
+        throw Object.assign(new Error(`Cannot move to an RMA location because the following fields are missing: ${missingFields.join(
             ", ",
-          )}. Update PPID first.`,
-        });
+          )}. Update PPID first.`), { status: 400 });
       }
     }
 
@@ -5201,30 +5187,48 @@ router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
         from_location_id,
         targetLocationId,
         finalNote,
-        req.user.userId,
+        userId,
       ],
     );
 
+    if (targetLocationId === RECEIVED_LOCATION_ID) {
+      await l11Scans.enqueue(client, service_tag, userId, "received");
+    }
     await client.query("COMMIT");
     // If we added to an RMA pallet, include it in the response
-    return res.json({
+    return {
       message: "Location updated",
       ...(RMA_LOCATION_IDS.includes(targetLocationId)
         ? { pallet_number: finalNote.split(" - added to ")[1] }
         : {}),
-    });
+    };
   } catch (err) {
     await client.query("ROLLBACK");
     console.error(err);
 
     const message = String(err?.message || "").trim();
     if (message === "Too many pallets open at the same time.") {
-      return res.status(409).json({ error: message });
+      throw Object.assign(new Error(message), { status: 409 });
     }
 
-    res.status(500).json({ error: message || "Failed to update location" });
+    throw Object.assign(err, { status: err.status || 500 });
   } finally {
     client.release();
+  }
+}
+
+
+router.patch("/:service_tag/location", authenticateToken, async (req, res) => {
+  try {
+    const result = await moveSystemLocation({
+      service_tag: req.params.service_tag,
+      to_location_id: req.body.to_location_id,
+      note: req.body.note,
+      userId: req.user.userId,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message || "Failed to update location" });
   }
 });
 
@@ -5347,20 +5351,9 @@ router.patch("/:service_tag/rack", authenticateToken, async (req, res) => {
       [rackUpper, stUpper],
     );
 
+    if (changed) await l11Scans.enqueue(client, stUpper, req.user.userId, "rack_changed");
     await client.query("COMMIT");
-
-    // respond first
     res.json({ message: "Rack service tag updated" });
-
-    // webhook AFTER response
-    if (changed) {
-      try {
-        const ack = await submitL11ScanJob(stUpper, rackUpper, { wait: "ack" });
-        console.log(`host-runner ack: ${JSON.stringify(ack)}`);
-      } catch (e) {
-        console.error("host-runner call failed:", e);
-      }
-    }
   } catch (err) {
     try {
       await client.query("ROLLBACK");
