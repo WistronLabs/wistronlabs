@@ -41,6 +41,11 @@ fs.appendFileSync(process.env.CALL_LOG, JSON.stringify(args)+'\\n');
 const state = JSON.parse(fs.readFileSync(process.env.STATE));
 const name = args[args.indexOf('-t')+1]?.replace(/^=/,'') || args[args.indexOf('-s')+1];
 if (args[0] === 'has-session') process.exit(state[name] ? 0 : 1);
+if (args[0] === 'set-option' || args[0] === 'set-window-option') {
+  const target = args[args.indexOf('-t')+1];
+  // tmux 3.2a requires an explicit session/window separator here.
+  process.exit(target.endsWith(':') && state[target.slice(0,-1).replace(/^=/,'')] ? 0 : 1);
+}
 if (args[0] === 'new-session') { const name = args[args.indexOf('-s')+1]; if(state[name]) process.exit(1); state[name]=true; fs.writeFileSync(process.env.STATE, JSON.stringify(state)); }
 `,
     { mode: 0o755 },
