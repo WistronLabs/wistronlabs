@@ -1,5 +1,4 @@
 import { useState, useContext } from "react";
-import axios from "axios";
 import { AuthContext } from "../context/AuthContext";
 import { changePassword } from "../api/authApi";
 
@@ -9,12 +8,10 @@ export default function UserPage() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmNewPassword, setConfirmNewPassword] = useState("");
-  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setMessage("");
     setError("");
 
     if (newPassword !== confirmNewPassword) {
@@ -23,12 +20,11 @@ export default function UserPage() {
     }
 
     try {
-      const res = await changePassword(currentPassword, newPassword, token);
-      console.log("Password change response:", res);
-      setMessage(res.message || "Password changed successfully.");
+      await changePassword(currentPassword, newPassword, token);
       setCurrentPassword("");
       setNewPassword("");
       setConfirmNewPassword("");
+      logout();
     } catch (err) {
       setError(err.response?.data?.error || "Failed to change password.");
     }
@@ -40,12 +36,6 @@ export default function UserPage() {
         <h1 className="text-xl sm:text-2xl font-semibold text-gray-800">
           User Settings for {user?.username || "Guest"}
         </h1>
-
-        {message && (
-          <div className="bg-green-50 border border-green-200 text-green-700 px-4 py-2 rounded">
-            {message}
-          </div>
-        )}
 
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded">

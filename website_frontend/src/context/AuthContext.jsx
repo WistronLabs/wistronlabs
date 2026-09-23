@@ -3,6 +3,7 @@ import { jwtDecode } from "jwt-decode";
 import { useNavigate } from "react-router-dom";
 import useToast from "../hooks/useToast";
 import { refreshAccessToken } from "../api/authApi";
+import { logoutUser } from "../api/authApi";
 
 export const AuthContext = createContext();
 
@@ -11,23 +12,22 @@ export function AuthProvider({ children }) {
   const { showToast, Toast } = useToast();
   const refreshPromiseRef = useRef(null);
 
-  const [token, setToken] = useState(localStorage.getItem("token"));
+  const [token, setToken] = useState(null);
+  const [initializing, setInitializing] = useState(true);
   const [user, setUser] = useState(null);
 
   const login = useCallback((newToken) => {
-    localStorage.setItem("token", newToken);
     setToken(newToken);
   }, []);
 
   const clearAuthState = useCallback(() => {
-    localStorage.removeItem("token");
     setToken(null);
     setUser(null);
   }, []);
 
   const logout = useCallback(
     (redirectToAuth = true) => {
-      const previousToken = localStorage.getItem("token");
+      const previousToken = token;
       if (previousToken)
         fetch(`${import.meta.env.VITE_BACKEND_URL}/terminals/disconnect`, {
           method: "POST",
@@ -35,10 +35,18 @@ export function AuthProvider({ children }) {
           headers: { Authorization: `Bearer ${previousToken}` },
         }).catch(() => {});
       clearAuthState();
+      logoutUser().catch(() => {});
       if (redirectToAuth) navigate("/auth");
     },
-    [clearAuthState, navigate],
+    [clearAuthState, navigate, token],
   );
+
+  useEffect(() => {
+    refreshAccessToken()
+      .then((res) => login(res.data.token))
+      .catch(() => {})
+      .finally(() => setInitializing(false));
+  }, [login]);
 
   const refreshToken = useCallback(
     async (silent = false) => {
@@ -104,15 +112,6 @@ export function AuthProvider({ children }) {
     }
   }, [token, logout, refreshToken]);
 
-  // Keep logout consistent across tabs, including popped-out station terminals.
-  useEffect(() => {
-    const sync = (event) => {
-      if (event.key === "token") setToken(event.newValue);
-    };
-    window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
-  }, []);
-
   // Auto-refresh check
   useEffect(() => {
     const interval = setInterval(() => {
@@ -136,7 +135,7 @@ export function AuthProvider({ children }) {
   }, [token, user, refreshToken]);
 
   return (
-    <AuthContext.Provider value={{ token, login, logout, user, refreshToken }}>
+    <AuthContext.Provider value={{ token, login, logout, user, refreshToken, initializing }}>
       {children}
       <Toast />
     </AuthContext.Provider>

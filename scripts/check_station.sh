@@ -17,6 +17,8 @@ source "$LIB_DIR/runtime_mode.sh"
 source "$LIB_DIR/require_server_location.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/normalize_service_tag.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/backend_curl.sh"
 
 STATION_NAME="$1"
 if [ -z "$STATION_NAME" ]; then
@@ -52,7 +54,7 @@ pane=$(tmux capture-pane -p -t "$STATION_NAME" | grep -v -e '^\s*$' -e 'falab@fr
 
 CURRENT_STATION_TAG=""
 if is_backend_mode && [[ -n "${SERVER_LOCATION:-}" ]]; then
-  station_json=$(curl -fsS --max-time 5 "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$STATION_ID" 2>/dev/null || true)
+  station_json=$(backend_curl -fsS --max-time 5 "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$STATION_ID" 2>/dev/null || true)
   if [[ -n "$station_json" ]]; then
     CURRENT_STATION_TAG=$(printf '%s' "$station_json" | jq -r '.system_service_tag // empty' 2>/dev/null || true)
     CURRENT_STATION_TAG="$(normalize_service_tag "$CURRENT_STATION_TAG")"

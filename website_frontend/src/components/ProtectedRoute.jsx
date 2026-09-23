@@ -3,8 +3,10 @@ import { useContext } from "react";
 import { AuthContext } from "../context/AuthContext";
 
 export default function ProtectedRoute({ children }) {
-  const { token } = useContext(AuthContext);
+  const { token, initializing } = useContext(AuthContext);
   const location = useLocation();
+
+  if (initializing) return <div className="p-8 text-center">Loading session…</div>;
 
   if (!token) {
     return <Navigate to="/auth" replace state={{ from: location }} />;

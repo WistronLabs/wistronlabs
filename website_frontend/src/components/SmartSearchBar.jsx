@@ -699,7 +699,8 @@ export default function SmartSearchBar() {
                   : await fetch(
                       `${
                         import.meta.env.VITE_BACKEND_URL
-                      }/pallets?${new URLSearchParams(palParams)}`
+                      }/pallets?${new URLSearchParams(palParams)}`,
+                      { credentials: 'include' },
                     ).then((r) => r.json());
                 const pallets = res?.data || res || [];
                 const tags = Array.from(

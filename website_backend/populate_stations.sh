@@ -1,11 +1,14 @@
 #!/bin/bash
 
+set -euo pipefail
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../scripts/.lib/backend_curl.sh"
+
 # as of 7/12/25, there are 22 stations, 4 table tops ones and 18 (1 rack)
 
 URL='https://backend.frk.wistronlabs.com/api/v1/stations'
 
 for i in {9..10}; do
-    curl -X POST "$URL" \
+    backend_curl -X POST "$URL" \
         -H "Content-Type: application/json" \
         -d "{\"station_name\": \"$i\"}"
 done
@@ -21,4 +24,3 @@ done
 #         -H "Content-Type: application/json" \
 #         -d "{\"station_name\": \"$i\"}"
 # done
-

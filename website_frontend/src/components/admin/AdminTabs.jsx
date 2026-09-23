@@ -1,6 +1,7 @@
-function AdminTabs({ tab, setTab }) {
+function AdminTabs({ tab, setTab, isSuperAdmin }) {
   const tabs = [
     { key: "users", label: "Users" },
+    ...(isSuperAdmin ? [{ key: 'account-access', label: 'Account Access' }] : []),
     { key: "dell-customers", label: "Dell Customers" },
     { key: "dpns", label: "DPNs" },
     { key: "factories", label: "Factories" },

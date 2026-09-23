@@ -10,6 +10,9 @@
 #   Requires SERVER_LOCATION to be set.
 #   Prints the raw JSON response on success and exits on error.
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backend_curl.sh"
+
 fetch_system_from_backend() {
   local service_tag="$1"
   local api_base tmp_json http_code
@@ -22,7 +25,7 @@ fetch_system_from_backend() {
 
   api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
   tmp_json="$(mktemp)"
-  http_code="$(curl -sS --max-time 5 -o "$tmp_json" -w "%{http_code}" \
+  http_code="$(backend_curl -sS --max-time 5 -o "$tmp_json" -w "%{http_code}" \
     "$api_base/systems/$service_tag" 2>/dev/null || true)"
 
   if [[ "$http_code" != "200" ]]; then

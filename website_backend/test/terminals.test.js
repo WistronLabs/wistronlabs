@@ -49,6 +49,9 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
       "utf8",
     ),
   );
+  await pg.exec(
+    "ALTER TABLE users ADD COLUMN super_admin boolean DEFAULT false; ALTER TABLE users ADD COLUMN enabled boolean DEFAULT true; ALTER TABLE users ADD COLUMN must_change_password boolean DEFAULT false; ALTER TABLE users ADD COLUMN session_version integer DEFAULT 1;",
+  );
   await pg.exec("UPDATE users SET terminal_access=true WHERE id=2");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-"));
   const socketPath = path.join(dir, "control.sock");
@@ -126,13 +129,13 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   assert.equal((await call("/access")).status, 401);
   assert.equal(
     (await (await call("/access", 1)).json()).allowed,
-    true,
-    "admin inherits access",
+    false,
+    "admin does not inherit terminal access",
   );
   assert.equal((await (await call("/access", 2)).json()).allowed, true);
   assert.equal((await call("/stations/12/connect", 3, "POST")).status, 403);
-  assert.equal((await call("/stations/99/connect", 1, "POST")).status, 404);
-  assert.equal((await call("/stations/abc/connect", 1, "POST")).status, 400);
+  assert.equal((await call("/stations/99/connect", 1, "POST")).status, 403);
+  assert.equal((await call("/stations/abc/connect", 2, "POST")).status, 400);
   const res = await call("/stations/12/connect", 2, "POST");
   assert.equal(res.status, 200);
   const grant = await res.json();
@@ -204,7 +207,7 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   const presence = await (await call(`/leases/${grant.id}`, 2, "POST")).json();
   assert.deepEqual(presence.users, ["tech@test"]);
   assert.equal(presence.connected, true);
-  assert.equal((await call(`/leases/${grant.id}`, 1, "POST")).status, 410);
+  assert.equal((await call(`/leases/${grant.id}`, 1, "POST")).status, 403);
   await call(`/leases/${grant.id}`, 1, "DELETE");
   assert.equal(
     terminals.grants.has(grant.id),
@@ -271,6 +274,7 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
     null,
     "revoked permission cannot reconnect",
   );
+  await pg.exec("UPDATE users SET terminal_access=true WHERE id=1");
   const adminGrant = await (
     await call("/stations/12/connect", 1, "POST")
   ).json();

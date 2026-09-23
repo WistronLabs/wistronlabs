@@ -21,6 +21,8 @@ source "$LIB_DIR/require_server_location.sh"
 source "$LIB_DIR/require_cmd.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/fetch_station_list.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/backend_curl.sh"
 
 require_field_mode_disabled "$(basename "$0")"
 require_server_location
@@ -47,7 +49,7 @@ for st in "${stations[@]}"; do
       '{status: $status, message: $message, details: $details}')
 
     # PATCH to API
-    curl -s -X PATCH "$API_URL/$st" \
+    backend_curl -s -X PATCH "$API_URL/$st" \
         -H "Content-Type: application/json" \
         -d "$payload"
 done

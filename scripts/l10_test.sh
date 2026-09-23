@@ -31,6 +31,8 @@ source "$LIB_DIR/prompt_service_tag.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/curl_auth.sh"
 # shellcheck disable=SC1091
+source "$LIB_DIR/backend_curl.sh"
+# shellcheck disable=SC1091
 source "$LIB_DIR/normalize_mac_colon.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/ipmi.sh"
@@ -277,7 +279,7 @@ fi
 
 backend_get_system() {
   # prints JSON on stdout; returns nonzero on failure
-  curl -fsS --max-time 5 "${api_base}/systems/${SERVICE_TAG}"
+  backend_curl -fsS --max-time 5 "${api_base}/systems/${SERVICE_TAG}"
 }
 
 backend_patch_mac() {
@@ -324,7 +326,7 @@ if [[ $found -eq 0 ]]; then
 fi
 
 if is_backend_mode; then
-  http_code="$(curl -s -o /dev/null -w "%{http_code}" \
+  http_code="$(backend_curl -s -o /dev/null -w "%{http_code}" \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER")"
 
   if [[ "$http_code" != "200" ]]; then
@@ -332,7 +334,7 @@ if is_backend_mode; then
     exit 1
   fi
 
-  STATION_SERVICE_TAG="$(curl -s \
+  STATION_SERVICE_TAG="$(backend_curl -s \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER" | jq -r '.system_service_tag')"
 
   if [[ -z "$STATION_SERVICE_TAG" || "$STATION_SERVICE_TAG" == "null" ]]; then
@@ -350,7 +352,7 @@ if is_backend_mode; then
 
   CONFIG_TMP="$(mktemp)"
 
-  HTTP_CODE="$(curl -sS -w "%{http_code}" -o "$CONFIG_TMP" \
+  HTTP_CODE="$(backend_curl -sS -w "%{http_code}" -o "$CONFIG_TMP" \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/systems/$SERVICE_TAG")" || {
       err "Failed to reach backend when fetching config for $SERVICE_TAG."
       rm -f "$CONFIG_TMP"
