@@ -489,7 +489,7 @@ function TrackingPage() {
       setBatchExportsLoading(true);
     }
     try {
-      const res = await fetch(`${BACKEND_URL}/systems/batch-export-unit-data`);
+      const res = await fetch(`${BACKEND_URL}/systems/batch-export-unit-data`, { credentials: 'include' });
       if (!res.ok) {
         throw new Error(`Batch export list failed: ${res.status}`);
       }
@@ -1182,6 +1182,7 @@ function TrackingPage() {
 
       const resp = await fetch(
         `${BACKEND_URL}/systems/snapshot?${params.toString()}`,
+        { credentials: 'include' },
       );
       if (!resp.ok) throw new Error(await resp.text());
 

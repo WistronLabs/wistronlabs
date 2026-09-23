@@ -519,13 +519,11 @@ remote_prepare_dir() {
 remote_seed_runtime_config_if_missing() {
   local host="$1" remote_dir="$2" name="$3" fe_url="$4" app_port="$5"
 
-  # Only prompt for SMTP_PASS if we must create secrets.env
   local need_secrets=0
   if ! ssh $SSH_OPTS "$USER@$host" "test -f '$remote_dir/env/secrets.env'"; then
     need_secrets=1
   fi
 
-  local SMTP_PASS_LOCAL=""
   local POSTGRES_PASSWORD_LOCAL=""
   local JWT_SECRET_LOCAL=""
   local INTERNAL_API_KEY_LOCAL=""
@@ -537,11 +535,8 @@ remote_seed_runtime_config_if_missing() {
     echo "Seeding baseline .env and env/*.env (will not overwrite existing files)."
     echo ""
 
-    # Only secret that must be provided manually:
-    prompt_secret "Enter SMTP_PASS (app password)" SMTP_PASS_LOCAL
-
-    # Secrets that can be generated on the fly:
-    POSTGRES_PASSWORD_LOCAL="example"
+    # Secrets generated for the local account system:
+    POSTGRES_PASSWORD_LOCAL="$(gen_hex_32)"
     JWT_SECRET_LOCAL="$(gen_hex_32)"
     INTERNAL_API_KEY_LOCAL="$(gen_hex_32)"
     WEBHOOK_TOKEN_LOCAL="$(gen_hex_32)"
@@ -550,7 +545,7 @@ remote_seed_runtime_config_if_missing() {
   # Seed files on remote *only if missing* (never overwrite).
   ssh -T $SSH_OPTS "$USER@$host" \
     "REMOTE_DIR='$remote_dir' LOCATION='$name' FRONTEND_URL='$fe_url' APP_HOST_PORT='$app_port' \
-     NEED_SECRETS='$need_secrets' SMTP_PASS='${SMTP_PASS_LOCAL}' POSTGRES_PASSWORD='${POSTGRES_PASSWORD_LOCAL}' \
+     NEED_SECRETS='$need_secrets' POSTGRES_PASSWORD='${POSTGRES_PASSWORD_LOCAL}' \
      JWT_SECRET='${JWT_SECRET_LOCAL}' INTERNAL_API_KEY='${INTERNAL_API_KEY_LOCAL}' WEBHOOK_TOKEN='${WEBHOOK_TOKEN_LOCAL}' \
      bash -s" <<'REMOTE'
 set -euo pipefail
@@ -595,15 +590,11 @@ fi
 
 # env/secrets.env (only if missing)
 if [[ "$NEED_SECRETS" == "1" && ! -f "$REMOTE_DIR/env/secrets.env" ]]; then
-  SMTP_PASS="${SMTP_PASS:-}"
   POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
   JWT_SECRET="${JWT_SECRET:-}"
   INTERNAL_API_KEY="${INTERNAL_API_KEY:-}"
   WEBHOOK_TOKEN="${WEBHOOK_TOKEN:-}"
 
-  [[ -n "$SMTP_PASS" ]] || die "SMTP_PASS is required to create env/secrets.env"
-
-  # Keep FRK_DEV format; values are generated except SMTP_PASS.
   cat > "$REMOTE_DIR/env/secrets.env" <<EOF
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 DATABASE_URL=postgres://postgres:$POSTGRES_PASSWORD@db:5432/mydb
@@ -612,8 +603,6 @@ JWT_SECRET=$JWT_SECRET
 INTERNAL_API_KEY=$INTERNAL_API_KEY
 WEBHOOK_TOKEN=$WEBHOOK_TOKEN
 
-SMTP_USER=wistron.tailscale@gmail.com
-SMTP_PASS=$SMTP_PASS
 EOF
   chmod 600 "$REMOTE_DIR/env/secrets.env" 2>/dev/null || true
 fi

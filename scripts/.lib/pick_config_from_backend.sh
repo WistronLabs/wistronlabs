@@ -12,6 +12,8 @@
 
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime_mode.sh"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backend_curl.sh"
 
 pick_config_from_backend() {
   local api_base dpn_json
@@ -28,7 +30,7 @@ pick_config_from_backend() {
   fi
 
   api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
-  dpn_json="$(curl -fsS --max-time 10 "$api_base/systems/dpn")"
+  dpn_json="$(backend_curl -fsS --max-time 10 "$api_base/systems/dpn")"
 
   printf '%s\n' "$dpn_json" |
     jq -r '.[].config // empty' |

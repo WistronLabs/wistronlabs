@@ -39,6 +39,8 @@ source "$LIB_DIR/fetch_system_from_backend.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/fetch_station_list.sh"
 # shellcheck disable=SC1091
+source "$LIB_DIR/backend_curl.sh"
+# shellcheck disable=SC1091
 source "$LIB_DIR/ipmi.sh"
 
 LIVE_MODE=0
@@ -223,7 +225,7 @@ load_auto_inputs_if_found() {
 
   api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
   tmp_json="$(mktemp)"
-  http_code="$(curl -sS --max-time 5 -o "$tmp_json" -w "%{http_code}" \
+  http_code="$(backend_curl -sS --max-time 5 -o "$tmp_json" -w "%{http_code}" \
     "$api_base/systems/$SERVICE_TAG" 2>/dev/null || true)"
 
   if [[ "$http_code" == "404" ]]; then
@@ -254,7 +256,7 @@ load_station_inputs() {
   require_server_location
 
   api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
-  if ! station_json="$(curl -fsS --max-time 8 "$api_base/stations/$STATION_SESSION_NUMBER")"; then
+  if ! station_json="$(backend_curl -fsS --max-time 8 "$api_base/stations/$STATION_SESSION_NUMBER")"; then
     err "Unable to fetch assignment for station $STATION_SESSION_NUMBER."
     exit 1
   fi
@@ -337,7 +339,7 @@ load_inputs() {
       require_cmd jq
       require_server_location
       api_base="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1"
-      dpn_json="$(curl -fsS --max-time 10 "$api_base/systems/dpn")"
+      dpn_json="$(backend_curl -fsS --max-time 10 "$api_base/systems/dpn")"
       config_found=0
 
       while IFS= read -r backend_config; do

@@ -27,10 +27,10 @@ function createTerminals({
   };
   async function user(id) {
     const { rows } = await db.query(
-      "SELECT id, username, admin, terminal_access FROM users WHERE id = $1",
+      "SELECT id, username, admin, super_admin, terminal_access, enabled, must_change_password, session_version FROM users WHERE id = $1",
       [id],
     );
-    return rows[0] && (rows[0].admin || rows[0].terminal_access)
+    return rows[0]?.enabled && !rows[0].must_change_password && rows[0].terminal_access
       ? rows[0]
       : null;
   }
@@ -106,6 +106,7 @@ function createTerminals({
         grants.set(id, {
           secret,
           userId: req.user.userId,
+          sessionVersion: req.terminalUser.session_version,
           username: req.terminalUser.username,
           station,
           expires: Date.now() + LEASE_MS,
@@ -198,7 +199,8 @@ function createTerminals({
       grant.expires <= Date.now()
     )
       return null;
-    if (!(await user(grant.userId))) {
+    const currentUser = await user(grant.userId);
+    if (!currentUser || currentUser.session_version !== grant.sessionVersion) {
       revoke(id);
       return null;
     }

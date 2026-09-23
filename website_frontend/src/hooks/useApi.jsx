@@ -41,6 +41,7 @@ function useApi() {
 
       const res = await fetch(`${BASE_URL}${endpoint}`, {
         ...options,
+        credentials: 'include',
         headers,
       });
 
@@ -557,6 +558,7 @@ function useApi() {
       `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/photos`,
       {
         method: "POST",
+        credentials: 'include',
         headers: {
           ...(authTokenOverride || token
             ? { Authorization: `Bearer ${authTokenOverride || token}` }
@@ -611,6 +613,7 @@ function useApi() {
       `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/l11-log-archive`,
       {
         method: "POST",
+        credentials: 'include',
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
@@ -655,6 +658,7 @@ function useApi() {
       `${BASE_URL}/systems/${encodeURIComponent(service_tag)}/export-unit-data`,
       {
         method: "GET",
+        credentials: 'include',
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },

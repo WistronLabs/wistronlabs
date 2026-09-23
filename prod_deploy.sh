@@ -21,7 +21,7 @@ set -euo pipefail
 #     * creates a custom-format PostgreSQL backup before every existing-site deploy
 #       at /opt/docker/database_backups/<SITE>/
 #     * bootstraps missing backend dir by:
-#          - seeding runtime config if missing (SMTP_PASS prompted)
+#          - seeding runtime config if missing
 #          - bootstrapping DB from another existing PROD site (pg_dump|psql stream)
 #          - WARNING: you must manually remove data when you’re done bootstrapping
 #     * applies migrations based on db_migrations/*.sql + schema_migrations table
@@ -599,7 +599,6 @@ remote_seed_runtime_config_if_missing() {
     need_secrets=1
   fi
 
-  local SMTP_PASS_LOCAL=""
   local POSTGRES_PASSWORD_LOCAL=""
   local JWT_SECRET_LOCAL=""
   local INTERNAL_API_KEY_LOCAL=""
@@ -610,7 +609,6 @@ remote_seed_runtime_config_if_missing() {
     echo "Runtime configuration not found on remote (env/secrets.env missing) for $site."
     echo "Seeding baseline .env and env/*.env (will not overwrite existing files)."
     echo ""
-    prompt_secret "Enter SMTP_PASS (app password) for $site" SMTP_PASS_LOCAL
 
     POSTGRES_PASSWORD_LOCAL="$(gen_hex_32)"
     JWT_SECRET_LOCAL="$(gen_hex_32)"
@@ -620,7 +618,7 @@ remote_seed_runtime_config_if_missing() {
 
   ssh -T $SSH_OPTS "$USER@$host" \
     "REMOTE_DIR='$remote_dir' LOCATION='$site' FRONTEND_URL='$fe_url' APP_HOST_PORT='$app_port' \
-     NEED_SECRETS='$need_secrets' SMTP_PASS='${SMTP_PASS_LOCAL}' POSTGRES_PASSWORD='${POSTGRES_PASSWORD_LOCAL}' \
+     NEED_SECRETS='$need_secrets' POSTGRES_PASSWORD='${POSTGRES_PASSWORD_LOCAL}' \
      JWT_SECRET='${JWT_SECRET_LOCAL}' INTERNAL_API_KEY='${INTERNAL_API_KEY_LOCAL}' WEBHOOK_TOKEN='${WEBHOOK_TOKEN_LOCAL}' \
      bash -s" <<'REMOTE'
 set -euo pipefail
@@ -661,13 +659,10 @@ EOF
 fi
 
 if [[ "$NEED_SECRETS" == "1" && ! -f "$REMOTE_DIR/env/secrets.env" ]]; then
-  SMTP_PASS="${SMTP_PASS:-}"
   POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}"
   JWT_SECRET="${JWT_SECRET:-}"
   INTERNAL_API_KEY="${INTERNAL_API_KEY:-}"
   WEBHOOK_TOKEN="${WEBHOOK_TOKEN:-}"
-
-  [[ -n "$SMTP_PASS" ]] || die "SMTP_PASS is required to create env/secrets.env"
 
   cat > "$REMOTE_DIR/env/secrets.env" <<EOF
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
@@ -677,8 +672,6 @@ JWT_SECRET=$JWT_SECRET
 INTERNAL_API_KEY=$INTERNAL_API_KEY
 WEBHOOK_TOKEN=$WEBHOOK_TOKEN
 
-SMTP_USER=wistron.tailscale@gmail.com
-SMTP_PASS=$SMTP_PASS
 EOF
   chmod 600 "$REMOTE_DIR/env/secrets.env" 2>/dev/null || true
 fi

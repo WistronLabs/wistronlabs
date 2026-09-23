@@ -12,6 +12,8 @@
 
 # shellcheck disable=SC1091
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/runtime_mode.sh"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/backend_curl.sh"
 
 fetch_station_list() {
   local api_url json
@@ -41,7 +43,7 @@ fetch_station_list() {
 
   api_url="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations"
 
-  if ! json="$(curl -fsS --max-time 8 "$api_url")"; then
+  if ! json="$(backend_curl -fsS --max-time 8 "$api_url")"; then
     echo "Error: unable to fetch stations from $api_url" >&2
     exit 1
   fi

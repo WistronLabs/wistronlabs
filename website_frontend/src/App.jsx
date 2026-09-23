@@ -5,10 +5,9 @@ import StationPage from "./pages/StationPage";
 import SystemPage from "./pages/SystemPage";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
-import Auth from "./pages/Auth";
+import Auth from "./pages/AuthV2";
 import ProtectedRoute from "./components/ProtectedRoute";
 import UserPage from "./pages/UserPage";
-import ResetPassword from "./pages/ResetPassword";
 import HistoryPage from "./pages/HistoryPage";
 import AdminPage from "./pages/AdminPage";
 import PartsPage from "./pages/PartsPage";
@@ -21,6 +20,7 @@ import { useEffect } from "react";
 import ShippingPage from "./pages/ShippingPage";
 
 function App() {
+  const protectedPage = (page) => <ProtectedRoute>{page}</ProtectedRoute>;
   const LOCATION = import.meta.env.VITE_LOCATION;
   const location = useLocation();
 
@@ -61,13 +61,13 @@ function App() {
       <Header />
       <div className="flow-root min-w-0 flex-1 pb-10">
         <Routes>
-          <Route path="/" element={<TrackingPage />} />
-          <Route path="/stations" element={<StationPage />} />
+          <Route path="/" element={protectedPage(<TrackingPage />)} />
+          <Route path="/stations" element={protectedPage(<StationPage />)} />
           <Route path="/auth" element={<Auth />} />
-          <Route path="/shipping" element={<ShippingPage />} />
-          <Route path="/:serviceTag" element={<SystemPage />} />
-          <Route path="/parts" element={<PartsPage />} />
-          <Route path="/photo-upload/:serviceTag" element={<PhotoUploadPage />} />
+          <Route path="/shipping" element={protectedPage(<ShippingPage />)} />
+          <Route path="/:serviceTag" element={protectedPage(<SystemPage />)} />
+          <Route path="/parts" element={protectedPage(<PartsPage />)} />
+          <Route path="/photo-upload/:serviceTag" element={protectedPage(<PhotoUploadPage />)} />
           <Route
             path="/user"
             element={
@@ -84,8 +84,7 @@ function App() {
               </ProtectedRoute>
             }
           />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          <Route path="/locationHistory/:id" element={<HistoryPage />} />
+          <Route path="/locationHistory/:id" element={protectedPage(<HistoryPage />)} />
         </Routes>
       </div>
       <Footer className="mt-10 shrink-0" />

@@ -13,7 +13,7 @@ WORKDIR /usr/src/app
 
 # Copy package.json and install dependencies
 COPY package*.json ./
-RUN npm install
+RUN npm ci --omit=dev
 #RUN npm install -g nodemon
 
 # Copy the rest of the app code
@@ -24,4 +24,3 @@ EXPOSE 3000
 
 # Default command
 CMD ["npm", "start"]
-

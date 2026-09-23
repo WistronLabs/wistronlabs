@@ -5,6 +5,7 @@ import useConfirm from "../hooks/useConfirm";
 import useToast from "../hooks/useToast";
 import AdminTabs from "../components/admin/AdminTabs";
 import UsersSection from "../components/admin/sections/UsersSection";
+import AccountAccessSection from "../components/admin/sections/AccountAccessSection";
 import DpnsSection from "../components/admin/sections/DpnsSection";
 import FactoriesSection from "../components/admin/sections/FactoriesSection";
 import PartsSection from "../components/admin/sections/PartsSection";
@@ -1754,7 +1755,9 @@ function AdminPage() {
           </div>
         </section>
 
-        <AdminTabs tab={tab} setTab={setTab} />
+        <AdminTabs tab={tab} setTab={setTab} isSuperAdmin={!!me?.isSuperAdmin} />
+
+        {tab === 'account-access' && me?.isSuperAdmin && <AccountAccessSection users={users} />}
 
         {tab === "users" && (
           <UsersSection

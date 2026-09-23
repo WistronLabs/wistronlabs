@@ -85,11 +85,11 @@ function UsersSection({
                         <input
                           type="checkbox"
                           aria-label={`Terminal access for ${u.username}`}
-                          checked={!!u.isAdmin || !!u.terminalAccess}
-                          disabled={!!u.isAdmin || !me?.isAdmin || saving}
+                          checked={!!u.terminalAccess}
+                          disabled={!me?.isAdmin || saving}
                           onChange={() => handleTerminalToggle(u)}
                         />
-                        {u.isAdmin ? "Included with Admin" : "Allowed"}
+                        {u.terminalAccess ? "Allowed" : "No access"}
                       </label>
                     </td>
                     <td className="px-3 py-2 align-middle">
@@ -109,7 +109,7 @@ function UsersSection({
                             }
                             handleLocalToggle(u, next);
                           }}
-                          disabled={!me?.isAdmin}
+                          disabled={!me?.isSuperAdmin || !!u.isSuperAdmin}
                           className={`px-3 py-1 rounded-md text-xs font-medium border min-w-[72px] ${
                             checked
                               ? "bg-blue-600 text-white border-blue-600 hover:bg-blue-700"
