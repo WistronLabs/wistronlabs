@@ -49,12 +49,6 @@ function App() {
     document.title = pageTitle ? `${pageTitle} - ${baseTitle}` : baseTitle;
   }, [LOCATION, location.pathname]);
 
-  useEffect(() => {
-    if (location.pathname === "/auth") return;
-    const fullPath = `${location.pathname}${location.search}${location.hash}`;
-    sessionStorage.setItem("postLoginRedirect", fullPath);
-  }, [location.pathname, location.search, location.hash]);
-
   return (
     <div className="flex min-h-dvh flex-col bg-gray-100 overflow-x-clip text-gray-800 font-roboto">
       {/* <ScrollToTop /> */}

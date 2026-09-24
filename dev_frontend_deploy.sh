@@ -34,8 +34,9 @@ Examples:
 
 This will:
   - Map DEV backend -> source prod (e.g. TSS_DEV -> TSS)
+  - Tunnel the DEV backend through SSH to its configured tailnet host and port
   - Write website_frontend/.env:
-      VITE_BACKEND_URL=https://devbackend.<site>.wistronlabs.com/api/v1
+      VITE_BACKEND_URL=http://127.0.0.1:14100/api/v1
       VITE_URL=<prod frontend url from conf>
       VITE_LOCATION=<site>
   - Optionally remove node_modules and rerun npm install using --clean-install
@@ -63,7 +64,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Load config (supports optional 10th field: deploy_mode)
-declare -A HOST FRONTEND IS_DEV SOURCE_PROD
+declare -A HOST PORT FRONTEND IS_DEV SOURCE_PROD
 while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile source_prod deploy_mode _ignored_extra || [[ -n "${name:-}" ]]; do
   [[ -z "${name// }" ]] && continue
   [[ "$name" =~ ^# ]] && continue
@@ -72,6 +73,7 @@ while IFS='|' read -r name host dir proj port frontend_url is_dev lockfile sourc
   source_prod="${source_prod//$'\r'/}"; source_prod="${source_prod//[[:space:]]/}"
 
   HOST["$name"]="$host"
+  PORT["$name"]="$port"
   FRONTEND["$name"]="$frontend_url"
   IS_DEV["$name"]="$is_dev"
   SOURCE_PROD["$name"]="$source_prod"
@@ -105,13 +107,32 @@ BUILD_NUMBER="$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)"
 PROD_FRONTEND_URL="${FRONTEND[$SITE]:-}"
 [[ -n "$PROD_FRONTEND_URL" ]] || die "Could not resolve prod frontend_url for '$SITE' from conf"
 
-# dev backend URL convention you gave
-DEV_BACKEND_URL="https://devbackend.$(echo "$SITE" | tr '[:upper:]' '[:lower:]').wistronlabs.com/api/v1"
+DEV_HOST="${HOST[$DEV_NAME]}"
+DEV_PORT="${PORT[$DEV_NAME]:-}"
+[[ -n "$DEV_HOST" && "$DEV_PORT" =~ ^[0-9]+$ ]] || die "Missing or invalid host/port for '$DEV_NAME' in conf"
+LOCAL_TUNNEL_PORT=14100
+DEV_BACKEND_URL="http://127.0.0.1:$LOCAL_TUNNEL_PORT/api/v1"
+
+echo "Opening SSH tunnel to $DEV_NAME ($DEV_HOST:$DEV_PORT)..."
+ssh -o BatchMode=yes -o PasswordAuthentication=no -o ConnectTimeout=8 \
+  -o ExitOnForwardFailure=yes -o StrictHostKeyChecking=accept-new \
+  -N -L "127.0.0.1:$LOCAL_TUNNEL_PORT:127.0.0.1:$DEV_PORT" \
+  "falab@$DEV_HOST" &
+TUNNEL_PID=$!
+trap 'kill "$TUNNEL_PID" 2>/dev/null || true; wait "$TUNNEL_PID" 2>/dev/null || true' EXIT
+
+# An unauthenticated API response is expected; curl fails here only if the
+# tunnel or backend connection fails.
+if ! curl --silent --retry 3 --retry-connrefused --retry-delay 1 \
+    --max-time 5 --output /dev/null "$DEV_BACKEND_URL/server/time"; then
+  die "Cannot reach $DEV_NAME through the SSH tunnel"
+fi
 
 echo ""
 echo "============================================================"
 echo "DEV FRONTEND DEPLOY (local)"
 echo "  Dev backend target : $DEV_NAME"
+echo "  SSH tunnel         : falab@$DEV_HOST -> 127.0.0.1:$DEV_PORT"
 echo "  Site (source_prod) : $SITE"
 echo "  Write .env in      : $ENV_FILE"
 echo "  VITE_BACKEND_URL   : $DEV_BACKEND_URL"
@@ -145,6 +166,9 @@ set_env_kv "VITE_URL" "$PROD_FRONTEND_URL" "$ENV_FILE"
 set_env_kv "VITE_LOCATION" "$SITE" "$ENV_FILE"
 set_env_kv "BUILD_NUMBER" "$BUILD_NUMBER" "$ENV_FILE"
 set_env_kv "VITE_BUILD_NUMBER" "$BUILD_NUMBER" "$ENV_FILE"
+
+# Vite gives inherited environment variables priority over .env files.
+export VITE_BACKEND_URL="$DEV_BACKEND_URL"
 
 echo ""
 echo "Wrote:"
