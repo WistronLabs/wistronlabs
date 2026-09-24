@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from "react";
 
 import { DateTime } from "luxon";
+import { computeActiveLocationsPerDay } from "../utils/activeLocationChartData";
 
 import {
   ResponsiveContainer,
@@ -30,142 +31,6 @@ function AdaptivePointLabel({ index, pointCount, value, viewBox, offset = 4, sty
       {value}
     </text>
   );
-}
-
-function computeActiveLocationsPerDay(
-  snapshot,
-  history,
-  activeLocationNames,
-  timezone,
-  serverTime,
-  chartStartDate,
-  chartEndDate,
-) {
-  function normalize(entry) {
-    return {
-      tag: entry.service_tag,
-      loc: entry.to_location ?? entry.location ?? null,
-      ts: entry.changed_at ?? entry.as_of ?? null,
-    };
-  }
-
-  const parsedServerNow = DateTime.fromFormat(
-    String(serverTime?.localtime || ""),
-    "MM/dd/yyyy, hh:mm:ss a",
-    { zone: timezone },
-  );
-  const today = (
-    parsedServerNow.isValid ? parsedServerNow : DateTime.now().setZone(timezone)
-  ).startOf("day");
-  const selectedStart = DateTime.fromISO(String(chartStartDate || ""), {
-    zone: timezone,
-  }).startOf("day");
-  const selectedEnd = DateTime.fromISO(String(chartEndDate || ""), {
-    zone: timezone,
-  }).startOf("day");
-  const startDay = selectedStart.isValid ? selectedStart : today.minus({ days: 6 });
-  const endDay = selectedEnd.isValid ? selectedEnd : today;
-  const startKey = startDay.toISODate();
-  const endKey = endDay.toISODate();
-
-  const historyByDay = new Map();
-
-  history.forEach((rawEntry) => {
-    const { tag, loc, ts } = normalize(rawEntry);
-    if (!ts) return;
-
-    const dt = DateTime.fromISO(ts, { zone: "utc" }).setZone(timezone);
-    if (!dt.isValid) return;
-
-    const dayKey = dt.startOf("day").toISODate();
-    if (dayKey < startKey || dayKey > endKey) return;
-
-    if (!historyByDay.has(dayKey)) historyByDay.set(dayKey, new Map());
-    const tagMap = historyByDay.get(dayKey);
-
-    if (!tagMap.has(tag)) {
-      tagMap.set(tag, []);
-    }
-    tagMap.get(tag).push({ tag, loc, ts });
-  });
-
-  const results = [];
-
-  let currentState = new Map();
-
-  if (snapshot.length > 0) {
-    snapshot.forEach((entry) => {
-      const { tag, loc } = normalize(entry);
-      if (activeLocationNames.includes(loc)) {
-        currentState.set(tag, loc);
-      }
-    });
-
-    results.push({
-      date: startKey,
-      counts: countState(currentState, activeLocationNames),
-    });
-  } else {
-    const startDayChanges = historyByDay.get(startKey);
-    if (startDayChanges) {
-      for (const events of startDayChanges.values()) {
-        events.sort((a, b) => DateTime.fromISO(a.ts) - DateTime.fromISO(b.ts));
-        for (const { tag, loc } of events) {
-          if (!activeLocationNames.includes(loc)) {
-            currentState.delete(tag);
-          } else {
-            currentState.set(tag, loc);
-          }
-        }
-      }
-    }
-    results.push({
-      date: startKey,
-      counts: countState(currentState, activeLocationNames),
-    });
-  }
-
-  let day = startDay.plus({ days: 1 });
-
-  while (day <= endDay) {
-    const dayKey = day.toISODate();
-
-    if (historyByDay.has(dayKey)) {
-      const changes = historyByDay.get(dayKey);
-      for (const events of changes.values()) {
-        events.sort((a, b) => DateTime.fromISO(a.ts) - DateTime.fromISO(b.ts));
-        for (const { tag, loc } of events) {
-          if (!activeLocationNames.includes(loc)) {
-            currentState.delete(tag);
-          } else {
-            currentState.set(tag, loc);
-          }
-        }
-      }
-    }
-
-    results.push({
-      date: dayKey,
-      counts: countState(currentState, activeLocationNames),
-    });
-
-    day = day.plus({ days: 1 });
-  }
-
-  return results;
-
-  function countState(stateMap, allLocations) {
-    const counts = {};
-    allLocations.forEach((loc) => {
-      counts[loc] = 0;
-    });
-    for (const loc of stateMap.values()) {
-      if (Object.prototype.hasOwnProperty.call(counts, loc)) {
-        counts[loc]++;
-      }
-    }
-    return counts;
-  }
 }
 
 function SystemLocationsChart({
@@ -255,7 +120,7 @@ function SystemLocationsChart({
   return (
     <div className="bg-white p-4">
       <h2 className="text-xl font-semibold mb-4">Active Locations Per Day</h2>
-      <ResponsiveContainer width="100%" height={250}>
+      <ResponsiveContainer width="100%" height={320}>
         <LineChart data={chartData} margin={chartMargin}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="date" tick={{ fontSize: 12 }} />

@@ -38,23 +38,19 @@ NORMALIZED_NAME=$(for w in ${STATION_NAME//[^[:alnum:]]/ }; do printf '%s ' "${w
 
 
 if [ -z "$BASH_PID" ]; then
-
-  # emit JSON
-  printf '{\n'
-  printf '  "station": "%s",\n' "$NORMALIZED_NAME"
-  printf '  "status": %d,\n'    "3"
-  # escape any quotes in the message
-  escaped_msg=${MESSAGE//\"/\\\"}
-  printf '  "message": "%s",\n'  "No existing tmux session for $NORMALIZED_NAME."
-  printf '  "details": null\n'
-  printf '}\n'
+  jq -nc --arg station "$NORMALIZED_NAME" \
+    --arg message "No existing tmux session for $NORMALIZED_NAME." \
+    '{station: $station, status: 3, message: $message, details: null}'
   exit 1
 fi
 pane=$(tmux capture-pane -p -t "$STATION_NAME" | grep -v -e '^\s*$' -e 'falab@franklin:~' -e '0:bash.*localhost\"')
+progress_plan=$(tmux show-options -v -t "$STATION_NAME" @l10_progress_plan 2>/dev/null || true)
+progress_run=$(tmux show-options -v -t "$STATION_NAME" @l10_progress_run 2>/dev/null || true)
 
 CURRENT_STATION_TAG=""
 if is_backend_mode && [[ -n "${SERVER_LOCATION:-}" ]]; then
-  station_json=$(backend_curl -fsS --max-time 5 "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$STATION_ID" 2>/dev/null || true)
+  station_api_base="${STATION_API_BASE_URL:-https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1}"
+  station_json=$(backend_curl -fsS --max-time 5 "${station_api_base%/}/stations/$STATION_ID" 2>/dev/null || true)
   if [[ -n "$station_json" ]]; then
     CURRENT_STATION_TAG=$(printf '%s' "$station_json" | jq -r '.system_service_tag // empty' 2>/dev/null || true)
     CURRENT_STATION_TAG="$(normalize_service_tag "$CURRENT_STATION_TAG")"
@@ -118,7 +114,7 @@ else
   MESSAGE="L10 Diagnostic Test is not running."
 fi
 
-if [[ $(echo "$pane" | grep -c "logs are located at ") -gt 0 ]]; then
+if [[ "$CODE" != "1" && $(echo "$pane" | grep -c "logs are located at ") -gt 0 ]]; then
   log_location=$(echo "$pane" | grep "logs are located at " | sed -e "s/logs are located at //g")
   service_tag=$(echo "$pane" | grep "logs are located at " | grep -oP "\/[A-z0-9]{6,7}\/" | sed -e "s/\///g")
   service_tag=$(echo "$service_tag" | tr '[:lower:]' '[:upper:]' | xargs)
@@ -141,41 +137,61 @@ if [[ $(echo "$pane" | grep -c "logs are located at ") -gt 0 ]]; then
 fi
 
 if [ "$CODE" == "1" ]; then
-  finished_tests=$(echo "$pane" | grep -P "(Testing|Dumping).*\[ [0-9]+\:[0-9]{2}s \]" | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ \[ [0-9]+\:[0-9]{2}s \]$//g")
-  test_current=$(echo "$pane" | grep -P "(Testing|Dumping)" | tail -n1 | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ .*$//g")
+  # Only count results from this run. Missing tmux history means progress is
+  # unknown, rather than an elapsed-time estimate.
+  progress_pane=""
+  if [[ -n "$progress_run" ]]; then
+    full_pane=$(tmux capture-pane -p -S - -t "$STATION_NAME" 2>/dev/null || true)
+    progress_pane=$(printf '%s\n' "$full_pane" | awk -v marker="L10_PROGRESS_START=$progress_run" '
+      $0 == marker { seen=1; next }
+      seen { print }
+    ')
+  fi
+  finished_tests=$(printf '%s\n' "$progress_pane" | grep -P "^(Testing|Dumping).*\[ [0-9]+\:[0-9]{2}s \]" | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ \[ [0-9]+\:[0-9]{2}s \]$//g")
+  test_current=$(printf '%s\n' "$pane" | grep -P "^(Testing|Dumping)" | tail -n1 | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ .*$//g")
   if [[ -n $test_current ]]; then
     MESSAGE="$MESSAGE ($test_current)"
-    test_ok=$(echo "$finished_tests" | grep " OK$" | sed -E "s/ OK$//g")
-    test_fail=$(echo "$finished_tests" | grep " FAILED$" | sed -E "s/ FAILED$//g")
-    test_skip=$(echo "$finished_tests" | grep " SKIPPED$" | sed -E "s/ SKIPPED$//g")
-    test_timeout=$(echo "$finished_tests" | grep " TIMEOUT$" | sed -E "s/ TIMEOUT$//g")
-    details_json=()
-    details_json+=("\"CURRENT TEST\": \"$test_current\"")
-    if [[ -n $test_ok ]]; then
-      details_json+=("\"OK\": $(echo "$test_ok" | jq -R . | jq -s .)")
+  fi
+  test_ok=$(echo "$finished_tests" | grep " OK$" | sed -E "s/ OK$//g")
+  test_fail=$(echo "$finished_tests" | grep " FAILED$" | sed -E "s/ FAILED$//g")
+  test_skip=$(echo "$finished_tests" | grep " SKIPPED$" | sed -E "s/ SKIPPED$//g")
+  test_timeout=$(echo "$finished_tests" | grep " TIMEOUT$" | sed -E "s/ TIMEOUT$//g")
+  DETAILS=$(jq -nc \
+    --arg current "$test_current" \
+    --arg ok "$test_ok" \
+    --arg failed "$test_fail" \
+    --arg timeout "$test_timeout" \
+    --arg skipped "$test_skip" '
+    def lines: split("\n") | map(select(length > 0));
+    (if $current == "" then {} else {"CURRENT TEST": $current} end)
+    + (if $ok == "" then {} else {OK: ($ok | lines)} end)
+    + (if $failed == "" then {} else {FAILED: ($failed | lines)} end)
+    + (if $timeout == "" then {} else {TIMEOUT: ($timeout | lines)} end)
+    + (if $skipped == "" then {} else {SKIPPED: ($skipped | lines)} end)
+  ')
+  if [[ -n "$progress_plan" && -n "$progress_pane" ]] &&
+    jq -e 'type == "array" and length > 0' <<< "$progress_plan" >/dev/null 2>&1; then
+    progress=$(jq -nc --argjson plan "$progress_plan" --argjson details "$DETAILS" '
+      def completed: (($details.OK // []) + ($details.FAILED // []) + ($details.TIMEOUT // []) + ($details.SKIPPED // []));
+      if ((completed - $plan) | length) > 0 then null
+      else
+        [range(0; $plan | length) as $i |
+          select(completed | index($plan[$i])) | $i] as $done |
+        [range(0; $plan | length) as $i |
+          select((($details.FAILED // []) + ($details.TIMEOUT // [])) | index($plan[$i])) | $i] as $failed |
+        {completed: ($done | length), total: ($plan | length), failedIndices: $failed}
+      end
+    ')
+    if [[ "$progress" != "null" ]]; then
+      DETAILS=$(jq -nc --argjson details "$DETAILS" --argjson progress "$progress" '$details + {PROGRESS: $progress}')
     fi
-    if [[ -n $test_fail ]]; then
-      details_json+=("\"FAILED\": $(echo "$test_fail" | jq -R . | jq -s .)")
-    fi
-    if [[ -n $test_timeout ]]; then
-      details_json+=("\"TIMEOUT\": $(echo "$test_timeout" | jq -R . | jq -s .)")
-    fi
-    if [[ -n $test_skip ]]; then
-      details_json+=("\"SKIPPED\": $(echo "$test_skip" | jq -R . | jq -s .)")
-    fi
-    DETAILS=$(echo {$(IFS=", "; echo "${details_json[*]}")})
   fi
 fi
 
-# emit JSON
-printf '{\n'
-printf '  "station": "%s",\n' "$NORMALIZED_NAME"
-printf '  "status": %d,\n'    "$CODE"
-# escape any quotes in the message
-escaped_msg=${MESSAGE//\"/\\\"}
-printf '  "message": "%s",\n'  "$escaped_msg"
-printf '  "details": %s\n'   "$DETAILS"
-printf '}\n'
+# Let jq escape terminal text; hand-built JSON breaks on quotes and backslashes.
+jq -nc --arg station "$NORMALIZED_NAME" --argjson status "$CODE" \
+  --arg message "$MESSAGE" --argjson details "$DETAILS" \
+  '{station: $station, status: $status, message: $message, details: $details}'
 
 # Authors:
 #   Giovanni Leon - giovanni_leon@wistron.com

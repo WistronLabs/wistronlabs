@@ -13,6 +13,9 @@ export default function DownloadReportModal({
   onClose,
   reportDate,
   setReportDate,
+  reportStartDate,
+  setReportStartDate,
+  minReportDate,
   onDownload,
   onCopyForOutlook,
   copyingForOutlook,
@@ -37,24 +40,52 @@ export default function DownloadReportModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-xl border border-gray-200 w-full max-w-lg p-8 relative space-y-6">
-        <h2 className="text-lg font-semibold mb-2">Select Date</h2>
+        <h2 className="text-lg font-semibold mb-2">Select {reportMode === "cumulative" ? "Date Range" : "Date"}</h2>
 
-        <label className="block mb-2">
-          <span className="mr-2">Date: </span>
-          <ReactDatePicker
-            selected={reportDate ? parseLocalDateString(reportDate) : null}
-            onChange={(date) =>
-              setReportDate(date ? date.toLocaleDateString("en-CA") : "")
-            }
-            dateFormat="MM/dd/yyyy"
-            fixedHeight
-            className="border rounded p-1 w-full mt-1"
-            placeholderText="Select a date"
-            isClearable
-            popperPlacement="bottom-start"
-            showPopperArrow={false}
-          />
-        </label>
+        {reportMode === "cumulative" && (
+          <div className="mb-2 grid grid-cols-[3.25rem_minmax(0,1fr)] items-center gap-2">
+            <label htmlFor="report-start-date">From:</label>
+            <div className="min-w-0">
+              <ReactDatePicker
+                id="report-start-date"
+                selected={reportStartDate ? parseLocalDateString(reportStartDate) : null}
+                onChange={(date) => setReportStartDate(date ? date.toLocaleDateString("en-CA") : "")}
+                minDate={minReportDate ? parseLocalDateString(minReportDate) : undefined}
+                dateFormat="MM/dd/yyyy"
+                fixedHeight
+                wrapperClassName="w-full"
+                className="w-full rounded border p-1"
+                placeholderText="Select start date"
+                popperPlacement="bottom-start"
+                showPopperArrow={false}
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="mb-2 grid grid-cols-[3.25rem_minmax(0,1fr)] items-center gap-2">
+          <label htmlFor="report-end-date">{reportMode === "cumulative" ? "To:" : "Date:"}</label>
+          <div className="min-w-0">
+            <ReactDatePicker
+              id="report-end-date"
+              selected={reportDate ? parseLocalDateString(reportDate) : null}
+              onChange={(date) =>
+                setReportDate(date ? date.toLocaleDateString("en-CA") : "")
+              }
+              dateFormat="MM/dd/yyyy"
+              minDate={reportMode === "cumulative" && (reportStartDate || minReportDate)
+                ? parseLocalDateString(reportStartDate || minReportDate)
+                : undefined}
+              fixedHeight
+              wrapperClassName="w-full"
+              className="w-full rounded border p-1"
+              placeholderText="Select a date"
+              isClearable
+              popperPlacement="bottom-start"
+              showPopperArrow={false}
+            />
+          </div>
+        </div>
 
         <div className="mt-2">
           <div className="flex gap-6">
@@ -95,13 +126,13 @@ export default function DownloadReportModal({
           </label>
 
           <p className="text-sm text-gray-500 mt-3">
-            You can download data for this date as a cumulative total of all
-            completed items up to that day, or only the items completed on that
-            specific day.
+            {reportMode === "cumulative"
+              ? "Cumulative includes completed items within the selected date range."
+              : "Per Day includes items completed on the selected date."}
           </p>
           <p className="text-sm text-gray-500 mt-2">
-            Copy for Outlook includes charts from the selected date and the
-            preceding seven days.
+            Copy for Outlook uses the {reportMode === "cumulative" ? "To date" : "selected date"}
+            {" "}and includes charts from that date and the preceding seven days.
           </p>
         </div>
 
@@ -117,7 +148,7 @@ export default function DownloadReportModal({
               onDownload(); // reads idiotProof from parent
               onClose();
             }}
-            disabled={!reportDate}
+            disabled={!reportDate || (reportMode === "cumulative" && (!reportStartDate || reportStartDate > reportDate))}
             className="px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
             Download Report

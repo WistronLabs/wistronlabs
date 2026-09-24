@@ -121,9 +121,45 @@ async function ensure(station) {
 }
 const stationFor = (url) =>
   /^\/api\/v1\/terminals\/stations\/([1-9]\d{0,5})(?:\/|$)/.exec(url)?.[1];
+function sessions() {
+  try {
+    return execFileSync("tmux", ["list-sessions", "-F", "#{session_name}"], {
+      encoding: "utf8",
+      timeout: 3000,
+    }).split("\n").map((name) => /^stn_([1-9]\d{0,5})$/.exec(name)?.[1]).filter(Boolean);
+  } catch {
+    // tmux exits nonzero when its server has no sessions.
+    return [];
+  }
+}
 const server = http.createServer(async (req, res) => {
+  if (req.method === "GET" && req.url === "/api/v1/terminals/sessions") {
+    return res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+      .end(JSON.stringify({ stations: sessions() }));
+  }
   const station = stationFor(req.url);
   if (!station || req.method !== "GET") return res.writeHead(404).end();
+  if (req.url === `/api/v1/terminals/stations/${station}/preview`) {
+    const target = `=stn_${station}:`;
+    try {
+      execFileSync("tmux", ["has-session", "-t", `=stn_${station}`], { stdio: "ignore", timeout: 3000 });
+    } catch {
+      return res.writeHead(404, { "content-type": "application/json", "cache-control": "no-store" })
+        .end(JSON.stringify({ error: "No existing tmux session for this station" }));
+    }
+    try {
+      const output = execFileSync("tmux", ["capture-pane", "-p", "-J", "-S", "-80", "-t", target], {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024,
+        timeout: 3000,
+      }).slice(-24 * 1024);
+      return res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+        .end(JSON.stringify({ output }));
+    } catch {
+      return res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" })
+        .end(JSON.stringify({ error: "Unable to capture station output" }));
+    }
+  }
   try {
     const result = await ensure(station);
     if (req.url.endsWith("/ensure")) {

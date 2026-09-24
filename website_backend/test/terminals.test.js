@@ -59,7 +59,14 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   const hostSockets = new Set();
   const host = http.createServer((req, res) => {
     forwarded = req.headers;
-    if (req.url.endsWith("/ensure"))
+    if (req.url.endsWith("/sessions"))
+      res.writeHead(200, { "content-type": "application/json" }).end('{"stations":["12"]}');
+    else if (req.url.endsWith("/preview")) {
+      if (req.url.includes("/stations/12/"))
+        res.writeHead(200, { "content-type": "application/json" }).end('{"output":"L10 Diagnostic Test\\n"}');
+      else res.writeHead(404, { "content-type": "application/json" }).end('{"error":"No session"}');
+    }
+    else if (req.url.endsWith("/ensure"))
       res
         .writeHead(200, { "content-type": "application/json" })
         .end('{"newSession":true}');
@@ -134,6 +141,13 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   );
   assert.equal((await (await call("/access", 2)).json()).allowed, true);
   assert.equal((await call("/stations/12/connect", 3, "POST")).status, 403);
+  assert.equal((await call("/sessions")).status, 401);
+  assert.equal((await call("/sessions", 1)).status, 403);
+  assert.deepEqual((await (await call("/sessions", 2)).json()).stations, ["12"]);
+  assert.equal((await call("/stations/12/preview", 3)).status, 403);
+  assert.equal((await call("/stations/abc/preview", 2)).status, 400);
+  assert.equal((await call("/stations/18/preview", 2)).status, 404);
+  assert.match((await (await call("/stations/12/preview", 2)).json()).output, /L10 Diagnostic Test/);
   assert.equal((await call("/stations/99/connect", 1, "POST")).status, 403);
   assert.equal((await call("/stations/abc/connect", 2, "POST")).status, 400);
   const res = await call("/stations/12/connect", 2, "POST");

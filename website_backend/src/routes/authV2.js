@@ -48,6 +48,7 @@ function throttle(req, email) {
 }
 function machineAllowed(req) {
   if (req.method === 'GET' && /^\/stations(?:\/[A-Za-z0-9_-]+)?$/.test(req.path)) return true;
+  if (req.method === 'GET' && req.path === '/systems') return true;
   if (req.method === 'GET' && /^\/systems\/(?:dpn|[A-Za-z0-9_-]+)$/.test(req.path)) return true;
   if (req.method === 'POST' && req.path === '/stations') return true;
   if (req.method === 'PATCH' && /^\/stations\/[A-Za-z0-9_-]+$/.test(req.path)) return true;
@@ -392,6 +393,11 @@ router.post('/logout', async (req, res) => {
   return res.json({ message: 'Signed out' });
 });
 router.get('/check', authenticateToken, (_req, res) => res.sendStatus(204));
+router.get('/super-admin-contacts', async (_req, res) => {
+  const { rows } = await db.query(
+    'SELECT username FROM users WHERE super_admin = true AND enabled = true ORDER BY username');
+  return res.json({ emails: rows.map((user) => user.username) });
+});
 router.post('/change-password', authenticateToken, async (req, res) => {
   const error = passwordError(req.body?.newPassword, req.user.username);
   if (error) return invalid(res, 400, error);

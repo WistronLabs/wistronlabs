@@ -41,15 +41,16 @@ fetch_station_list() {
     exit 1
   fi
 
-  api_url="https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations"
+  api_url="${STATION_API_BASE_URL:-https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1}"
+  api_url="${api_url%/}/stations"
 
   if ! json="$(backend_curl -fsS --max-time 8 "$api_url")"; then
     echo "Error: unable to fetch stations from $api_url" >&2
     exit 1
   fi
 
-  if ! printf '%s\n' "$json" | jq -e 'length > 0' >/dev/null 2>&1; then
-    echo "Error: no stations returned by API." >&2
+  if ! printf '%s\n' "$json" | jq -e 'type == "array" and length > 0 and all(.[]; .station_name != null)' >/dev/null 2>&1; then
+    echo "Error: invalid or empty station list returned by API." >&2
     exit 1
   fi
 

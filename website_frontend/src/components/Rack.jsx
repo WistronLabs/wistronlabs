@@ -7,7 +7,7 @@ function Rack({ stations, rackNumber, link, onOpenTerminal }) {
     <>
       <h2 className="text-xl font-medium mb-4">Debug Rack {rackNumber}</h2>
       <div className="mb-4 w-full rounded overflow-visible shadow-sm">
-        <table className="w-full bg-white rounded border-collapse overflow-visible">
+        <table className="w-full table-fixed bg-white rounded border-collapse overflow-visible">
           <thead>
             <tr>
               <th className="bg-gray-50 font-semibold uppercase text-xs text-gray-600 p-3 text-left">

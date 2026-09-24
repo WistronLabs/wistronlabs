@@ -325,6 +325,10 @@ if [[ $found -eq 0 ]]; then
     exit 1
 fi
 
+# A new run must not inherit progress from the previous unit.
+tmux set-option -u -t "$SESSION_NAME" @l10_progress_plan 2>/dev/null || true
+tmux set-option -u -t "$SESSION_NAME" @l10_progress_run 2>/dev/null || true
+
 if is_backend_mode; then
   http_code="$(backend_curl -s -o /dev/null -w "%{http_code}" \
     "https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1/stations/$SESSION_NUMBER")"
@@ -647,7 +651,7 @@ elif [[ "$CONFIG" == "7" ]]; then
 elif [[ "$CONFIG" == "A" || "$CONFIG" == "B" || "$CONFIG" == "I" || "$CONFIG" == "E" ]]; then
     MASTER_MODULE_LIST=("${GB300_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-43538.tgz"
-elif [[ "$CONFIG" == "F" ]]; then
+ elif [[ "$CONFIG" == "F" || "$CONFIG" == "F2" ]]; then
     MASTER_MODULE_LIST=("${CONFIG_F_MASTER_MODULE_LIST[@]}")
     DIAG_FILE="629-24059-0000-FLD-50611-rev1.tgz"
 elif [[ "$CONFIG" == "H1" ]]; then
@@ -661,8 +665,13 @@ else
     exit 1
 fi
 # Per-config HTTP folder under /var/www/html (ex: config_6, config_F)
-WIS_FOLDER="config_${CONFIG}"
-
+# F2 has its own diagnostic spec but reuses F's PXE image files. Keep CONFIG
+# as F2 for the test; only map the image folder to config_F here.
+  if [[ "$CONFIG" == "F2" ]]; then
+      WIS_FOLDER="config_F"
+  else
+      WIS_FOLDER="config_${CONFIG}"
+  fi
 
 # defines the base modules that need to be skipped over for each configuration. 
 # note that these might change as we get more testing equiptment
@@ -756,7 +765,7 @@ case "$CONFIG" in
             "Cx8GpuDirectCrossGpu_IB"
         )
         ;;
-    F)
+    F|F2)
         SKIPPED_MODULES=(
             "Cx8GpuDirectCrossNIC_IB"
             "Cx8CpuCrossNIC_IB"
@@ -886,7 +895,7 @@ MAC_DASH="$(echo "$MAC_RAW" | sed -E 's/(..)/\1-/g; s/-$//')"
 OUT="/srv/tftp/grub/grub.cfg-${MAC_DASH}"
 
 case "$CONFIG" in
-  F)
+  F|F2)
     tee "$OUT" >/dev/null <<EOF
 set timeout=5
 
@@ -950,6 +959,22 @@ clear
 # --- set up logging ---
 START_TS=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
 
+# Publish the exact module plan for this run to the station session. The
+# status collector uses it as the denominator, including -o and skipped tests.
+if [[ "$FRU_ONLY_MODE" -eq 0 ]]; then
+    if [[ -n "$SELECTED_MODULES_FORMATTED" ]]; then
+        IFS=, read -r -a PROGRESS_MODULES <<< "$SELECTED_MODULES_FORMATTED"
+    else
+        PROGRESS_MODULES=("${CONFIG_LIST[@]}")
+    fi
+    PROGRESS_PLAN=$(printf '%s\n' "${PROGRESS_MODULES[@]}" | jq -R . | jq -sc .)
+    tmux set-option -t "$SESSION_NAME" @l10_progress_plan "$PROGRESS_PLAN"
+    tmux set-option -t "$SESSION_NAME" @l10_progress_run "$START_TS"
+else
+    tmux set-option -u -t "$SESSION_NAME" @l10_progress_plan 2>/dev/null || true
+    tmux set-option -u -t "$SESSION_NAME" @l10_progress_run 2>/dev/null || true
+fi
+
 LOG_DIR="/var/www/html/l10_logs/$SERVICE_TAG/${START_TS}/"
 mkdir -p "$LOG_DIR"
 
@@ -965,6 +990,9 @@ exec 5> >(tee -a "$LOG_FILE")
 exec 1>&5 2>&5
 
 echo "==> Logging to $LOG_FILE"
+if [[ "$FRU_ONLY_MODE" -eq 0 ]]; then
+    echo "L10_PROGRESS_START=$START_TS"
+fi
 
 echo ""
 echo "System $SERVICE_TAG: Config $CONFIG"

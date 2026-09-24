@@ -13,7 +13,7 @@
 curl_auth() {
   if [[ "${CONFIG:-}" == "7" ]]; then
     curl -u root:changeme "$@"
-  elif [[ "${CONFIG:-}" == "F" ]]; then
+  elif [[ "${CONFIG:-}" == "F" || "${CONFIG:-}" == "F2" ]]; then
     curl -u root:0penBmc "$@"
   elif [[ "${CONFIG:-}" == "D" ]]; then
     curl -u root:calvin "$@"

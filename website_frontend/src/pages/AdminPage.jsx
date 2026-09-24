@@ -1607,6 +1607,130 @@ function AdminPage() {
       <main className="mx-auto mt-10 w-11/12 md:w-10/12 max-w-screen-xl bg-white rounded-2xl shadow-lg p-6 space-y-6">
         <h1 className="text-3xl font-semibold text-gray-800">Admin</h1>
 
+        <AdminTabs tab={tab} setTab={setTab} isSuperAdmin={!!me?.isSuperAdmin} />
+
+        {tab === 'account-access' && me?.isSuperAdmin && <AccountAccessSection users={users} />}
+
+        {tab === "users" && (
+          <UsersSection
+            err={err}
+            loading={loading}
+            users={users}
+            baselineMap={baselineMap}
+            terminalBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.terminalAccess]))}
+            statusBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.enabled]))}
+            me={me}
+            showToast={showToast}
+            handleTerminalToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, terminalAccess: !x.terminalAccess } : x))}
+            handleStatusToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, enabled: !x.enabled } : x))}
+            handleLocalToggle={handleLocalToggle}
+            handleDiscard={handleDiscard}
+            handleSave={handleSave}
+            hasChanges={hasChanges}
+            saving={saving}
+          />
+        )}
+        {tab === "dell-customers" && (
+          <DellCustomersSection
+            onSave={onDellCustomerSave}
+            addBlankRow={addBlankDellCustomerRow}
+            query={dellCustomerQ}
+            setQuery={setDellCustomerQ}
+            error={dellCustomerErr}
+            loading={dellCustomerLoading}
+            rows={filteredDellCustomers}
+            baselineMap={dellCustomerBaselineMap}
+            onCellChange={onDellCustomerCellChange}
+            onDelete={handleDeleteDellCustomer}
+            deletingId={deletingDellCustomerId}
+            saving={dellCustomerSaving}
+            onDiscard={onDellCustomerDiscard}
+            hasChanges={dellCustomerHasChanges}
+          />
+        )}
+
+        {tab === "dpns" && (
+          <DpnsSection
+            onDpnSave={onDpnSave}
+            addBlankRow={addBlankRow}
+            addBlankConfigRow={addBlankConfigRow}
+            dpnQ={dpnQ}
+            setDpnQ={setDpnQ}
+            dpnErr={dpnErr}
+            dpnLoading={dpnLoading}
+            filteredDpns={filteredDpns}
+            allDpns={dpns}
+            dpnBaselineMap={dpnBaselineMap}
+            onCellChange={onCellChange}
+            onFamilyNameChange={onFamilyNameChange}
+            onToggleDellCustomer={onToggleDpnDellCustomer}
+            dellCustomers={dellCustomers}
+            handleDeleteDpn={handleDeleteDpn}
+            handleDeleteDpnFamily={handleDeleteDpnFamily}
+            deletingId={deletingId}
+            dpnSaving={dpnSaving}
+            onDpnDiscard={onDpnDiscard}
+            dpnHasChanges={dpnHasChanges}
+          />
+        )}
+        {tab === "factories" && (
+          <FactoriesSection
+            onFactorySave={onFactorySave}
+            addBlankFactoryRow={addBlankFactoryRow}
+            factoryQ={factoryQ}
+            setFactoryQ={setFactoryQ}
+            factoryErr={factoryErr}
+            factoryLoading={factoryLoading}
+            filteredFactories={filteredFactories}
+            factoryBaselineMap={factoryBaselineMap}
+            onFactoryCellChange={onFactoryCellChange}
+            handleDeleteFactory={handleDeleteFactory}
+            deletingFactoryId={deletingFactoryId}
+            factorySaving={factorySaving}
+            onFactoryDiscard={onFactoryDiscard}
+            factoryHasChanges={factoryHasChanges}
+          />
+        )}
+        {tab === "parts" && (
+          <PartsSection
+            onPartSave={onPartSave}
+            addBlankPartRow={addBlankPartRow}
+            partQ={partQ}
+            setPartQ={setPartQ}
+            partErr={partErr}
+            partLoading={partLoading}
+            filteredParts={filteredParts}
+            partBaselineMap={partBaselineMap}
+            onPartCellNameChange={onPartCellNameChange}
+            onPartCellDPNChange={onPartCellDPNChange}
+            setParts={setParts}
+            partCategories={partCategories}
+            handleDeletePart={handleDeletePart}
+            deletingPartId={deletingPartId}
+            partSaving={partSaving}
+            onPartDiscard={onPartDiscard}
+            partHasChanges={partHasChanges}
+          />
+        )}
+        {tab === "part-categories" && (
+          <PartCategoriesSection
+            onPartCatSave={onPartCatSave}
+            addBlankPartCatRow={addBlankPartCatRow}
+            partCatQ={partCatQ}
+            setPartCatQ={setPartCatQ}
+            partCatErr={partCatErr}
+            partCatLoading={partCatLoading}
+            filteredPartCats={filteredPartCats}
+            partCatBaselineMap={partCatBaselineMap}
+            onPartCatCellChange={onPartCatCellChange}
+            handleDeletePartCategory={handleDeletePartCategory}
+            deletingPartCatId={deletingPartCatId}
+            partCatSaving={partCatSaving}
+            onPartCatDiscard={onPartCatDiscard}
+            partCatHasChanges={partCatHasChanges}
+          />
+        )}
+
         <section className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -1759,130 +1883,6 @@ function AdminPage() {
             </div>
           </div>
         </section>
-
-        <AdminTabs tab={tab} setTab={setTab} isSuperAdmin={!!me?.isSuperAdmin} />
-
-        {tab === 'account-access' && me?.isSuperAdmin && <AccountAccessSection users={users} />}
-
-        {tab === "users" && (
-          <UsersSection
-            err={err}
-            loading={loading}
-            users={users}
-            baselineMap={baselineMap}
-            terminalBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.terminalAccess]))}
-            statusBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.enabled]))}
-            me={me}
-            showToast={showToast}
-            handleTerminalToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, terminalAccess: !x.terminalAccess } : x))}
-            handleStatusToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, enabled: !x.enabled } : x))}
-            handleLocalToggle={handleLocalToggle}
-            handleDiscard={handleDiscard}
-            handleSave={handleSave}
-            hasChanges={hasChanges}
-            saving={saving}
-          />
-        )}
-        {tab === "dell-customers" && (
-          <DellCustomersSection
-            onSave={onDellCustomerSave}
-            addBlankRow={addBlankDellCustomerRow}
-            query={dellCustomerQ}
-            setQuery={setDellCustomerQ}
-            error={dellCustomerErr}
-            loading={dellCustomerLoading}
-            rows={filteredDellCustomers}
-            baselineMap={dellCustomerBaselineMap}
-            onCellChange={onDellCustomerCellChange}
-            onDelete={handleDeleteDellCustomer}
-            deletingId={deletingDellCustomerId}
-            saving={dellCustomerSaving}
-            onDiscard={onDellCustomerDiscard}
-            hasChanges={dellCustomerHasChanges}
-          />
-        )}
-
-        {tab === "dpns" && (
-          <DpnsSection
-            onDpnSave={onDpnSave}
-            addBlankRow={addBlankRow}
-            addBlankConfigRow={addBlankConfigRow}
-            dpnQ={dpnQ}
-            setDpnQ={setDpnQ}
-            dpnErr={dpnErr}
-            dpnLoading={dpnLoading}
-            filteredDpns={filteredDpns}
-            allDpns={dpns}
-            dpnBaselineMap={dpnBaselineMap}
-            onCellChange={onCellChange}
-            onFamilyNameChange={onFamilyNameChange}
-            onToggleDellCustomer={onToggleDpnDellCustomer}
-            dellCustomers={dellCustomers}
-            handleDeleteDpn={handleDeleteDpn}
-            handleDeleteDpnFamily={handleDeleteDpnFamily}
-            deletingId={deletingId}
-            dpnSaving={dpnSaving}
-            onDpnDiscard={onDpnDiscard}
-            dpnHasChanges={dpnHasChanges}
-          />
-        )}
-        {tab === "factories" && (
-          <FactoriesSection
-            onFactorySave={onFactorySave}
-            addBlankFactoryRow={addBlankFactoryRow}
-            factoryQ={factoryQ}
-            setFactoryQ={setFactoryQ}
-            factoryErr={factoryErr}
-            factoryLoading={factoryLoading}
-            filteredFactories={filteredFactories}
-            factoryBaselineMap={factoryBaselineMap}
-            onFactoryCellChange={onFactoryCellChange}
-            handleDeleteFactory={handleDeleteFactory}
-            deletingFactoryId={deletingFactoryId}
-            factorySaving={factorySaving}
-            onFactoryDiscard={onFactoryDiscard}
-            factoryHasChanges={factoryHasChanges}
-          />
-        )}
-        {tab === "parts" && (
-          <PartsSection
-            onPartSave={onPartSave}
-            addBlankPartRow={addBlankPartRow}
-            partQ={partQ}
-            setPartQ={setPartQ}
-            partErr={partErr}
-            partLoading={partLoading}
-            filteredParts={filteredParts}
-            partBaselineMap={partBaselineMap}
-            onPartCellNameChange={onPartCellNameChange}
-            onPartCellDPNChange={onPartCellDPNChange}
-            setParts={setParts}
-            partCategories={partCategories}
-            handleDeletePart={handleDeletePart}
-            deletingPartId={deletingPartId}
-            partSaving={partSaving}
-            onPartDiscard={onPartDiscard}
-            partHasChanges={partHasChanges}
-          />
-        )}
-        {tab === "part-categories" && (
-          <PartCategoriesSection
-            onPartCatSave={onPartCatSave}
-            addBlankPartCatRow={addBlankPartCatRow}
-            partCatQ={partCatQ}
-            setPartCatQ={setPartCatQ}
-            partCatErr={partCatErr}
-            partCatLoading={partCatLoading}
-            filteredPartCats={filteredPartCats}
-            partCatBaselineMap={partCatBaselineMap}
-            onPartCatCellChange={onPartCatCellChange}
-            handleDeletePartCategory={handleDeletePartCategory}
-            deletingPartCatId={deletingPartCatId}
-            partCatSaving={partCatSaving}
-            onPartCatDiscard={onPartCatDiscard}
-            partCatHasChanges={partCatHasChanges}
-          />
-        )}
       </main>
     </>
   );

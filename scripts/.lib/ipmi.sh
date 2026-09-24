@@ -22,7 +22,7 @@ ipmi() {
     7)
       ipmitool -I lanplus -H "$BMC_IP" -U root -P changeme "$@"
       ;;
-    F)
+    F|F2)
       ipmitool -I lanplus -H "$BMC_IP" -U root -P 0penBmc -C 17 "$@"
       ;;
     D)

@@ -42,6 +42,7 @@ const systemTagsRouter = require("./routes/systemTags");
 
 const publicAuthPaths = new Set([
   '/auth/login', '/auth/refresh', '/auth/logout',
+  '/auth/super-admin-contacts',
   '/auth/register/options', '/auth/register/verify',
   '/auth/enroll/options', '/auth/enroll/verify',
   '/auth/passkey/options', '/auth/passkey/verify',

@@ -4,7 +4,7 @@ import { startAuthentication, startRegistration } from '@simplewebauthn/browser'
 import { AuthContext } from '../context/AuthContext';
 import {
   loginUser, registerOptions, registerVerify, enrollOptions, enrollVerify,
-  passkeyOptions, passkeyVerify, changeTemporaryPassword,
+  passkeyOptions, passkeyVerify, changeTemporaryPassword, getSuperAdminContacts,
 } from '../api/authApi';
 
 export default function AuthV2() {
@@ -20,10 +20,38 @@ export default function AuthV2() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [contactEmails, setContactEmails] = useState(null);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactsError, setContactsError] = useState('');
+  const [contactsCopied, setContactsCopied] = useState(false);
 
   useEffect(() => {
     if (token && !initializing) navigate('/', { replace: true });
   }, [token, initializing, navigate]);
+
+  async function handleContactsToggle(event) {
+    if (!event.currentTarget.open || contactEmails !== null || contactsLoading) return;
+    setContactsLoading(true);
+    setContactsError('');
+    try {
+      const { emails } = await getSuperAdminContacts();
+      setContactEmails(emails);
+    } catch {
+      setContactsError('Could not load contacts. Close and reopen to try again.');
+    } finally {
+      setContactsLoading(false);
+    }
+  }
+
+  async function copyContacts() {
+    try {
+      await navigator.clipboard.writeText(contactEmails.join(', '));
+      setContactsCopied(true);
+      setContactsError('');
+    } catch {
+      setContactsError('Could not copy the addresses. You can select them below.');
+    }
+  }
 
   async function submit(event) {
     event.preventDefault();
@@ -117,14 +145,30 @@ export default function AuthV2() {
         </button>
       </form>
       {(mode === 'login' || mode === 'register') && <div className="mt-6 border-t border-gray-200 pt-5 text-center">
-        {mode === 'login' && <p className="mb-2 text-xs text-gray-600">New to Wistron Labs?</p>}
+        {mode === 'login' && <p className="mb-2 text-xs text-gray-600">New to Wistron {import.meta.env.VITE_LOCATION} Dashboard?</p>}
         <button type="button" className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm font-semibold text-blue-700 transition-colors hover:border-blue-300 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
           onClick={() => { setMode(mode === 'login' ? 'register' : 'login'); setError(''); setMessage(''); }}>
           {mode === 'register' && <span aria-hidden="true">←</span>}
           {mode === 'login' ? 'Have an invitation code?' : 'Back to sign in'}
           {mode === 'login' && <span aria-hidden="true">→</span>}
         </button>
-        {mode === 'login' && <p className="mt-4 text-xs text-gray-600">Forgot your password or passkey? Contact a super admin.</p>}
+        {mode === 'login' && <details className="mt-4 rounded-lg border border-gray-200 bg-gray-50 text-left text-xs text-gray-700" onToggle={handleContactsToggle}>
+          <summary className="cursor-pointer px-3 py-2.5 font-medium hover:text-blue-700">Forgot your password or passkey?</summary>
+          <div className="border-t border-gray-200 px-3 py-3">
+            <p className="text-sm font-medium text-gray-800">Contact a website administrator for help.</p>
+            {contactsLoading && <p className="mt-2 text-gray-500">Loading contacts…</p>}
+            {contactEmails?.length > 0 && <>
+              <ul className="mt-3 space-y-2">
+                {contactEmails.map((address) => <li key={address} className="break-all rounded-md border border-gray-200 bg-white px-3 py-2 font-mono text-xs text-gray-800">{address}</li>)}
+              </ul>
+              <button type="button" onClick={copyContacts} aria-live="polite" className="mt-3 w-full rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-center font-semibold text-blue-700 hover:bg-blue-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">
+                {contactsCopied ? 'Copied emails' : 'Copy emails'}
+              </button>
+            </>}
+            {contactEmails?.length === 0 && <p className="mt-2 text-gray-500">No website administrator contacts are available.</p>}
+            {contactsError && <p role="alert" className="mt-2 text-red-700">{contactsError}</p>}
+          </div>
+        </details>}
       </div>}
       {error && <div role="alert" className="mt-5 flex gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-red-800">
         <svg aria-hidden="true" viewBox="0 0 20 20" fill="currentColor" className="mt-0.5 h-5 w-5 shrink-0 text-red-600">

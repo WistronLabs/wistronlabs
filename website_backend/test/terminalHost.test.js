@@ -39,8 +39,10 @@ test("host service reuses station processes, recreates missing sessions, and det
 const fs = require('fs'); const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALL_LOG, JSON.stringify(args)+'\\n');
 const state = JSON.parse(fs.readFileSync(process.env.STATE));
-const name = args[args.indexOf('-t')+1]?.replace(/^=/,'') || args[args.indexOf('-s')+1];
+const name = args[args.indexOf('-t')+1]?.replace(/^=/,'').replace(/:$/,'') || args[args.indexOf('-s')+1];
+if (args[0] === 'list-sessions') { process.stdout.write(Object.keys(state).filter((key)=>state[key]).join('\\n')); process.exit(Object.values(state).some(Boolean) ? 0 : 1); }
 if (args[0] === 'has-session') process.exit(state[name] ? 0 : 1);
+if (args[0] === 'capture-pane') { if (!state[name]) process.exit(1); process.stdout.write('L10 Diagnostic Test\\nStation output\\n'); process.exit(0); }
 if (args[0] === 'set-option' || args[0] === 'set-window-option') {
   const target = args[args.indexOf('-t')+1];
   // tmux 3.2a requires an explicit session/window separator here.
@@ -95,6 +97,8 @@ http.createServer((req,res)=>res.end('station screen')).listen(args[args.indexOf
   }
   assert.equal(child.exitCode, null, errors);
   const base = "/api/v1/terminals/stations/12";
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/sessions")).body).stations, []);
+  assert.equal((await get(control, `${base}/preview`)).status, 404);
   const responses = await Promise.all([
     get(control, `${base}/ensure`),
     get(control, `${base}/ensure`),
@@ -106,6 +110,8 @@ http.createServer((req,res)=>res.end('station screen')).listen(args[args.indexOf
     false,
   );
   assert.equal((await get(control, `${base}/`)).body, "station screen");
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/sessions")).body).stations, ["12"]);
+  assert.match(JSON.parse((await get(control, `${base}/preview`)).body).output, /L10 Diagnostic Test/);
   assert.equal(
     (await get(control, "/api/v1/terminals/stations/not-a-station/ensure"))
       .status,

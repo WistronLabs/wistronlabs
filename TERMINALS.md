@@ -201,6 +201,14 @@ Keep the remote dev backend's `FRONTEND_URL=http://localhost:5173` and `TERMINAL
 
 ### Terminal scrolling
 
+On the Stations overview, users with Terminal Access can click a station status
+when that station already has a `stn_N` tmux session. The expanded preview polls
+plain text captured from the active tmux pane; it cannot send input or create a
+session. **Open Interactive Terminal** switches to the existing ttyd workspace.
+This preview requires updated frontend and backend code **and** reinstalling the
+updated `terminal_host/server.cjs` with `sudo bash terminal_host/install.sh` on
+the testing host. Restarting the host service does not kill tmux sessions.
+
 Click a terminal to control it (blue outline). While active, scrolling stays in
 the terminal. Click the terminal header or anywhere outside the terminal content to release control and scroll the page.
 Inactive terminals continue displaying output. Escape remains available to shell

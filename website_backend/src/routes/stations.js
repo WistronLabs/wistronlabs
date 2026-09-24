@@ -1,5 +1,6 @@
 const express = require("express");
 const db = require("../db");
+const { normalizedDetails } = require("../utils/stationDetails");
 
 const router = express.Router();
 
@@ -58,7 +59,7 @@ router.patch("/:station_name", async (req, res) => {
   try {
     // 1) Load current values
     const curRes = await db.query(
-      `SELECT system_id, status, message, last_updated FROM station WHERE station_name = $1`,
+      `SELECT system_id, status, message, details, last_updated FROM station WHERE station_name = $1`,
       [station_name]
     );
     if (curRes.rowCount === 0) {
@@ -93,8 +94,10 @@ router.patch("/:station_name", async (req, res) => {
     if (wantMessage && (message ?? "") !== (current.message ?? "")) {
       updates.push(`message = $${i++}`);
       values.push(message ?? "");
+    }
+    if (wantDetails && normalizedDetails(details) !== normalizedDetails(current.details)) {
       updates.push(`details = $${i++}`);
-      values.push(wantDetails ? details : "");
+      values.push(normalizedDetails(details));
     }
 
     // Nothing really changed → return current state without bumping last_updated

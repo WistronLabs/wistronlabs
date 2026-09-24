@@ -524,6 +524,9 @@ function useApi() {
     return fetchJSON(`/pallets${qs}`);
   };
 
+  const getPendingDoaChart = ({ start, end }) =>
+    fetchJSON(`/pallets/charts/pending-doa${buildQueryString({ start, end })}`);
+
   const updateHostMac = (service_tag, host_mac) =>
     fetchJSON(`/systems/${service_tag}/host_mac`, {
       method: "PATCH",
@@ -1059,6 +1062,7 @@ function useApi() {
     releasePallet,
     deletePallet,
     getPallets,
+    getPendingDoaChart,
     getPallet,
     setPalletLock,
     lockPallet,

@@ -2865,7 +2865,7 @@ router.get("/snapshot", async (req, res) => {
     includeNote, // OPTIONAL
     noCache, // OPTIONAL
     mode = "cumulative", // 'perday' | 'cumulative'
-    start, // SoD ISO, required when mode=perday
+    start, // SoD ISO, required for perday and optional for cumulative ranges
     includeReceived, // 'true' to compute "Last Received On"
     format, // 'csv' to return CSV
     timezone, // for MM/DD in notes
@@ -2881,6 +2881,10 @@ router.get("/snapshot", async (req, res) => {
     return res
       .status(400)
       .json({ error: "When mode=perday, `start` is required" });
+  }
+  if (mode === "cumulative" && start &&
+      (Number.isNaN(Date.parse(start)) || Date.parse(start) > Date.parse(date))) {
+    return res.status(400).json({ error: "Invalid cumulative report start date" });
   }
 
   const includeNoteFlag =
@@ -3007,12 +3011,13 @@ router.get("/snapshot", async (req, res) => {
     ) tags_agg ON TRUE
   `;
 
-  // Per-day exclusion SQL
-  let perDayExclusionSQL = ``;
-  if (mode === "perday") {
+  // Exclude completed items from before the requested range. Without a start,
+  // cumulative snapshots retain their original all-history behavior.
+  let rangeExclusionSQL = ``;
+  if (mode === "perday" || (mode === "cumulative" && start)) {
     const startIdx = params.length + 1;
     const inactiveIdx = params.length + 2;
-    perDayExclusionSQL = `
+    rangeExclusionSQL = `
       AND NOT (
         l.id = ANY($${inactiveIdx}::int[])
         AND h.changed_at < $${startIdx}
@@ -3151,7 +3156,7 @@ router.get("/snapshot", async (req, res) => {
       ) ops ON TRUE
       WHERE 1=1
       ${locationFilterSQL.join(" ")}
-      ${perDayExclusionSQL}
+      ${rangeExclusionSQL}
       ORDER BY s.service_tag
       `,
       [...params, RMA_LOCATION_IDS],
@@ -3470,6 +3475,7 @@ router.get("/history", async (req, res) => {
         SELECT 
           h.id,
           s.service_tag,
+          s.dell_customer,
           l_from.name AS from_location,
           l_to.name AS to_location,
           u.username AS moved_by,

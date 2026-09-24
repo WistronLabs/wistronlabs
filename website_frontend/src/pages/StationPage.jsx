@@ -2,6 +2,7 @@ import { useSearchParams } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import useTerminalApi from "../hooks/useTerminalApi";
 import TerminalWorkspace from "../components/TerminalWorkspace";
+import TerminalSessionContext from "../context/TerminalSessionContext";
 import React, { useEffect, useState, useContext } from "react";
 import SearchContainer from "../components/SearchContainer.jsx";
 
@@ -69,6 +70,7 @@ function StationPage() {
   const terminalTab = params.get("tab") === "terminals" || !!terminalStation;
   const [terminalAccess, setTerminalAccess] = useState(false);
   const [terminalEnabled, setTerminalEnabled] = useState(false);
+  const [terminalSessions, setTerminalSessions] = useState(new Set());
   useEffect(() => {
     let active = true;
     if (!token) {
@@ -93,6 +95,26 @@ function StationPage() {
       clearInterval(timer);
     };
   }, [token, terminalRequest]);
+  useEffect(() => {
+    if (!token || !terminalAccess || !terminalEnabled) {
+      setTerminalSessions(new Set());
+      return;
+    }
+    let active = true;
+    const refresh = () => terminalRequest("/sessions")
+      .then((data) => {
+        if (active) setTerminalSessions(new Set((data.stations || []).map(String)));
+      })
+      .catch(() => {
+        if (active) setTerminalSessions(new Set());
+      });
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [token, terminalAccess, terminalEnabled, terminalRequest]);
   const openTerminal = terminalAccess
     ? (station) => setParams({ terminal: String(station) })
     : undefined;
@@ -250,6 +272,7 @@ function StationPage() {
         ) : loading ? (
           <StationStatusSkeleton isTss={LOCATION === "TSS"} />
         ) : (
+          <TerminalSessionContext.Provider value={terminalSessions}>
           <div className="flex flex-col md:flex-row justify-between gap-8 mt-8 w-full">
             {LOCATION === "TSS" ? (
               <>
@@ -360,6 +383,7 @@ function StationPage() {
               </>
             )}
           </div>
+          </TerminalSessionContext.Provider>
         )}
       </main>
       {/* Available Downloads */}

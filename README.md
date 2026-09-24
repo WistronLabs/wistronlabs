@@ -309,9 +309,50 @@ sudo ./restart_pxe_services.sh
 # `station_status_json_gen.sh`
 
 This script collects JSON status from each station and PATCHes the latest state back to backend.
+It also checks the location's development backend once per run and mirrors each
+status to matching development stations when that backend is reachable and
+authenticated. An unavailable development backend does not stop production
+updates. If development uses a separate machine credential, set
+`DEV_INTERNAL_API_KEY` in the updater's environment.
+
+It still uses `GET /api/v1/stations` and `PATCH /api/v1/stations/<number>`;
+the read-only terminal preview is a separate API. By default it connects to
+`https://backend.<SERVER_LOCATION>.wistronlabs.com/api/v1`. If the updater runs
+on the same host as the production backend and the backend hostname no longer
+routes locally, point all of its station requests directly at the published
+local backend port:
+
+```bash
+STATION_API_BASE_URL=http://127.0.0.1:4000/api/v1 ./station_status_json_gen.sh
+```
+
+Use the actual local production backend port. The script needs
+`INTERNAL_API_KEY` in its environment; do not print
+or embed that key in the command line. Failed reads, invalid status JSON, and
+failed PATCH requests now cause a nonzero exit status.
+
+To direct only the optional development mirror to the local dev port, set
+`STATION_DEV_API_BASE_URL=http://127.0.0.1:4100/api/v1`. The default is
+`https://devbackend.<SERVER_LOCATION>.wistronlabs.com/api/v1`.
 
 ## Usage
 
 ```bash
 ./station_status_json_gen.sh
+```
+
+# Machine-key systems list
+
+`GET /api/v1/systems` accepts `INTERNAL_API_KEY` for server-side inventory
+scripts. It returns the normal systems-list response: `data`, `total_count`,
+`page`, and `page_size`. Page size is capped at 100 unless `all=true` is
+requested, which returns every matching row. The response includes the full
+system fields, so keep the key out of frontend code, URLs, and checked-in files.
+
+The existing `.lib/backend_curl.sh` adds the machine credential:
+
+```bash
+source ~/.lib/backend_curl.sh
+page_json="$(backend_curl -fsS 'https://backend.tss.wistronlabs.com/api/v1/systems?page=1&page_size=100')"
+printf '%s\n' "$page_json" | jq -r '.data[].service_tag'
 ```

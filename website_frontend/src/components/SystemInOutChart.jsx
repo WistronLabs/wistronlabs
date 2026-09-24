@@ -240,7 +240,7 @@ function SystemInOutChart({
   return (
     <div className="bg-white p-4">
       <h2 className="text-xl font-semibold mb-4">Daily Movements</h2>
-      <ResponsiveContainer width="100%" height={250}>
+      <ResponsiveContainer width="100%" height={320}>
         <AreaChart data={chartData} margin={chartMargin}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis dataKey="date" tick={{ fontSize: 12 }} />

@@ -20,6 +20,28 @@ function createTerminals({
     publicOrigin?.startsWith("https://") &&
     frontendOrigin
   );
+  function hostJson(path) {
+    return new Promise((resolve, reject) => {
+      const upstream = http.get({ socketPath, path }, (response) => {
+        const chunks = [];
+        let size = 0;
+        response.on("data", (chunk) => {
+          size += chunk.length;
+          if (size > 64 * 1024) upstream.destroy(new Error("Terminal host response too large"));
+          else chunks.push(chunk);
+        });
+        response.on("end", () => {
+          try {
+            resolve({ status: response.statusCode, data: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+          } catch {
+            reject(new Error("Invalid terminal host response"));
+          }
+        });
+      });
+      upstream.setTimeout(5000, () => upstream.destroy(new Error("Terminal host timeout")));
+      upstream.on("error", reject);
+    });
+  }
   const revoke = (id) => {
     const grant = grants.get(id);
     if (grant) for (const socket of grant.sockets) socket.destroy();
@@ -53,6 +75,31 @@ function createTerminals({
       res.json({ allowed: !!(await user(req.user.userId)), enabled });
     } catch {
       res.status(503).json({ error: "Unable to verify terminal access" });
+    }
+  });
+  router.get("/sessions", authenticateToken, allowed, async (_req, res) => {
+    try {
+      const result = await hostJson(`${PREFIX}/sessions`);
+      if (result.status !== 200 || !Array.isArray(result.data.stations)) throw new Error();
+      res.set("Cache-Control", "no-store").json({ stations: result.data.stations });
+    } catch {
+      res.status(503).json({ error: "Unable to check terminal sessions" });
+    }
+  });
+  router.get("/stations/:station/preview", authenticateToken, allowed, async (req, res) => {
+    const station = req.params.station;
+    if (!/^[1-9]\d{0,5}$/.test(station))
+      return res.status(400).json({ error: "Invalid station" });
+    try {
+      const { rows } = await db.query("SELECT id FROM station WHERE station_name = $1", [station]);
+      if (!rows.length) return res.status(404).json({ error: "Station not found" });
+      const result = await hostJson(`${PREFIX}/stations/${station}/preview`);
+      if (result.status === 404)
+        return res.status(404).json({ error: "No existing tmux session for this station" });
+      if (result.status !== 200 || typeof result.data.output !== "string") throw new Error();
+      res.set("Cache-Control", "no-store").json({ output: result.data.output });
+    } catch {
+      res.status(503).json({ error: "Unable to load station preview" });
     }
   });
   router.post(

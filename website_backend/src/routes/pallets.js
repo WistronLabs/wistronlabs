@@ -4,6 +4,8 @@ const { authenticateToken } = require("./auth");
 const { buildWhereClause } = require("../utils/buildWhereClause");
 const { generatePalletNumber } = require("../utils/generatePalletNumber");
 const { allocateUniqueOpenPalletShape } = require("../utils/palletShapes");
+const { getServerTimeZone } = require("../utils/serverTimeZone");
+const { getPendingDoaChart } = require("../services/pendingDoaChart");
 
 const router = express.Router();
 
@@ -312,6 +314,25 @@ router.post("/", authenticateToken, async (req, res) => {
     return res.status(500).json({ error: "Failed to create pallet" });
   } finally {
     client.release();
+  }
+});
+
+router.get("/charts/pending-doa", async (req, res) => {
+  const { start, end } = req.query;
+  const validDate = (value) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  };
+  if (!validDate(start) || !validDate(end) || start > end) {
+    return res.status(400).json({ error: "Valid start and end dates are required" });
+  }
+  try {
+    const days = await getPendingDoaChart(db, start, end, getServerTimeZone());
+    return res.json({ days });
+  } catch (err) {
+    console.error("Failed to fetch Pending DOA chart", err);
+    return res.status(500).json({ error: "Failed to fetch Pending DOA chart" });
   }
 });
 

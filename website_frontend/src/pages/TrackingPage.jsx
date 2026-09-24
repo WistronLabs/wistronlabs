@@ -6,6 +6,8 @@ import SearchContainerSS from "../components/SearchContainerSS.jsx";
 import LoadingSkeleton from "../components/LoadingSkeleton.jsx";
 import SystemInOutChart from "../components/SystemInOutChart.jsx";
 import SystemLocationsChart from "../components/SystemLocationsChart.jsx";
+import ActiveUnitsCustomerChart from "../components/ActiveUnitsCustomerChart.jsx";
+import PendingDoaChart from "../components/PendingDoaChart.jsx";
 import { DateTime } from "luxon";
 
 import { AuthContext } from "../context/AuthContext.jsx";
@@ -127,9 +129,12 @@ function TrackingPage() {
   const [InOutChartHistory, setInOutChartHistory] = useState([]);
   const [locationChartHistory, setLocationChartHistory] = useState([]);
   const [snapshot, setSnapshot] = useState([]);
+  const [pendingDoaDays, setPendingDoaDays] = useState([]);
+  const [pendingDoaError, setPendingDoaError] = useState(null);
   const [bulkMode, setBulkMode] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [reportDate, setReportDate] = useState("");
+  const [reportStartDate, setReportStartDate] = useState("");
   const [showActive, setShowActive] = useState(true);
   const [showInactive, setShowInactive] = useState(false);
   const [addSystemFormError, setAddSystemFormError] = useState(null);
@@ -161,6 +166,7 @@ function TrackingPage() {
   const [chartStartDate, setChartStartDate] = useState("");
   const [chartEndDate, setChartEndDate] = useState("");
   const [chartMinDate, setChartMinDate] = useState("");
+  const [chartTab, setChartTab] = useState("operations");
   const [chartsLoading, setChartsLoading] = useState(false);
   const [chartsError, setChartsError] = useState(null);
   const [exportingChartsPng, setExportingChartsPng] = useState(false);
@@ -194,6 +200,7 @@ function TrackingPage() {
     moveSystemToReceived,
     getServerTime,
     getSnapshot,
+    getPendingDoaChart,
     getOutlookReportSummary,
     getSystemHistory,
     getSystem,
@@ -215,6 +222,7 @@ function TrackingPage() {
     const requestId = ++chartRequestRef.current;
     setChartsLoading(true);
     setChartsError(null);
+    setPendingDoaError(null);
 
     try {
       const activeLocationNames = locationsData
@@ -245,7 +253,7 @@ function TrackingPage() {
         .toISO();
       const historyBeginningDateISO = startDay.toUTC().toISO();
       const historyEndDateISO = endDay.endOf("day").toUTC().toISO();
-      const [activeLocationSnapshotFirstDay, historyData] = await Promise.all([
+      const [activeLocationSnapshotFirstDay, historyData, pendingDoaResult] = await Promise.all([
         getSnapshot({
           date: snapshotDate,
           locations: activeLocationNames,
@@ -261,6 +269,9 @@ function TrackingPage() {
             ],
           },
         }).then((res) => res.data),
+        getPendingDoaChart({ start: startDay.toISODate(), end: endDay.toISODate() })
+          .then((data) => ({ data }))
+          .catch((error) => ({ error })),
       ]);
 
       if (requestId !== chartRequestRef.current) return;
@@ -276,6 +287,14 @@ function TrackingPage() {
       setInOutChartHistory(historyData);
       setLocationChartHistory(filteredHistory);
       setSnapshot(activeLocationSnapshotFirstDay);
+      setPendingDoaDays(pendingDoaResult.data?.days || []);
+      setPendingDoaError(
+        pendingDoaResult.error?.status === 404
+          ? "Pending DOA chart is unavailable until the updated backend is deployed."
+          : pendingDoaResult.error
+            ? "Pending DOA chart could not be loaded. Please try again later."
+            : null,
+      );
     } catch (err) {
       if (requestId === chartRequestRef.current) {
         setChartsError(err.message);
@@ -413,7 +432,7 @@ function TrackingPage() {
     try {
       const pngDataUrl = await createChartsPng();
       const link = document.createElement("a");
-      link.download = `tracking_charts_${chartStartDate}_to_${chartEndDate}.png`;
+      link.download = `tracking_${chartTab}_charts_${chartStartDate}_to_${chartEndDate}.png`;
       link.href = pngDataUrl;
       link.click();
       showToast("Charts downloaded as PNG.", "success", 3000, "top-right");
@@ -472,6 +491,13 @@ function TrackingPage() {
 
     setChartStartDate(startDay.toISODate());
     setChartEndDate(endDay.toISODate());
+  };
+
+  const handleReportStartDateChange = (nextStartDate) => {
+    setReportStartDate(nextStartDate);
+    if (nextStartDate && reportDate && reportDate < nextStartDate) {
+      handleReportDateChange(nextStartDate);
+    }
   };
 
   const handleCloseReportModal = () => {
@@ -1150,6 +1176,10 @@ function TrackingPage() {
       showToast(`Select a Date`, "error", 3000, "top-right");
       return;
     }
+    if (reportMode === "cumulative" && (!reportStartDate || reportStartDate > reportDate)) {
+      showToast("Select a valid report date range", "error", 3000, "top-right");
+      return;
+    }
 
     try {
       const serverTimeReport = await getServerTime();
@@ -1173,9 +1203,10 @@ function TrackingPage() {
         timezone: serverZone,
       });
 
-      if (reportMode !== "cumulative") {
-        params.set("start", startOfDayUTC);
-      }
+      const rangeStart = reportMode === "cumulative"
+        ? DateTime.fromISO(reportStartDate, { zone: serverZone }).startOf("day").toUTC().toISO()
+        : startOfDayUTC;
+      params.set("start", rangeStart);
 
       // NEW: pass simplified flag
       if (idiotProof) params.set("simplified", "true");
@@ -1190,7 +1221,7 @@ function TrackingPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `snapshot_${reportDate}_${reportMode}${
+      a.download = `snapshot_${reportMode === "cumulative" ? `${reportStartDate}_to_` : ""}${reportDate}_${reportMode}${
         idiotProof ? "_simplified" : ""
       }.csv`;
       document.body.appendChild(a);
@@ -1481,7 +1512,7 @@ function TrackingPage() {
           <div className="text-red-600">{error}</div>
         ) : (
           <>
-            <div ref={chartsPngRef} className="relative min-h-96 bg-white" aria-busy={chartsLoading}>
+            <div className="grid min-h-96 bg-white" aria-busy={chartsLoading}>
               {chartsLoading ? (
                 <div className="animate-pulse space-y-6 p-4" aria-label="Loading charts">
                   {[0, 1].map((index) => (
@@ -1495,28 +1526,85 @@ function TrackingPage() {
                 <div className="p-4 text-red-600">{chartsError}</div>
               ) : (
                 <>
-                  <SystemLocationsChart
-                    snapshot={snapshot}
-                    history={locationChartHistory}
-                    locations={locations}
-                    activeLocationIDs={systemLocationChartIDs}
-                    serverTime={serverTime}
-                    chartStartDate={chartStartDate}
-                    chartEndDate={chartEndDate}
-                    printFriendly={printFriendly}
-                    repairsAllowed={repairsAllowed}
-                  />
-                  <SystemInOutChart
-                    history={InOutChartHistory}
-                    locations={locations}
-                    activeLocationIDs={activeLocationIDs}
-                    serverTime={serverTime}
-                    chartStartDate={chartStartDate}
-                    chartEndDate={chartEndDate}
-                    printFriendly={printFriendly}
-                  />
+                  <div
+                    ref={chartTab === "operations" ? chartsPngRef : null}
+                    id="tracking-chart-panel-operations"
+                    role="tabpanel"
+                    aria-labelledby="chart-tab-operations"
+                    aria-hidden={chartTab !== "operations"}
+                    className={`col-start-1 row-start-1 flex flex-col justify-evenly bg-white ${chartTab !== "operations" ? "invisible pointer-events-none" : "relative z-10"}`}
+                  >
+                      <SystemLocationsChart
+                        snapshot={snapshot}
+                        history={locationChartHistory}
+                        locations={locations}
+                        activeLocationIDs={systemLocationChartIDs}
+                        serverTime={serverTime}
+                        chartStartDate={chartStartDate}
+                        chartEndDate={chartEndDate}
+                        printFriendly={printFriendly}
+                        repairsAllowed={repairsAllowed}
+                      />
+                      <SystemInOutChart
+                        history={InOutChartHistory}
+                        locations={locations}
+                        activeLocationIDs={activeLocationIDs}
+                        serverTime={serverTime}
+                        chartStartDate={chartStartDate}
+                        chartEndDate={chartEndDate}
+                        printFriendly={printFriendly}
+                      />
+                  </div>
+                  <div
+                    ref={chartTab === "breakdown" ? chartsPngRef : null}
+                    id="tracking-chart-panel-breakdown"
+                    role="tabpanel"
+                    aria-labelledby="chart-tab-breakdown"
+                    aria-hidden={chartTab !== "breakdown"}
+                    className={`col-start-1 row-start-1 flex flex-col justify-evenly bg-white ${chartTab !== "breakdown" ? "invisible pointer-events-none" : "relative z-10"}`}
+                  >
+                      <ActiveUnitsCustomerChart
+                        snapshot={snapshot}
+                        history={locationChartHistory}
+                        locations={locations}
+                        activeLocationIDs={systemLocationChartIDs}
+                        serverTime={serverTime}
+                        chartStartDate={chartStartDate}
+                        chartEndDate={chartEndDate}
+                        customerNames={dellCustomers}
+                        printFriendly={printFriendly}
+                      />
+                      {pendingDoaError ? (
+                        <div className="bg-white p-4">
+                          <h2 className="mb-4 text-xl font-semibold">Pending DOA by RMA Type</h2>
+                          <p role="alert" className="text-sm text-amber-700">{pendingDoaError}</p>
+                        </div>
+                      ) : (
+                        <PendingDoaChart days={pendingDoaDays} printFriendly={printFriendly} />
+                      )}
+                  </div>
                 </>
               )}
+            </div>
+
+            <div className="flex justify-center pt-2">
+              <div className="inline-flex max-w-full flex-wrap justify-center gap-1 rounded-full bg-gray-100 p-1" role="tablist" aria-label="Tracking chart groups">
+                {[["operations", "Locations & Movements"], ["breakdown", "Customer & Pending DOA"]].map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    id={`chart-tab-${key}`}
+                    aria-controls={`tracking-chart-panel-${key}`}
+                    aria-selected={chartTab === key}
+                    disabled={exportingChartsPng}
+                    onClick={() => setChartTab(key)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-wait ${chartTab === key ? "bg-blue-600 text-white shadow-sm" : "text-gray-700 hover:bg-gray-200"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="flex flex-wrap justify-end items-center gap-4 mt-2">
@@ -1688,7 +1776,10 @@ function TrackingPage() {
             />
             <div className="mt-4 flex flex-wrap gap-3">
               <button
-                onClick={() => setIsModalOpen(true)}
+                onClick={() => {
+                  setReportStartDate(chartMinDate);
+                  setIsModalOpen(true);
+                }}
                 className="px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
               >
                 Download Report
@@ -1730,6 +1821,9 @@ function TrackingPage() {
             onClose={handleCloseReportModal}
             reportDate={reportDate}
             setReportDate={handleReportDateChange}
+            reportStartDate={reportStartDate}
+            setReportStartDate={handleReportStartDateChange}
+            minReportDate={chartMinDate}
             onDownload={handleDownloadReport}
             onCopyForOutlook={handleCopyForOutlook}
             copyingForOutlook={copyingForOutlook}
