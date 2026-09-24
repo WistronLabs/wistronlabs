@@ -884,6 +884,12 @@ function useApi() {
       body: JSON.stringify({ terminalAccess }),
     });
 
+  const setUserEnabled = (username, enabled) =>
+    fetchJSON(`/auth/users/${encodeURIComponent(username)}/enabled`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+
   // tiny convenience wrappers
   const lockPallet = (pallet_number) => setPalletLock(pallet_number, true);
   const unlockPallet = (pallet_number) => setPalletLock(pallet_number, false);
@@ -1071,6 +1077,7 @@ function useApi() {
     getUsers,
     setUserAdmin,
     setUserTerminalAccess,
+    setUserEnabled,
     getParts,
     createPart,
     updatePart,

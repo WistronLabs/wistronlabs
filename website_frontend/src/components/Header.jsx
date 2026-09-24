@@ -41,7 +41,9 @@ function Header() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
 
+  // Request protected settings only after authentication.
   useEffect(() => {
+    if (!token) { setRepairsAllowed(null); return; }
     let isMounted = true;
     (async () => {
       try {
@@ -60,11 +62,10 @@ function Header() {
     return () => {
       isMounted = false;
     };
+    // Recheck the setting when the authenticated session changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [token]);
 
-  // ...
-  const url = `ssh://falab@tss.wistronlabs.com:22`;
   return (
     <header className="sticky top-0 z-40 bg-blue-900 text-white px-4 py-2">
       <div className="flex items-center justify-between h-[60px]">
@@ -86,7 +87,7 @@ function Header() {
         </div>
 
         {/* Right: desktop nav + help */}
-        <div className="hidden md:flex items-center gap-2">
+        {token && <div className="hidden md:flex items-center gap-2">
           <Link
             to="/"
             className={`${linkBase} ${pathname === "/" ? active : ""}`}
@@ -113,22 +114,13 @@ function Header() {
               Parts
             </Link>
           )}
-          {token ? (
-            <Link
-              to="/user"
-              className={`${linkBase} ${pathname === "/user" ? active : ""}`}
-            >
-              Account
-            </Link>
-          ) : (
-            <Link
-              to="/auth"
-              className={`${linkBase} ${pathname === "/auth" ? active : ""}`}
-            >
-              Log In
-            </Link>
-          )}
-          {token && user?.isAdmin && (
+          <Link
+            to="/user"
+            className={`${linkBase} ${pathname === "/user" ? active : ""}`}
+          >
+            Account
+          </Link>
+          {user?.isAdmin && (
             <Link
               to="/admin"
               className={`${linkBase} ${pathname === "/admin" ? active : ""}`}
@@ -147,18 +139,18 @@ function Header() {
               Need help?
             </a>
           )}
-        </div>
+        </div>}
 
         {/* Hamburger toggle */}
-        <button
+        {token && <button
           onClick={() => setMenuOpen((prev) => !prev)}
           className="md:hidden text-white hover:text-slate-300 text-3xl"
         >
           ☰
-        </button>
+        </button>}
 
         {/* Mobile menu overlay */}
-        {menuOpen && (
+        {token && menuOpen && (
           <div className="absolute top-full left-0 w-full bg-blue-900 flex flex-col gap-2 px-4 py-3 shadow-md md:hidden">
             <Link
               to="/"
@@ -194,24 +186,14 @@ function Header() {
                 Parts
               </Link>
             )}
-            {token ? (
-              <Link
-                to="/user"
-                className={`${linkBase} ${pathname === "/user" ? active : ""}`}
-                onClick={() => setMenuOpen(false)}
-              >
-                Account
-              </Link>
-            ) : (
-              <Link
-                to="/auth"
-                className={`${linkBase} ${pathname === "/auth" ? active : ""}`}
-                onClick={() => setMenuOpen(false)}
-              >
-                Log In
-              </Link>
-            )}
-            {token && user?.isAdmin && (
+            <Link
+              to="/user"
+              className={`${linkBase} ${pathname === "/user" ? active : ""}`}
+              onClick={() => setMenuOpen(false)}
+            >
+              Account
+            </Link>
+            {user?.isAdmin && (
               <Link
                 to="/admin"
                 className={`${linkBase} ${pathname === "/admin" ? active : ""}`}
@@ -234,7 +216,7 @@ function Header() {
           </div>
         )}
       </div>
-      <SmartSearchBar className="mb-10" />
+      {token && <SmartSearchBar className="mb-10" />}
     </header>
   );
 }

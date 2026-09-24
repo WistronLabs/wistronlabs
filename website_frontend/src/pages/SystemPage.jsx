@@ -1243,7 +1243,7 @@ function SystemPage() {
     ? stations.find((station) => station.system_service_tag === system.service_tag)
     : null;
   const canOpenAssignedTerminal =
-    !!token && !!assignedStation && (!!me?.isAdmin || !!me?.terminalAccess);
+    !!token && !!assignedStation && !!me?.terminalAccess;
 
   let selectedStationObj = null;
   if (system?.location === "In L10") {

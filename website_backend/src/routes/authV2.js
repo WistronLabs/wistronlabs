@@ -12,6 +12,7 @@ const rpID = new URL(process.env.FRONTEND_URL).hostname;
 const flows = new Map();
 const attempts = new Map();
 const MINUTE = 60000;
+const nonInteractiveUsers = new Set(['deleted_user@example.com', 'system']);
 const invalid = (res, status = 401, error = 'Invalid credentials') => res.status(status).json({ error });
 const sign = (data, lifetime) => jwt.sign(data, process.env.JWT_SECRET, { expiresIn: lifetime });
 const claim = (user, type) => ({ type, userId: user.id, username: user.username, version: user.session_version });
@@ -141,12 +142,18 @@ router.post('/codes', authenticateToken, requireSuperAdmin, async (req, res) => 
   if (!email || !['invite', 'enrollment', 'recovery'].includes(kind) || name.length > 120 ||
       (kind === 'invite' && !name))
     return invalid(res, 400, 'Valid email, type, and invitee name required');
+  if (nonInteractiveUsers.has(email)) return invalid(res, 409, 'This account cannot receive access codes');
   try {
-    const { rows: users } = await db.query('SELECT id, must_change_password FROM users WHERE username = $1', [email]);
+    const { rows: users } = await db.query(
+      `SELECT u.id, u.enabled,
+              EXISTS(SELECT 1 FROM user_passkeys p WHERE p.user_id = u.id) AS has_passkey
+       FROM users u WHERE u.username = $1`, [email]);
     if ((kind === 'invite' && users.length) || (kind !== 'invite' && !users.length))
       return invalid(res, 409, 'Recipient account does not match code type');
-    if (kind === 'enrollment' && !users[0].must_change_password)
-      return invalid(res, 409, 'This account is already enrolled; use recovery if its passkey was lost');
+    if (kind !== 'invite' && !users[0].enabled)
+      return invalid(res, 409, 'Reactivate this account before issuing an access code');
+    if (kind === 'enrollment' && (!users[0].enabled || users[0].has_passkey))
+      return invalid(res, 409, 'This account does not need initial enrollment; use recovery if its passkey was lost');
     const { code, codeHash } = newCode();
     const client = await db.connect();
     let rows;
@@ -408,12 +415,17 @@ router.get('/me', authenticateToken, async (req, res) => {
 });
 router.get('/users', authenticateToken, requireAdmin, async (_req, res) => {
   const { rows } = await db.query(
-    `SELECT id, username, display_name, admin, super_admin, terminal_access, enabled, created_at
-     FROM users ORDER BY created_at DESC LIMIT 500`);
+    `SELECT u.id, u.username, u.display_name, u.admin, u.super_admin,
+            u.terminal_access, u.enabled, u.created_at,
+            (u.enabled AND NOT EXISTS(
+              SELECT 1 FROM user_passkeys p WHERE p.user_id = u.id
+            )) AS needs_enrollment
+     FROM users u ORDER BY u.created_at DESC LIMIT 500`);
   return res.json({ users: rows.map((user) => ({ id: user.id, username: user.username,
     displayName: user.display_name, isAdmin: user.admin || user.super_admin,
     isSuperAdmin: user.super_admin, terminalAccess: user.terminal_access,
-    enabled: user.enabled, createdAt: user.created_at })) });
+    enabled: user.enabled, needsEnrollment: user.needs_enrollment,
+    createdAt: user.created_at })) });
 });
 router.patch('/users/:username/admin', authenticateToken, requireSuperAdmin, async (req, res) => {
   const email = emailAddress(req.params.username);
@@ -433,6 +445,7 @@ router.patch('/users/:username/terminal-access', authenticateToken, requireAdmin
 router.post('/users/:username/reset-password', authenticateToken, requireSuperAdmin, async (req, res) => {
   const email = emailAddress(req.params.username);
   if (!email) return invalid(res, 400, 'Invalid email');
+  if (nonInteractiveUsers.has(email)) return invalid(res, 409, 'This account cannot receive a temporary password');
   const temporaryPassword = crypto.randomBytes(24).toString('base64url');
   const expiresAt = new Date(Date.now() + 48 * 60 * MINUTE);
   const { rowCount } = await db.query(
@@ -445,6 +458,7 @@ router.post('/users/:username/reset-password', authenticateToken, requireSuperAd
 router.patch('/users/:username/enabled', authenticateToken, requireSuperAdmin, async (req, res) => {
   const email = emailAddress(req.params.username);
   if (!email || typeof req.body?.enabled !== 'boolean') return invalid(res, 400, 'Invalid status');
+  if (nonInteractiveUsers.has(email)) return invalid(res, 409, 'This account cannot be changed here');
   if (email === req.user.username && !req.body.enabled) return invalid(res, 400, 'Cannot disable own account');
   const { rowCount } = await db.query(
     'UPDATE users SET enabled = $1, session_version = session_version + 1 WHERE username = $2 AND super_admin = false',

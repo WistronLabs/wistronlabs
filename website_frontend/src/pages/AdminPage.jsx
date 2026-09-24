@@ -21,6 +21,7 @@ function AdminPage() {
     getMe,
     setUserAdmin,
     setUserTerminalAccess,
+    setUserEnabled,
     getDpns,
     createDpn,
     updateDpn,
@@ -1135,7 +1136,8 @@ function AdminPage() {
   }, [users, baselineMap]);
 
   const pendingTerminalChanges = users.filter((u) => !!u.terminalAccess !== !!baselineUsers.find((b) => b.username === u.username)?.terminalAccess);
-  const hasChanges = pendingChanges.length > 0 || pendingTerminalChanges.length > 0;
+  const pendingStatusChanges = users.filter((u) => !!u.enabled !== !!baselineUsers.find((b) => b.username === u.username)?.enabled);
+  const hasChanges = pendingChanges.length > 0 || pendingTerminalChanges.length > 0 || pendingStatusChanges.length > 0;
 
   const handleSave = async (e) => {
     e.preventDefault(); // prevent page reload
@@ -1165,6 +1167,9 @@ function AdminPage() {
       }
       for (const u of pendingTerminalChanges) {
         await setUserTerminalAccess(u.username, !!u.terminalAccess);
+      }
+      for (const u of pendingStatusChanges) {
+        await setUserEnabled(u.username, !!u.enabled);
       }
       // On success, reset baseline to current
       setBaselineUsers(users);
@@ -1766,9 +1771,11 @@ function AdminPage() {
             users={users}
             baselineMap={baselineMap}
             terminalBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.terminalAccess]))}
+            statusBaselineMap={Object.fromEntries(baselineUsers.map((u) => [u.username.toLowerCase(), !!u.enabled]))}
             me={me}
             showToast={showToast}
             handleTerminalToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, terminalAccess: !x.terminalAccess } : x))}
+            handleStatusToggle={(u) => setUsers((list) => list.map((x) => x.username === u.username ? { ...x, enabled: !x.enabled } : x))}
             handleLocalToggle={handleLocalToggle}
             handleDiscard={handleDiscard}
             handleSave={handleSave}
