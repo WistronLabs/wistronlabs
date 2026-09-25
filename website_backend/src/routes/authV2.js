@@ -104,6 +104,7 @@ async function activeCode(code, kind, email, userId = null) {
 }
 async function registrationOptions(email, userID, excludeCredentials = []) {
   return generateRegistrationOptions({ rpName: 'Wistron Labs', rpID, userName: email,
+    userDisplayName: email,
     userID, attestationType: 'none', excludeCredentials,
     authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' } });
 }
