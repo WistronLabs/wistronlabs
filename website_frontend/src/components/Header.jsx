@@ -36,7 +36,7 @@ function Header() {
 
   useEffect(() => {
     // Changing the sticky header height can move the document's scroll position.
-    // Ignore that movement so it does not reverse the user's scroll direction.
+    // Ignore that movement when deciding whether the user scrolled down.
     ignoreLayoutScrollUntilRef.current = Date.now() + 250;
   }, [searchHidden]);
 
@@ -47,20 +47,23 @@ function Header() {
       const nextY = Math.max(0, window.scrollY);
       const change = nextY - lastScrollYRef.current;
       lastScrollYRef.current = nextY;
+      if (nextY <= 8) {
+        scrollDeltaRef.current = 0;
+        setSearchPinned(false);
+        setSearchHidden(false);
+        return;
+      }
       if (Date.now() < ignoreLayoutScrollUntilRef.current) {
         scrollDeltaRef.current = 0;
         return;
       }
-      if (Math.sign(change) !== Math.sign(scrollDeltaRef.current)) scrollDeltaRef.current = 0;
-      scrollDeltaRef.current += change;
-      if (Math.abs(scrollDeltaRef.current) < 12) return;
-      const direction = Math.sign(scrollDeltaRef.current);
-      scrollDeltaRef.current = 0;
-      if (nextY < 80) {
-        if (direction < 0) setSearchHidden(false);
+      if (change <= 0) {
+        scrollDeltaRef.current = 0;
         return;
       }
-      if (direction < 0) { setSearchHidden(false); return; }
+      scrollDeltaRef.current += change;
+      if (nextY < 80 || scrollDeltaRef.current < 12) return;
+      scrollDeltaRef.current = 0;
       if (!searchPinned && !searchRowRef.current?.contains(document.activeElement)) {
         setSearchHidden(true);
       }
