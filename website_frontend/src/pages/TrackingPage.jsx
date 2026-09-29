@@ -1,6 +1,7 @@
 import React, { useContext, useState, useEffect, useCallback, useRef } from "react";
 import ReactDatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
+import { shift } from "@floating-ui/react";
 import { toPng } from "html-to-image";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
 import LoadingSkeleton from "../components/LoadingSkeleton.jsx";
@@ -33,6 +34,15 @@ import useIsMobile from "../hooks/useIsMobile.jsx";
 import useApi from "../hooks/useApi.jsx";
 import { useSystemsFetch } from "../hooks/useSystemsFetch.jsx";
 import { useHistoryFetch } from "../hooks/useHistoryFetch.jsx";
+
+const chartDatePickerModifiers = [shift(() => ({
+  padding: {
+    top: (document.getElementById("site-header")?.getBoundingClientRect().height || 76) + 8,
+    right: 8,
+    bottom: 8,
+    left: 8,
+  },
+}))];
 
 const DEFAULT_BATCH_EXPORT_OPTIONS = {
   include_l11_logs: true,
@@ -168,6 +178,7 @@ function TrackingPage() {
   const [chartEndDate, setChartEndDate] = useState("");
   const [chartMinDate, setChartMinDate] = useState("");
   const [chartTab, setChartTab] = useState("operations");
+  const [customerChartLocationIDs, setCustomerChartLocationIDs] = useState([]);
   const [chartsLoading, setChartsLoading] = useState(false);
   const [chartsError, setChartsError] = useState(null);
   const [exportingChartsPng, setExportingChartsPng] = useState(false);
@@ -1571,6 +1582,8 @@ function TrackingPage() {
                         chartStartDate={chartStartDate}
                         chartEndDate={chartEndDate}
                         customerNames={dellCustomers}
+                        selectedLocationIDs={customerChartLocationIDs}
+                        onLocationSelectionChange={setCustomerChartLocationIDs}
                         printFriendly={printFriendly}
                       />
                       {pendingDoaError ? (
@@ -1639,7 +1652,9 @@ function TrackingPage() {
                   dateFormat="MM/dd/yyyy"
                   fixedHeight
                   className="border rounded p-1 text-xs"
-                  popperPlacement="bottom-start"
+                  popperPlacement="top-end"
+                  popperModifiers={chartDatePickerModifiers}
+                  portalId="tracking-chart-datepicker"
                   showPopperArrow={false}
                 />
               </label>
@@ -1667,7 +1682,9 @@ function TrackingPage() {
                   dateFormat="MM/dd/yyyy"
                   fixedHeight
                   className="border rounded p-1 text-xs"
-                  popperPlacement="bottom-start"
+                  popperPlacement="top-end"
+                  popperModifiers={chartDatePickerModifiers}
+                  portalId="tracking-chart-datepicker"
                   showPopperArrow={false}
                 />
               </label>

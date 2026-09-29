@@ -5,7 +5,6 @@ import {
   AreaChart,
   CartesianGrid,
   LabelList,
-  Legend,
   Line,
   ResponsiveContainer,
   Tooltip,
@@ -21,7 +20,6 @@ function itemOrder(item, label) {
   return `0${label}`;
 }
 
-const legendOrder = (item) => itemOrder(item, String(item.value));
 const tooltipOrder = (item) => itemOrder(item, String(item.name));
 
 function totalPointLabel({ index, value, viewBox, pointCount }) {
@@ -44,11 +42,22 @@ function ActiveUnitsCustomerChart({
   chartStartDate,
   chartEndDate,
   customerNames = [],
+  selectedLocationIDs = [],
+  onLocationSelectionChange,
   printFriendly = false,
 }) {
-  const activeLocationNames = useMemo(
-    () => locations.filter((loc) => activeLocationIDs.includes(loc.id)).map((loc) => loc.name),
+  const locationOptions = useMemo(
+    () => locations.filter((loc) => activeLocationIDs.includes(loc.id))
+      .map((loc) => ({ value: loc.id, label: loc.name })),
     [locations, activeLocationIDs],
+  );
+  const selectedLocations = useMemo(
+    () => locationOptions.filter((option) => selectedLocationIDs.includes(option.value)),
+    [locationOptions, selectedLocationIDs],
+  );
+  const activeLocationNames = useMemo(
+    () => (selectedLocations.length ? selectedLocations : locationOptions).map((option) => option.label),
+    [selectedLocations, locationOptions],
   );
   const dailyData = useMemo(
     () => computeActiveLocationsPerDay(
@@ -83,37 +92,74 @@ function ActiveUnitsCustomerChart({
     }),
     [dailyData, customerKeys],
   );
-  const legendHeight = Math.max(36, Math.ceil((customerKeys.length + 1) / 3) * 20);
+  function toggleLocation(id) {
+    const current = selectedLocations.map((option) => option.value);
+    const next = current.length === 0 ? [id]
+      : current.includes(id) ? current.filter((value) => value !== id) : [...current, id];
+    onLocationSelectionChange(next.length === locationOptions.length ? [] : next);
+  }
 
   return (
     <div className="relative z-20 bg-white p-4">
-      <h2 className="mb-4 text-xl font-semibold">Active Units Customer Breakdown</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold">Active Units Customer Breakdown</h2>
+        <div className="inline-flex max-w-full flex-wrap justify-end gap-1 rounded-2xl bg-gray-100 p-1"
+          role="group" aria-label="Active locations in customer breakdown">
+          <button type="button" onClick={() => onLocationSelectionChange([])}
+            aria-pressed={selectedLocations.length === 0}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${selectedLocations.length === 0
+              ? "bg-blue-600 text-white shadow-sm"
+              : "text-gray-700 hover:bg-gray-200"}`}>
+            All
+          </button>
+          {locationOptions.map((option) => {
+            const selected = selectedLocations.some((location) => location.value === option.value);
+            return <button key={option.value} type="button" onClick={() => toggleLocation(option.value)}
+              aria-pressed={selected}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${selected
+                ? "bg-blue-600 text-white shadow-sm"
+                : "text-gray-700 hover:bg-gray-200"}`}>
+              {option.label}
+            </button>;
+          })}
+        </div>
+      </div>
       {customerKeys.length === 0 ? (
         <p className="py-12 text-center text-sm text-gray-500">No active units in this date range.</p>
       ) : (
-        <ResponsiveContainer width="100%" height={Math.max(320, 250 + (printFriendly ? legendHeight : 0))}>
-          <AreaChart data={chartData} margin={{ top: printFriendly ? 12 : 16, right: 12, left: 0, bottom: 4 }}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-            <YAxis allowDecimals={false} />
-            <Tooltip itemSorter={tooltipOrder} />
-            {printFriendly && <Legend verticalAlign="top" align="right" iconType="circle"
-              height={legendHeight} itemSorter={legendOrder}
-              wrapperStyle={{ fontSize: 11, lineHeight: "18px" }} />}
-            {customerKeys.map((customer, index) => (
-              <Area key={customer} type="monotone" dataKey={`customer_${index}`} name={customer}
-                stroke={colors[customer]}
-                fill={colors[customer]}
-                stackId="customers" isAnimationActive={false} />
-            ))}
-            <Line type="monotone" dataKey="totalActive" name="Total Active"
-              stroke="#374151" strokeDasharray="4 2" strokeWidth={2} dot={{ r: 2 }}
-              isAnimationActive={false}>
-              {printFriendly && <LabelList dataKey="totalActive" position="top"
-                content={(props) => totalPointLabel({ ...props, pointCount: chartData.length })} />}
-            </Line>
-          </AreaChart>
-        </ResponsiveContainer>
+        <>
+          {printFriendly && <div className="flex flex-wrap justify-end gap-x-3 gap-y-1 pl-[60px] pr-3 text-[11px] text-gray-700"
+            aria-label="Chart legend">
+            {customerKeys.map((customer) => <span key={customer} className="inline-flex max-w-full items-center gap-1">
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: colors[customer] }} aria-hidden="true" />
+              <span className="min-w-0 break-words">{customer}</span>
+            </span>)}
+            <span className="inline-flex max-w-full items-center gap-1">
+              <span className="w-3 shrink-0 border-t-2 border-dashed border-gray-700" aria-hidden="true" />
+              Total Active
+            </span>
+          </div>}
+          <ResponsiveContainer width="100%" height={320}>
+            <AreaChart data={chartData} margin={{ top: printFriendly ? 12 : 16, right: 12, left: 0, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+              <YAxis allowDecimals={false} width={60} />
+              <Tooltip itemSorter={tooltipOrder} />
+              {customerKeys.map((customer, index) => (
+                <Area key={customer} type="monotone" dataKey={`customer_${index}`} name={customer}
+                  stroke={colors[customer]}
+                  fill={colors[customer]}
+                  stackId="customers" isAnimationActive={false} />
+              ))}
+              <Line type="monotone" dataKey="totalActive" name="Total Active"
+                stroke="#374151" strokeDasharray="4 2" strokeWidth={2} dot={{ r: 2 }}
+                isAnimationActive={false}>
+                {printFriendly && <LabelList dataKey="totalActive" position="top"
+                  content={(props) => totalPointLabel({ ...props, pointCount: chartData.length })} />}
+              </Line>
+            </AreaChart>
+          </ResponsiveContainer>
+        </>
       )}
     </div>
   );

@@ -434,11 +434,15 @@ const difference = (a, needles) => {
   return out;
 };
 
-export default function SmartSearchBar() {
+export default function SmartSearchBar({ focusToken = 0 }) {
   const [q, setQ] = useState("");
   const qDebounced = useDebounced(q, 200);
   const parsed = useMemo(() => parseQuery(qDebounced), [qDebounced]);
   const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (focusToken > 0) inputRef.current?.focus();
+  }, [focusToken]);
 
   // NEW: values covered by "field chips" (ppid:, dpn:, etc.)
   const coveredValues = useMemo(
@@ -803,6 +807,10 @@ export default function SmartSearchBar() {
 
   return (
     <div className="relative">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" /><path strokeLinecap="round" d="m20 20-4-4" />
+      </svg>
       <input
         value={q}
         onChange={(e) => setQ(e.target.value)}
@@ -815,8 +823,10 @@ export default function SmartSearchBar() {
           setFocused(false);
           setTimeout(() => setOpen(false), 120);
         }}
-        placeholder={`Search units (e.g., bianca OR "fan fail" -test dpn:KR7T5 note:Bianca before:2025-01-01 pallet:PAL-123)`}
-        className="w-full border rounded-lg px-3 py-2 text-sm"
+        placeholder="Search service tags, DPNs, customers, issues…"
+        title="Search supports OR, quoted phrases, exclusions, and field filters such as dpn: or pallet:."
+        aria-label="Search units"
+        className="w-full rounded-xl border border-white/20 bg-white py-2.5 pl-10 pr-3 text-sm text-gray-900 shadow-sm outline-none placeholder:text-gray-400 focus:border-blue-300 focus:ring-2 focus:ring-blue-300/40"
       />
 
       {open && (
