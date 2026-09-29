@@ -146,8 +146,9 @@ function Header() {
           </h1>
         </div>
 
-        {/* Right: desktop nav + help */}
-        {token && <div className="hidden lg:flex items-center gap-1">
+        {/* Right: desktop nav and search */}
+        {token && <div className="flex items-center gap-1">
+          <nav className="hidden items-center gap-1 lg:flex" aria-label="Main navigation">
           <Link
             to="/"
             className={`${linkBase} ${pathname === "/" ? active : ""}`}
@@ -199,18 +200,16 @@ function Header() {
               Need help?
             </a>
           )}
-        </div>}
-
-        {token && <div className="flex items-center gap-1">
+          </nav>
           <button type="button" onClick={toggleSearch} aria-label={searchHidden ? "Open search" : "Hide search"}
             aria-expanded={!searchHidden} aria-controls="site-search-row"
-            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${searchHidden
+            className={`inline-flex items-center gap-2 rounded-lg py-2 text-sm font-medium transition-colors ${searchHidden ? "px-3" : "px-2"} ${searchHidden
               ? "text-blue-100 hover:bg-white/10 hover:text-white"
               : "bg-white/15 text-white hover:bg-white/20"}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
               <circle cx="11" cy="11" r="7" /><path strokeLinecap="round" d="m20 20-4-4" />
             </svg>
-            <span className="hidden lg:inline">Search</span>
+            {searchHidden && <span className="hidden lg:inline">Search</span>}
           </button>
           <button type="button" onClick={() => setMenuOpen((prev) => !prev)}
             aria-label={menuOpen ? "Close menu" : "Open menu"} aria-expanded={menuOpen}
