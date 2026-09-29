@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { DateTime } from "luxon";
+import Select from "react-select";
 import {
   Area,
   AreaChart,
@@ -23,6 +24,17 @@ function itemOrder(item, label) {
 
 const legendOrder = (item) => itemOrder(item, String(item.value));
 const tooltipOrder = (item) => itemOrder(item, String(item.name));
+const locationSelectStyles = {
+  control: (base, state) => ({
+    ...base,
+    minHeight: 38,
+    borderRadius: 8,
+    borderColor: state.isFocused ? "#3b82f6" : "#d1d5db",
+    boxShadow: state.isFocused ? "0 0 0 2px #bfdbfe" : "none",
+    "&:hover": { borderColor: "#60a5fa" },
+  }),
+  menuPortal: (base) => ({ ...base, zIndex: 10050 }),
+};
 
 function totalPointLabel({ index, value, viewBox, pointCount }) {
   if (!viewBox || (pointCount > 14 && index !== 0 && index !== pointCount - 1 &&
@@ -44,11 +56,22 @@ function ActiveUnitsCustomerChart({
   chartStartDate,
   chartEndDate,
   customerNames = [],
+  selectedLocationIDs = [],
+  onLocationSelectionChange,
   printFriendly = false,
 }) {
-  const activeLocationNames = useMemo(
-    () => locations.filter((loc) => activeLocationIDs.includes(loc.id)).map((loc) => loc.name),
+  const locationOptions = useMemo(
+    () => locations.filter((loc) => activeLocationIDs.includes(loc.id))
+      .map((loc) => ({ value: loc.id, label: loc.name })),
     [locations, activeLocationIDs],
+  );
+  const selectedLocations = useMemo(
+    () => locationOptions.filter((option) => selectedLocationIDs.includes(option.value)),
+    [locationOptions, selectedLocationIDs],
+  );
+  const activeLocationNames = useMemo(
+    () => (selectedLocations.length ? selectedLocations : locationOptions).map((option) => option.label),
+    [selectedLocations, locationOptions],
   );
   const dailyData = useMemo(
     () => computeActiveLocationsPerDay(
@@ -87,7 +110,36 @@ function ActiveUnitsCustomerChart({
 
   return (
     <div className="relative z-20 bg-white p-4">
-      <h2 className="mb-4 text-xl font-semibold">Active Units Customer Breakdown</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold">Active Units Customer Breakdown</h2>
+        <div className="flex w-full items-center gap-2 sm:w-auto">
+          <button type="button" onClick={() => onLocationSelectionChange([])}
+            aria-pressed={selectedLocations.length === 0}
+            className={`shrink-0 rounded-lg border px-3 py-2 text-sm font-medium ${selectedLocations.length === 0
+              ? "border-blue-600 bg-blue-600 text-white"
+              : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"}`}>
+            All
+          </button>
+          <div className="min-w-0 flex-1 sm:w-72">
+            <label htmlFor="active-customer-locations" className="sr-only">Active locations</label>
+            <Select
+              inputId="active-customer-locations"
+              instanceId="active-customer-locations"
+              isMulti
+              isClearable
+              closeMenuOnSelect={false}
+              options={locationOptions}
+              value={selectedLocations}
+              onChange={(selected) => onLocationSelectionChange((selected || []).map((option) => option.value))}
+              placeholder="Select locations…"
+              noOptionsMessage={() => "No active locations"}
+              styles={locationSelectStyles}
+              menuPortalTarget={typeof document === "undefined" ? undefined : document.body}
+              menuPosition="fixed"
+            />
+          </div>
+        </div>
+      </div>
       {customerKeys.length === 0 ? (
         <p className="py-12 text-center text-sm text-gray-500">No active units in this date range.</p>
       ) : (
