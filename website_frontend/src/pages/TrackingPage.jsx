@@ -1,6 +1,7 @@
 import React, { useContext, useState, useEffect, useCallback, useRef } from "react";
 import ReactDatePicker from "react-datepicker";
 import "react-datepicker/dist/react-datepicker.css";
+import { shift } from "@floating-ui/react";
 import { toPng } from "html-to-image";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
 import LoadingSkeleton from "../components/LoadingSkeleton.jsx";
@@ -33,6 +34,15 @@ import useIsMobile from "../hooks/useIsMobile.jsx";
 import useApi from "../hooks/useApi.jsx";
 import { useSystemsFetch } from "../hooks/useSystemsFetch.jsx";
 import { useHistoryFetch } from "../hooks/useHistoryFetch.jsx";
+
+const chartDatePickerModifiers = [shift(() => ({
+  padding: {
+    top: (document.getElementById("site-header")?.getBoundingClientRect().height || 76) + 8,
+    right: 8,
+    bottom: 8,
+    left: 8,
+  },
+}))];
 
 const DEFAULT_BATCH_EXPORT_OPTIONS = {
   include_l11_logs: true,
@@ -1643,6 +1653,7 @@ function TrackingPage() {
                   fixedHeight
                   className="border rounded p-1 text-xs"
                   popperPlacement="top-end"
+                  popperModifiers={chartDatePickerModifiers}
                   portalId="tracking-chart-datepicker"
                   showPopperArrow={false}
                 />
@@ -1672,6 +1683,7 @@ function TrackingPage() {
                   fixedHeight
                   className="border rounded p-1 text-xs"
                   popperPlacement="top-end"
+                  popperModifiers={chartDatePickerModifiers}
                   portalId="tracking-chart-datepicker"
                   showPopperArrow={false}
                 />
