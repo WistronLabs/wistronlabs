@@ -161,12 +161,20 @@ else
     exit 1
 fi
 
-MAC_NO_COLONS="${MAC//:/}"
+MAC_NO_COLONS="$(printf '%s' "${MAC//:/}" | tr '[:upper:]' '[:lower:]')"
 SESSION_NAME="bs_${MAC_NO_COLONS}"
+IN_STATION_TMUX=0
+if [[ -n "${TMUX:-}" ]]; then
+    IN_STATION_TMUX=1
+fi
 
-# If session already exists, just attach
-if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-    tmux attach -t "$SESSION_NAME"
+# A station pane must never attach another tmux client inside itself.
+if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
+    if [[ "$IN_STATION_TMUX" == "1" ]]; then
+        echo "BIOS serial session $SESSION_NAME is ready. Open it in Stations → Terminals → BIOS serial."
+    else
+        tmux attach-session -t "=$SESSION_NAME"
+    fi
     exit 0
 fi
 
@@ -194,7 +202,7 @@ if [[ -n "$IPMI_USER" ]]; then
     # IPMI works -> use SOL (with whatever cipher was selected)
     ipmitool -I lanplus -U "$IPMI_USER" -P "$IPMI_PASS" -H "$IP" $IPMI_CIPHER sol deactivate >/dev/null 2>&1 || true
 
-    tmux new-session -s "$SESSION_NAME" \
+    tmux new-session -d -s "$SESSION_NAME" \
       "ipmitool -I lanplus -U '$IPMI_USER' -P '$IPMI_PASS' -H '$IP' $IPMI_CIPHER sol activate"
 else
     sshpass -p "$SSH_PASS" ssh \
@@ -204,7 +212,7 @@ else
       "${SSH_USER}@${IP}" \
       "stop -script HOST/console" >/dev/null 2>&1 || true
 
-    tmux new-session -s "$SESSION_NAME" \
+    tmux new-session -d -s "$SESSION_NAME" \
       "sshpass -p '$SSH_PASS' ssh -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 ${SSH_USER}@${IP} 'start -script HOST/console'"
 
     # If SSH failed immediately, tmux session won't exist -> show error
@@ -216,7 +224,16 @@ else
 fi
 
 
-tmux attach -t "$SESSION_NAME"
+if ! tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
+    err "BIOS serial session $SESSION_NAME exited before it could be opened."
+    exit 2
+fi
+
+if [[ "$IN_STATION_TMUX" == "1" ]]; then
+    echo "BIOS serial session $SESSION_NAME is ready. Open it in Stations → Terminals → BIOS serial."
+else
+    tmux attach-session -t "=$SESSION_NAME"
+fi
 
 # Authors:
 #   Giovanni Leon - giovanni_leon@wistron.com

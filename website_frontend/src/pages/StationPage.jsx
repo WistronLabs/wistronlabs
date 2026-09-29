@@ -1,7 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import { AuthContext } from "../context/AuthContext";
 import useTerminalApi from "../hooks/useTerminalApi";
-import TerminalWorkspace from "../components/TerminalWorkspace";
+import BiosTerminalWorkspace from "../components/BiosTerminalWorkspace";
 import TerminalSessionContext from "../context/TerminalSessionContext";
 import React, { useEffect, useState, useContext } from "react";
 import SearchContainer from "../components/SearchContainer.jsx";
@@ -262,7 +262,7 @@ function StationPage() {
           ) : loading ? (
             <p>Loading stations…</p>
           ) : (
-            <TerminalWorkspace
+            <BiosTerminalWorkspace
               key={`${user?.id}:${terminalStation || "saved"}`}
               stations={stations}
               initialStation={terminalStation}

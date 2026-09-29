@@ -17,8 +17,42 @@ try {
 } catch (e) {
   if (e.code !== "ENOENT") throw e;
 }
+async function startTtyd(key, socket, base, tmuxArgs) {
+  if (children.has(key)) return;
+  try {
+    fs.unlinkSync(socket);
+  } catch (e) {
+    if (e.code !== "ENOENT") throw e;
+  }
+  const child = spawn(
+    process.env.TTYD_BINARY || "/usr/bin/ttyd",
+    [
+      "-W", "-i", socket, "-b", base,
+      "-t", "disableReconnect=true",
+      "-t", "disableLeaveAlert=true",
+      "-t", "fontSize=14",
+      "-t", 'theme={"background":"#334155","foreground":"#f1f5f9","cursor":"#f8fafc"}',
+      "tmux", ...tmuxArgs,
+    ],
+    { cwd, stdio: ["ignore", "inherit", "inherit"] },
+  );
+  let error;
+  child.once("error", (e) => { error = e; });
+  child.once("exit", () => { children.delete(key); });
+  for (let i = 0; i < 100; i++) {
+    if (error || child.exitCode !== null) throw error || new Error("ttyd exited");
+    if (fs.existsSync(socket)) {
+      children.set(key, child);
+      return;
+    }
+    await delay(50);
+  }
+  child.kill();
+  throw new Error("ttyd startup timed out");
+}
 async function ensure(station) {
-  if (pending.has(station)) return pending.get(station);
+  const key = `station-${station}`;
+  if (pending.has(key)) return pending.get(key);
   const promise = (async () => {
     const socket = `${directory}/station-${station}.sock`;
     let newSession = false;
@@ -61,66 +95,39 @@ async function ensure(station) {
       "window-size",
       "largest",
     ]);
-    if (children.has(station)) return { newSession };
-    try {
-      fs.unlinkSync(socket);
-    } catch (e) {
-      if (e.code !== "ENOENT") throw e;
-    }
-    const child = spawn(
-      process.env.TTYD_BINARY || "/usr/bin/ttyd",
-      [
-        "-W",
-        "-i",
-        socket,
-        "-b",
-        `/api/v1/terminals/stations/${station}`,
-        "-t",
-        "disableReconnect=true",
-        "-t",
-        "disableLeaveAlert=true",
-        "-t",
-        "fontSize=14",
-        "-t",
-        'theme={"background":"#334155","foreground":"#f1f5f9","cursor":"#f8fafc"}',
-        "tmux",
-        "new-session",
-        "-A",
-        "-s",
-        `stn_${station}`,
-        "-c",
-        cwd,
-      ],
-      { cwd, stdio: ["ignore", "inherit", "inherit"] },
-    );
-    let error;
-    child.once("error", (e) => {
-      error = e;
-    });
-    child.once("exit", () => {
-      children.delete(station);
-    });
-    for (let i = 0; i < 100; i++) {
-      if (error || child.exitCode !== null)
-        throw error || new Error("ttyd exited");
-      if (fs.existsSync(socket)) {
-        children.set(station, child);
-        return { newSession };
-      }
-      await delay(50);
-    }
-    child.kill();
-    throw new Error("ttyd startup timed out");
+    await startTtyd(key, socket, `/api/v1/terminals/stations/${station}`,
+      ["new-session", "-A", "-s", `stn_${station}`, "-c", cwd]);
+    return { newSession };
   })();
-  pending.set(station, promise);
+  pending.set(key, promise);
   try {
     return await promise;
   } finally {
-    pending.delete(station);
+    pending.delete(key);
   }
+}
+async function ensureBios(mac) {
+  const key = `bios-${mac}`;
+  if (pending.has(key)) return pending.get(key);
+  const promise = (async () => {
+    try {
+      execFileSync("tmux", ["has-session", "-t", `=bs_${mac}`], { stdio: "ignore", timeout: 3000 });
+    } catch {
+      return false;
+    }
+    execFileSync("tmux", ["set-option", "-t", `=bs_${mac}:`, "mouse", "on"]);
+    execFileSync("tmux", ["set-window-option", "-t", `=bs_${mac}:`, "window-size", "largest"]);
+    await startTtyd(key, `${directory}/${key}.sock`, `/api/v1/terminals/bios/${mac}`,
+      ["attach-session", "-t", `=bs_${mac}`]);
+    return { newSession: false };
+  })();
+  pending.set(key, promise);
+  try { return await promise; } finally { pending.delete(key); }
 }
 const stationFor = (url) =>
   /^\/api\/v1\/terminals\/stations\/([1-9]\d{0,5})(?:\/|$)/.exec(url)?.[1];
+const biosFor = (url) =>
+  /^\/api\/v1\/terminals\/bios\/([a-f0-9]{12})(?:\/|$)/.exec(url)?.[1];
 function sessions() {
   try {
     return execFileSync("tmux", ["list-sessions", "-F", "#{session_name}"], {
@@ -137,8 +144,19 @@ const server = http.createServer(async (req, res) => {
     return res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
       .end(JSON.stringify({ stations: sessions() }));
   }
+  if (req.method === "GET" && req.url === "/api/v1/terminals/bios/sessions") {
+    let bios = [];
+    try {
+      bios = execFileSync("tmux", ["list-sessions", "-F", "#{session_name}"], {
+        encoding: "utf8", timeout: 3000,
+      }).split("\n").map((name) => /^bs_([a-f0-9]{12})$/.exec(name)?.[1]).filter(Boolean);
+    } catch { /* No tmux sessions yet. */ }
+    return res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+      .end(JSON.stringify({ bios }));
+  }
   const station = stationFor(req.url);
-  if (!station || req.method !== "GET") return res.writeHead(404).end();
+  const bios = biosFor(req.url);
+  if ((!station && !bios) || req.method !== "GET") return res.writeHead(404).end();
   if (req.url === `/api/v1/terminals/stations/${station}/preview`) {
     const target = `=stn_${station}:`;
     try {
@@ -161,13 +179,15 @@ const server = http.createServer(async (req, res) => {
     }
   }
   try {
-    const result = await ensure(station);
+    const result = station ? await ensure(station) : await ensureBios(bios);
+    if (result === false) return res.writeHead(404, { "content-type": "application/json" })
+      .end(JSON.stringify({ error: "BIOS session not found" }));
     if (req.url.endsWith("/ensure")) {
       return res
         .writeHead(200, { "content-type": "application/json" })
         .end(JSON.stringify(result));
     }
-    relay(req, res, `${directory}/station-${station}.sock`, req.url);
+    relay(req, res, `${directory}/${station ? `station-${station}` : `bios-${bios}`}.sock`, req.url);
   } catch (e) {
     console.error(e);
     res.writeHead(503).end("Unable to start terminal");
@@ -176,10 +196,12 @@ const server = http.createServer(async (req, res) => {
 server.on("upgrade", async (req, socket, head) => {
   socket.on("error", () => socket.destroy());
   const station = stationFor(req.url);
-  if (!station || !req.url.endsWith("/ws")) return socket.destroy();
+  const bios = biosFor(req.url);
+  if ((!station && !bios) || !req.url.endsWith("/ws")) return socket.destroy();
   try {
-    await ensure(station);
-    relay(req, socket, `${directory}/station-${station}.sock`, req.url, head);
+    if (station) await ensure(station);
+    else if (!(await ensureBios(bios))) return socket.destroy();
+    relay(req, socket, `${directory}/${station ? `station-${station}` : `bios-${bios}`}.sock`, req.url, head);
   } catch {
     socket.destroy();
   }

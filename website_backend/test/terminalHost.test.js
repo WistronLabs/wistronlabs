@@ -117,6 +117,14 @@ http.createServer((req,res)=>res.end('station screen')).listen(args[args.indexOf
       .status,
     404,
   );
+  const biosBase = "/api/v1/terminals/bios/aabbccddeeff";
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).bios, []);
+  assert.equal((await get(control, `${biosBase}/ensure`)).status, 404);
+  await fs.writeFile(state, JSON.stringify({ stn_12: true, bs_aabbccddeeff: true }));
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).bios, ["aabbccddeeff"]);
+  assert.equal((await get(control, `${biosBase}/ensure`)).status, 200);
+  assert.equal((await get(control, `${biosBase}/ensure`)).status, 200);
+  assert.equal((await get(control, `${biosBase}/`)).body, "station screen");
   await fs.writeFile(state, "{}");
   assert.equal(
     JSON.parse((await get(control, `${base}/ensure`)).body).newSession,
@@ -127,13 +135,19 @@ http.createServer((req,res)=>res.end('station screen')).listen(args[args.indexOf
     .split("\n")
     .map(JSON.parse);
   assert.equal(
-    calls.filter((args) => args[0] === "ttyd").length,
+    calls.filter((args) => args[0] === "ttyd" && args.includes(base)).length,
     1,
     "one ttyd process per station",
   );
   const ttyd = calls.find((args) => args[0] === "ttyd");
   assert.equal(ttyd.includes("-W"), true);
   assert.equal(ttyd[ttyd.indexOf("-b") + 1], base);
+  const biosTtyd = calls.find((args) => args[0] === "ttyd" && args.includes(biosBase));
+  assert.deepEqual(biosTtyd.slice(-4), ["tmux", "attach-session", "-t", "=bs_aabbccddeeff"]);
+  assert.equal(calls.filter((args) => args[0] === "ttyd" && args.includes(biosBase)).length, 1,
+    "one ttyd process per BIOS session");
+  assert.equal(calls.some((args) => args[0] === "new-session" && args.includes("bs_aabbccddeeff")), false,
+    "website terminal must never create a BIOS session");
   assert.equal(
     calls.some((args) => args[0] === "new-session" && args.includes("-A")),
     false,

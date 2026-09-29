@@ -20,7 +20,7 @@ function createTerminals({
     publicOrigin?.startsWith("https://") &&
     frontendOrigin
   );
-  function hostJson(path) {
+  function hostJson(path, timeout = 5000) {
     return new Promise((resolve, reject) => {
       const upstream = http.get({ socketPath, path }, (response) => {
         const chunks = [];
@@ -38,7 +38,7 @@ function createTerminals({
           }
         });
       });
-      upstream.setTimeout(5000, () => upstream.destroy(new Error("Terminal host timeout")));
+      upstream.setTimeout(timeout, () => upstream.destroy(new Error("Terminal host timeout")));
       upstream.on("error", reject);
     });
   }
@@ -86,6 +86,15 @@ function createTerminals({
       res.status(503).json({ error: "Unable to check terminal sessions" });
     }
   });
+  router.get("/bios/sessions", authenticateToken, allowed, async (_req, res) => {
+    try {
+      const result = await hostJson(`${PREFIX}/bios/sessions`);
+      if (result.status !== 200 || !Array.isArray(result.data.bios)) throw new Error();
+      res.set("Cache-Control", "no-store").json({ bios: result.data.bios });
+    } catch {
+      res.status(503).json({ error: "Unable to list BIOS sessions" });
+    }
+  });
   router.get("/stations/:station/preview", authenticateToken, allowed, async (req, res) => {
     const station = req.params.station;
     if (!/^[1-9]\d{0,5}$/.test(station))
@@ -102,6 +111,31 @@ function createTerminals({
       res.status(503).json({ error: "Unable to load station preview" });
     }
   });
+  function grantConnection(req, res, targetPath, result) {
+    const id = crypto.randomUUID();
+    const secret = crypto.randomBytes(32).toString("hex");
+    grants.set(id, {
+      secret,
+      userId: req.user.userId,
+      sessionVersion: req.terminalUser.session_version,
+      username: req.terminalUser.username,
+      targetPath,
+      expires: Date.now() + LEASE_MS,
+      sockets: new Set(),
+    });
+    const path = `${PREFIX}/views/${id}`;
+    res.cookie("terminal_session", secret, {
+      httpOnly: true, secure: true, sameSite: "none", path, maxAge: LEASE_MS,
+    });
+    res.set("Cache-Control", "no-store").json({
+      id, url: `${publicOrigin}${path}/`, newSession: !!result.newSession,
+    });
+  }
+  function tooManyPanels(req, res) {
+    if ([...grants.values()].filter((g) => g.userId === req.user.userId).length < 32) return false;
+    res.status(429).json({ error: "Too many terminal panels open" });
+    return true;
+  }
   router.post(
     "/stations/:station/connect",
     authenticateToken,
@@ -117,61 +151,10 @@ function createTerminals({
         );
         if (!rows.length)
           return res.status(404).json({ error: "Station not found" });
-        if (
-          [...grants.values()].filter((g) => g.userId === req.user.userId)
-            .length >= 32
-        ) {
-          return res
-            .status(429)
-            .json({ error: "Too many terminal panels open" });
-        }
-        const result = await new Promise((resolve, reject) => {
-          const upstream = http.get(
-            { socketPath, path: `${PREFIX}/stations/${station}/ensure` },
-            (response) => {
-              let body = "";
-              response.on("data", (chunk) => {
-                body += chunk;
-              });
-              response.on("end", () => {
-                try {
-                  if (response.statusCode !== 200) throw new Error();
-                  resolve(JSON.parse(body));
-                } catch {
-                  reject(new Error("Terminal host unavailable"));
-                }
-              });
-            },
-          );
-          upstream.setTimeout(10000, () =>
-            upstream.destroy(new Error("Terminal host timeout")),
-          );
-          upstream.on("error", reject);
-        });
-        const id = crypto.randomUUID();
-        const secret = crypto.randomBytes(32).toString("hex");
-        grants.set(id, {
-          secret,
-          userId: req.user.userId,
-          sessionVersion: req.terminalUser.session_version,
-          username: req.terminalUser.username,
-          station,
-          expires: Date.now() + LEASE_MS,
-          sockets: new Set(),
-        });
-        const path = `${PREFIX}/views/${id}`;
-        res.cookie("terminal_session", secret, {
-          httpOnly: true,
-          secure: true,
-          sameSite: "none",
-          path,
-          maxAge: LEASE_MS,
-        });
-        res.set("Cache-Control", "no-store").json({
-          id,
-          url: `${publicOrigin}${path}/`,
-          newSession: result.newSession,
-        });
+        if (tooManyPanels(req, res)) return;
+        const result = await hostJson(`${PREFIX}/stations/${station}/ensure`, 10000);
+        if (result.status !== 200) throw new Error();
+        grantConnection(req, res, `${PREFIX}/stations/${station}`, result.data);
       } catch {
         res.status(503).json({
           error:
@@ -180,6 +163,19 @@ function createTerminals({
       }
     },
   );
+  router.post("/bios/:mac/connect", authenticateToken, allowed, async (req, res) => {
+    const mac = req.params.mac.toLowerCase();
+    if (!/^[a-f0-9]{12}$/.test(mac)) return res.status(400).json({ error: "Invalid BMC MAC" });
+    if (tooManyPanels(req, res)) return;
+    try {
+      const result = await hostJson(`${PREFIX}/bios/${mac}/ensure`, 10000);
+      if (result.status === 404) return res.status(404).json({ error: "BIOS session is no longer running" });
+      if (result.status !== 200) throw new Error();
+      grantConnection(req, res, `${PREFIX}/bios/${mac}`, result.data);
+    } catch {
+      res.status(503).json({ error: "Terminal host unavailable. Check the host service and socket mount." });
+    }
+  });
   router.post("/leases/:id", authenticateToken, allowed, (req, res) => {
     const grant = grants.get(req.params.id);
     if (
@@ -204,7 +200,7 @@ function createTerminals({
         [...grants.values()]
           .filter(
             (g) =>
-              g.station === grant.station &&
+              g.targetPath === grant.targetPath &&
               g.expires > Date.now() &&
               g.sockets.size,
           )
@@ -266,18 +262,18 @@ function createTerminals({
         `frame-ancestors 'self' ${frontendOrigin}`,
       );
       res.set("Cache-Control", "no-store");
-      const path = upstreamPath(req.url, grant.station);
+      const path = upstreamPath(req.url, grant.targetPath);
       relay(req, res, socketPath, path, undefined, undefined, {
-        containScroll: path.split("?")[0] === `${PREFIX}/stations/${grant.station}/`,
+        containScroll: path.split("?")[0] === `${grant.targetPath}/`,
       });
     } catch {
       res.status(503).send("Terminal unavailable");
     }
   }
-  function upstreamPath(url, station) {
+  function upstreamPath(url, targetPath) {
     return url.replace(
       new RegExp(`^${PREFIX}/views/[a-f0-9-]{36}`),
-      `${PREFIX}/stations/${station}`,
+      targetPath,
     );
   }
   async function upgrade(req, socket, head) {
@@ -295,7 +291,7 @@ function createTerminals({
         req,
         socket,
         socketPath,
-        upstreamPath(req.url, grant.station),
+        upstreamPath(req.url, grant.targetPath),
         head,
         (connected) => {
           if (

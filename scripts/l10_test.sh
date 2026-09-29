@@ -59,7 +59,7 @@ Options:
   -s, --sys-mac SYS_MAC
       Provide the system MAC instead of being prompted.
   -l, --live
-      Show BIOS serial on the right until SSH is fully up, then return to one pane.
+      Start a separate BIOS serial session while the test runs.
   -o, --options
       Open interactive module picker.
   -f, --fru-only
@@ -99,7 +99,7 @@ Options:
   -s, --sys-mac SYS_MAC
       Manual mode only: provide the system MAC instead of being prompted.
   -l, --live
-      Show BIOS serial on the right until SSH is fully up, then return to one pane.
+      Start a separate BIOS serial session while the test runs.
   -o, --options
       Open interactive module picker.
   -f, --fru-only
@@ -176,7 +176,7 @@ start_live_bios_pane() {
 
   current_pane_id="$(tmux display-message -p '#{pane_id}')"
   window_target="$(tmux display-message -p '#S:#I')"
-  right_cmd="cd '$script_dir' && env -u TMUX WISTRON_MODE='$WISTRON_MODE' FIELD_STATIONS_FILE='$FIELD_STATIONS_FILE' FIELD_DEFAULT_CONFIG='${FIELD_DEFAULT_CONFIG:-}' SERVER_LOCATION='${SERVER_LOCATION:-}' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
+  right_cmd="cd '$script_dir' && WISTRON_MODE='$WISTRON_MODE' FIELD_STATIONS_FILE='$FIELD_STATIONS_FILE' FIELD_DEFAULT_CONFIG='${FIELD_DEFAULT_CONFIG:-}' SERVER_LOCATION='${SERVER_LOCATION:-}' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
 
   LIVE_RIGHT_PANE_ID="$(tmux split-window -h -P -F '#{pane_id}' -t "$current_pane_id" "$right_cmd")"
   tmux select-layout -t "$window_target" even-horizontal

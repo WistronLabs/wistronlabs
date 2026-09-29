@@ -56,16 +56,20 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-"));
   const socketPath = path.join(dir, "control.sock");
   let forwarded;
+  let forwardedPath;
   const hostSockets = new Set();
   const host = http.createServer((req, res) => {
     forwarded = req.headers;
+    forwardedPath = req.url;
     if (req.url.endsWith("/sessions"))
-      res.writeHead(200, { "content-type": "application/json" }).end('{"stations":["12"]}');
+      res.writeHead(200, { "content-type": "application/json" }).end(req.url.includes("/bios/") ? '{"bios":["aabbccddeeff"]}' : '{"stations":["12"]}');
     else if (req.url.endsWith("/preview")) {
       if (req.url.includes("/stations/12/"))
         res.writeHead(200, { "content-type": "application/json" }).end('{"output":"L10 Diagnostic Test\\n"}');
       else res.writeHead(404, { "content-type": "application/json" }).end('{"error":"No session"}');
     }
+    else if (req.url.endsWith("/ensure") && req.url.includes("/bios/") && !req.url.includes("aabbccddeeff"))
+      res.writeHead(404, { "content-type": "application/json" }).end('{"error":"BIOS session not found"}');
     else if (req.url.endsWith("/ensure"))
       res
         .writeHead(200, { "content-type": "application/json" })
@@ -80,6 +84,7 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   });
   host.on("upgrade", (req, socket) => {
     forwarded = req.headers;
+    forwardedPath = req.url;
     hostSockets.add(socket);
     socket.on("close", () => hostSockets.delete(socket));
     const accept = crypto
@@ -144,6 +149,10 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   assert.equal((await call("/sessions")).status, 401);
   assert.equal((await call("/sessions", 1)).status, 403);
   assert.deepEqual((await (await call("/sessions", 2)).json()).stations, ["12"]);
+  assert.equal((await call("/bios/sessions", 3)).status, 403);
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).bios, ["aabbccddeeff"]);
+  assert.equal((await call("/bios/not-a-mac/connect", 2, "POST")).status, 400);
+  assert.equal((await call("/bios/000000000000/connect", 2, "POST")).status, 404);
   assert.equal((await call("/stations/12/preview", 3)).status, 403);
   assert.equal((await call("/stations/abc/preview", 2)).status, 400);
   assert.equal((await call("/stations/18/preview", 2)).status, 404);
@@ -221,6 +230,20 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   const presence = await (await call(`/leases/${grant.id}`, 2, "POST")).json();
   assert.deepEqual(presence.users, ["tech@test"]);
   assert.equal(presence.connected, true);
+  const biosResponse = await call("/bios/aabbccddeeff/connect", 2, "POST");
+  assert.equal(biosResponse.status, 200);
+  const biosGrant = await biosResponse.json();
+  const biosCookie = biosResponse.headers.get("set-cookie").split(";")[0];
+  assert.equal((await call(`/views/${biosGrant.id}/`, null, "GET", { cookie: biosCookie })).status, 200);
+  assert.equal(forwardedPath, "/api/v1/terminals/bios/aabbccddeeff/");
+  const biosWs = await upgrade(port, biosCookie, "https://backend.test", biosGrant.id);
+  assert.equal(biosWs.res.statusCode, 101);
+  assert.equal(forwardedPath, "/api/v1/terminals/bios/aabbccddeeff/ws");
+  assert.equal(terminals.grants.get(biosGrant.id).targetPath, "/api/v1/terminals/bios/aabbccddeeff");
+  assert.deepEqual((await (await call(`/leases/${grant.id}`, 2, "POST")).json()).users, ["tech@test"],
+    "station presence is separate from BIOS presence");
+  biosWs.socket.destroy();
+  await call(`/leases/${biosGrant.id}`, 2, "DELETE");
   assert.equal((await call(`/leases/${grant.id}`, 1, "POST")).status, 403);
   await call(`/leases/${grant.id}`, 1, "DELETE");
   assert.equal(

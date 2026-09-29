@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { button, iconButton, TerminalIcon } from "./terminalControls";
 
-export default function TerminalPanel({ station, request, onClose, dragHandle, singleView = false }) {
+export default function TerminalPanel({ station, biosMac, request, onClose, dragHandle, singleView = false }) {
+  const isBios = !!biosMac;
+  const terminalName = isBios ? `BIOS ${biosMac.toUpperCase()}` : `Station ${station.station_name}`;
+  const connectPath = isBios ? `/bios/${biosMac}/connect` : `/stations/${station.station_name}/connect`;
   const [controlled, onControl] = useState(false);
   const panel = useRef(null);
   const viewMenu = useRef(null);
@@ -71,7 +74,7 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
     setError("");
     setUsers([]);
     setConnected(false);
-    request(`/stations/${station.station_name}/connect`, "POST")
+    request(connectPath, "POST")
       .then((result) => {
         lease = result.id;
         if (disposed) {
@@ -119,7 +122,7 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
       clearInterval(timer);
       release();
     };
-  }, [station.station_name, request, attempt]);
+  }, [connectPath, request, attempt]);
   const status = error
       ? { label: "Failed", style: "bg-red-100 text-red-700" }
       : connected
@@ -139,12 +142,12 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
           {...(!fullScreen ? dragHandle?.attributes : {})}
           {...(!fullScreen ? dragHandle?.listeners : {})}
           ref={dragHandle?.setActivatorNodeRef}
-          aria-label={!fullScreen ? `Move Station ${station.station_name}` : undefined}
-          title={!fullScreen ? "Drag to move terminal" : undefined}
-          className={`min-w-0 flex-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${!fullScreen ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
+          aria-label={!fullScreen && !isBios ? `Move ${terminalName}` : undefined}
+          title={!fullScreen && !isBios ? "Drag to move terminal" : undefined}
+          className={`min-w-0 flex-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${!fullScreen && !isBios ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
         >
           <div className="flex flex-wrap items-center gap-2">
-            <p className="flex items-center gap-2 text-sm font-semibold text-gray-800"><TerminalIcon />Station {station.station_name}</p>
+            <p className="flex items-center gap-2 text-sm font-semibold text-gray-800"><TerminalIcon />{terminalName}</p>
             <span
               role="status"
               className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${status.style}`}
@@ -159,7 +162,7 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
               <span className="text-xs text-gray-500">New session</span>
             )}
           </div>
-          <p className="mt-1">
+          {!isBios && <p className="mt-1">
             <span
               className={`inline-block rounded px-2 py-0.5 text-xs ${
                 station.system_service_tag
@@ -169,11 +172,13 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
             >
               {station.system_service_tag || "No System Attached"}
             </span>
-          </p>
+          </p>}
         </div>
         <div className="flex items-center gap-1">
           {fullScreen ? <button className={`${button} inline-flex items-center gap-2`} onClick={toggleFullscreen}><TerminalIcon kind="fullscreen" />Close full screen</button> : <>
-          {singleView ? <a
+          {isBios ? <button className={`${button} inline-flex items-center gap-2`} onClick={toggleFullscreen}>
+            <TerminalIcon kind="fullscreen" />Full screen
+          </button> : singleView ? <a
             className={`${button} inline-flex items-center gap-2`}
             href={`/stations?terminal=${station.station_name}&popout=1`}
             target="_blank" rel="noopener noreferrer"
@@ -208,7 +213,7 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
             </div>
           </details>}
           <button
-            aria-label={`Close Station ${station.station_name}`}
+            aria-label={`Close ${terminalName}`}
             className={iconButton}
             title="Close terminal"
             onClick={onClose}
@@ -235,14 +240,14 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
             ref={terminalFrame}
             tabIndex={controlled ? 0 : -1}
             className={`min-h-0 w-full flex-1 border-0 ${controlled ? "" : "pointer-events-none"}`}
-            title={`Station ${station.station_name} terminal`}
+            title={`${terminalName} terminal`}
             src={connection.url}
             allow="clipboard-read; clipboard-write"
           />
           {!controlled && (
             <button
               className="absolute inset-0 flex items-end justify-center pb-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
-              aria-label={`Control Station ${station.station_name} terminal`}
+              aria-label={`Control ${terminalName} terminal`}
               onClick={() => onControl(true)}
             >
               <span className="rounded-md border border-gray-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm">Click to control terminal</span>
@@ -268,4 +273,3 @@ export default function TerminalPanel({ station, request, onClose, dragHandle, s
     </section>
   );
 }
-

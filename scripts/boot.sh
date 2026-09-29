@@ -75,7 +75,7 @@ Options:
   -c CONFIG
       Config of the unit. Field mode only supports ${FIELD_DEFAULT_CONFIG:-the configured default}.
   -l, --live
-      Split the current station tmux pane and show BIOS serial on the right.
+      Start a separate BIOS serial session while booting.
   -h, --help
       Show this help and exit.
 
@@ -108,7 +108,7 @@ Options:
   -c CONFIG
       Config of the unit, needed when booting via MAC address.
   -l, --live
-      Split the current station tmux pane and show BIOS serial on the right.
+      Start a separate BIOS serial session while booting.
   -h, --help
       Show this help and exit.
 
@@ -126,8 +126,8 @@ Mode rules:
   - -t/--tag cannot be used with manual options.
 
 Live mode:
-  Keeps the current station pane on the left, opens BIOS serial on the right,
-  and switches to the bs_<BMC_MAC> session when boot completes successfully.
+  Keeps boot progress in the station session and starts a separate
+  bs_<BMC_MAC> session for the BIOS serial view.
 
 Examples:
   ./boot.sh
@@ -438,8 +438,8 @@ report_live_status() {
   if [[ "$boot_status" -eq 0 ]]; then
     echo "Boot status: complete"
     bios_session_name="bs_${BMC_MAC}"
-    if tmux has-session -t "$bios_session_name" 2>/dev/null; then
-      tmux switch-client -t "$bios_session_name"
+    if tmux has-session -t "=$bios_session_name" 2>/dev/null; then
+      echo "BIOS serial session $bios_session_name is available in Stations → Terminals → BIOS serial."
     else
       echo "INFO - No BIOS session found; staying in $STATION_SESSION_NAME."
     fi
@@ -562,7 +562,7 @@ run_live_bios_child() {
 
   echo
   echo "==> Opening BIOS serial session for BMC $BMC_MAC"
-  exec env -u TMUX WISTRON_MODE="$WISTRON_MODE" FIELD_STATIONS_FILE="$FIELD_STATIONS_FILE" FIELD_DEFAULT_CONFIG="${FIELD_DEFAULT_CONFIG:-}" SERVER_LOCATION="${SERVER_LOCATION:-}" "$script_dir/bios_serial.sh" -m "$BMC_MAC"
+  exec env WISTRON_MODE="$WISTRON_MODE" FIELD_STATIONS_FILE="$FIELD_STATIONS_FILE" FIELD_DEFAULT_CONFIG="${FIELD_DEFAULT_CONFIG:-}" SERVER_LOCATION="${SERVER_LOCATION:-}" "$script_dir/bios_serial.sh" -m "$BMC_MAC"
 }
 
 write_grub_config() {

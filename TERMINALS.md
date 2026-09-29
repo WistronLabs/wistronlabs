@@ -4,6 +4,8 @@
 
 - Stations → **Terminals**, or **Open Terminal** on a station row.
 - Shared typing into the existing `falab` tmux session `stn_<station number>`.
+- BIOS serial uses a separate `bs_<BMC MAC>` tmux session. Run `bios_serial.sh` in a station terminal, then choose its MAC from the **BIOS serial** selector. The BIOS panel opens beside the station workspace on wide screens and below it on smaller screens. Opening or closing the BIOS panel does not change the station session.
+- Terminal Access permits opening any active BIOS session on that site, just as it permits opening any station terminal on that site. The website only lists existing BIOS sessions and never creates one from a BMC MAC.
 - Create the session if missing. Opening a terminal never starts a test automatically.
 - One strip of terminal views. Each view has its own Single, Side by side, Stacked, or Four panels layout. Stacked and four-panel views have double height; dividers resize only the current view.
 - **+** creates an empty view. Add stations in its empty panels. Drag terminal headers to move into empty panels or swap occupied ones; hover another view tab to reveal it, or drop onto **+** to create a one-panel view. Hidden views disconnect; tmux continues running.
@@ -163,6 +165,8 @@ The frontend Proxy Host needs no new terminal route because it embeds the termin
 6. Remove a non-admin user's Terminal Access and save. Verify their active browser terminal disconnects within about 10 seconds.
 7. Log out and verify pop-out browser terminals disconnect. Existing ordinary SSH sessions remain unaffected.
 8. Verify a user without Terminal Access cannot open the terminal, including by copying its URL.
+9. In a station terminal, run `./bios_serial.sh -m 001a2b3c4d5e` with a real BMC MAC. The station prompt should report `bs_001a2b3c4d5e` without an attach error. Select that MAC under **BIOS serial** and confirm the separate panel is interactive while `tmux display-message -p '#S'` in the station still reports its `stn_` session.
+10. Close the BIOS panel and confirm `tmux has-session -t '=bs_001a2b3c4d5e'` still succeeds. Reopen the same MAC and confirm the existing serial session is reused.
 
 A sudo prompt behaves as in a normal shared terminal. The website does not store or automatically enter the sudo password.
 
@@ -173,7 +177,7 @@ A sudo prompt behaves as in a normal shared terminal. The website does not store
 - **Connecting / disconnected with a working HTML frame:** inspect browser Network for the terminal `/ws` request. It should upgrade to **101**. Check NPM Websockets Support, forwarded paths, cookies and origin settings.
 - **Frame refused:** check frontend `frame-src`, backend `frame-ancestors` and proxy-injected X-Frame-Options.
 - **Unexpected session:** the service uses `falab`'s default tmux socket. Confirm that regular users are not using a custom `tmux -L` or `-S` socket.
-- **Terminal size differs across viewers:** tmux uses the largest attached viewport. Smaller panels may display only part of that shared terminal; maximize the panel when needed. Website splits and tmux's own BIOS/test splits are separate.
+- **Terminal size differs across viewers:** tmux uses the largest attached viewport. Smaller panels may display only part of that shared terminal; maximize the panel when needed. The station and BIOS panels use separate tmux sessions.
 - **Browser resumes after sleep:** use Reconnect. Expired leases do not silently regain access.
 
 ## Development verification
@@ -185,6 +189,8 @@ npm run build --prefix website_frontend
 ```
 
 The gateway tests exercise authenticated HTTP and WebSocket relays over an actual Unix socket, including logout and permission revocation. The host tests use substitute tmux/ttyd executables to verify session/process lifecycle. A live Ubuntu/ttyd/NPM smoke test is still required after setup.
+
+The BIOS view needs the updated station scripts on each testing host, the updated frontend and backend, and a reinstall of `terminal_host/server.cjs` using `sudo bash terminal_host/install.sh --node "$(command -v node)"`. The host installer restarts ttyd connections but leaves tmux sessions running. Update the development and production backend if both serve terminal views from the same host.
 
 References: [ttyd reverse proxy](https://github.com/tsl0922/ttyd/wiki/Nginx-reverse-proxy), [ttyd client options](https://github.com/tsl0922/ttyd/wiki/Client-Options), [NodeSource installation](https://github.com/nodesource/distributions).
 
