@@ -39,6 +39,7 @@ const partsRouter = require("./routes/parts");
 const partCategoriesRouter = require("./routes/partCategories");
 const tagsRouter = require("./routes/tags");
 const systemTagsRouter = require("./routes/systemTags");
+const printingRouter = require("./routes/printing");
 
 const publicAuthPaths = new Set([
   '/auth/login', '/auth/refresh', '/auth/logout',
@@ -63,6 +64,7 @@ app.use("/api/v1/part-items", partItemsRouter);
 app.use("/api/v1/parts", partsRouter);
 app.use("/api/v1/part-categories", partCategoriesRouter);
 app.use("/api/v1/tags", tagsRouter);
+app.use("/api/v1/printing", printingRouter);
 app.use("/api/v1/systems", systemTagsRouter);
 
 const { createTerminals } = require("./services/terminals");

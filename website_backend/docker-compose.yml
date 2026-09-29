@@ -18,6 +18,7 @@ services:
       - ./env/secrets.env
     environment:
       - L10_LOGS_ROOT=/app/l10_logs
+      - CUPS_SERVER=/run/cups/cups.sock
     ports:
       - "${APP_HOST_PORT}:3000"
     depends_on:
@@ -25,6 +26,8 @@ services:
     volumes:
       - "/var/www/html/l10_logs:/app/l10_logs"
       - "/run/wistron-terminals:/run/wistron-terminals:ro"
+      - "/run/cups:/run/cups"
+      - "/etc/cups/ppd:/etc/cups/ppd:ro"
     command: npm start
 
 volumes:

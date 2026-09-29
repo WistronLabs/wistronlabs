@@ -11,6 +11,7 @@ import FactoriesSection from "../components/admin/sections/FactoriesSection";
 import PartsSection from "../components/admin/sections/PartsSection";
 import PartCategoriesSection from "../components/admin/sections/PartCategoriesSection";
 import DellCustomersSection from "../components/admin/sections/DellCustomersSection";
+import PrintingSection from "../components/admin/sections/PrintingSection";
 
 function AdminPage() {
   const [tab, setTab] = useState("users");
@@ -1608,6 +1609,7 @@ function AdminPage() {
         <h1 className="text-3xl font-semibold text-gray-800">Admin</h1>
 
         <AdminTabs tab={tab} setTab={setTab} isSuperAdmin={!!me?.isSuperAdmin} />
+        {tab === "printing" && <PrintingSection />}
 
         {tab === 'account-access' && me?.isSuperAdmin && <AccountAccessSection users={users} />}
 

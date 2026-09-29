@@ -6,6 +6,7 @@ import { pdf } from "@react-pdf/renderer";
 import SystemRMALabel from "../components/SystemRMALabel.jsx";
 import { enrichPalletWithBarcodes } from "../utils/enrichPalletWithBarcodes";
 import PalletPaper from "../components/PalletPaper";
+import { createPrintPreview, openPrintPreview } from "../utils/printPreview.js";
 import useApi from "../hooks/useApi";
 import useBodyScrollLock from "../hooks/useBodyScrollLock.jsx";
 import SearchContainerSS from "../components/SearchContainerSS.jsx";
@@ -763,7 +764,7 @@ export default function ShippingPage() {
           const palletBlob = await pdf(
             <PalletPaper pallet={enriched} />,
           ).toBlob();
-          const pdfUrl = URL.createObjectURL(palletBlob);
+          const previewUrl = await createPrintPreview(palletBlob, "pallet_sheet", `${pallet.pallet_number} Pallet Paper`);
 
           return {
             ...pallet,
@@ -773,7 +774,7 @@ export default function ShippingPage() {
             doa_number_title: "DOA Number",
             created_at_title: "Created On",
             released_at_title: "Released On",
-            href: pdfUrl,
+            href: previewUrl,
           };
         } catch (err) {
           console.error(
@@ -1481,7 +1482,7 @@ export default function ShippingPage() {
         const labelBlob = await pdf(
           <SystemRMALabel systems={systemRMALabelData} />,
         ).toBlob();
-        window.open(URL.createObjectURL(labelBlob));
+        await openPrintPreview(labelBlob, "rma_label", "RMA Labels");
       }
 
       for (const release of releaseResults) {
@@ -1527,7 +1528,7 @@ export default function ShippingPage() {
         const palletBlob = await pdf(
           <PalletPaper pallet={enriched} />,
         ).toBlob();
-        window.open(URL.createObjectURL(palletBlob));
+        await openPrintPreview(palletBlob, "pallet_sheet", `${palletData.pallet_number} Pallet Paper`);
       }
     } catch (err) {
       showToast(`Failed to generate PDF: ${err.message}`, "error");

@@ -42,6 +42,8 @@ http://[location].wistronlabs.com
 
 Web terminal installation and configuration: [Station web terminals](TERMINALS.md).
 
+Server printer setup and website print profiles: [Direct printing](PRINTING.md).
+
 #### Station Statuses
 ![Stations Screenshot](https://github.com/giovannirleon/wistronlabs/blob/main/media/station_statuses.png)
 

@@ -7,10 +7,11 @@ function AdminTabs({ tab, setTab, isSuperAdmin }) {
     { key: "factories", label: "Factories" },
     { key: "parts", label: "Parts" },
     { key: "part-categories", label: "Part Categories" },
+    { key: "printing", label: "Printing" },
   ];
 
   return (
-    <div className="flex gap-4 mt-2 border-b border-gray-200">
+    <div className="flex flex-wrap gap-4 mt-2 border-b border-gray-200">
       {tabs.map((t) => (
         <button
           key={t.key}

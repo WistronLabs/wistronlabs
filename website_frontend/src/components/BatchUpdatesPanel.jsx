@@ -6,6 +6,7 @@ import useApi from "../hooks/useApi";
 import BatchL11LogActions from "./BatchL11LogActions.jsx";
 import { MRB_APPROVAL_ACCEPT } from "./MrbApprovalPanel.jsx";
 import SystemRMALabel from "./SystemRMALabel.jsx";
+import { openPrintPreview } from "../utils/printPreview.js";
 import useL11ScanJobs, { isActiveScan } from "../hooks/useL11ScanJobs.js";
 import { submitBatchUpdate } from "../utils/submitBatchUpdate.js";
 
@@ -201,11 +202,6 @@ export default function BatchUpdatesPanel({ token }) {
     finally { setBusy(false); setProgress(""); }
   }
   async function downloadLabels() {
-    const preview = window.open("about:blank", "_blank");
-    if (!preview) { setError("Allow pop-ups to open RMA labels."); return; }
-    preview.opener = null;
-    preview.document.title = "Preparing RMA labels";
-    preview.document.body.textContent = "Preparing RMA labels…";
     setBusy(true); setError(""); setProgress("Preparing RMA labels…");
     try {
       const systems = [];
@@ -215,10 +211,8 @@ export default function BatchUpdatesPanel({ token }) {
         systems.push({ ...system, ...pallet, service_tag: tag, location: "RMA", url: `${window.location.origin}/${tag}` });
       }
       const blob = await pdf(<SystemRMALabel systems={systems} />).toBlob();
-      const url = URL.createObjectURL(blob);
-      preview.location.replace(url);
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-    } catch (err) { preview.close(); setError(err.body?.error || err.message); }
+      await openPrintPreview(blob, "rma_label", "Batch RMA Labels");
+    } catch (err) { setError(err.body?.error || err.message); }
     finally { setBusy(false); setProgress(""); }
   }
 

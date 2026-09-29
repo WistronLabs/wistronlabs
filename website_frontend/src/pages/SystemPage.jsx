@@ -22,6 +22,7 @@ import SystemPDFLabel from "../components/SystemPDFLabel.jsx";
 import SystemRMALabel from "../components/SystemRMALabel.jsx";
 import SystemL10PassLabel from "../components/SystemL10PassLabel.jsx";
 import SystemPendingPartsLabel from "../components/SystemPendingPartsLabel.jsx";
+import { openPrintPreview } from "../utils/printPreview.js";
 
 import Station from "../components/Station.jsx";
 
@@ -2392,8 +2393,7 @@ function SystemPage() {
           title={movingToPendingMrb ? PENDING_MRB_NAME : PENDING_PARTS_NAME}
         />,
       ).toBlob();
-      const url = URL.createObjectURL(blob);
-      window.open(url);
+      await openPrintPreview(blob, "pending_parts", `${system.service_tag} Pending Parts`);
     }
 
     // // Hard rule for L11: both category and sub-category must be NTF
@@ -2847,8 +2847,7 @@ function SystemPage() {
             ]}
           />,
         ).toBlob();
-        const url = URL.createObjectURL(blob);
-        window.open(url);
+        await openPrintPreview(blob, "l10_pass", `${system.service_tag} L10 Pass`);
       }
 
       // If RMA destination, print RMA label (prefer backend response)
@@ -2891,8 +2890,7 @@ function SystemPage() {
             />,
           ).toBlob();
 
-          const url = URL.createObjectURL(blob);
-          window.open(url);
+          await openPrintPreview(blob, "rma_label", `${system.service_tag} RMA Label`);
         } else {
           showToast(
             "Moved to RMA, but pallet number isn’t available yet. Check backend logs.",
@@ -2957,8 +2955,7 @@ function SystemPage() {
             ]}
           />,
         ).toBlob();
-        const url = URL.createObjectURL(blob);
-        window.open(url);
+        await openPrintPreview(blob, "l10_pass", `${system.service_tag} L10 Pass`);
         return;
       }
 
@@ -2977,8 +2974,7 @@ function SystemPage() {
           ]}
         />,
       ).toBlob();
-      const url = URL.createObjectURL(blob);
-      window.open(url);
+      await openPrintPreview(blob, "system_id", `${system.service_tag} System ID`);
       return;
     }
 
@@ -3025,8 +3021,7 @@ function SystemPage() {
             }
           />,
         ).toBlob();
-        const url = URL.createObjectURL(blob);
-        window.open(url);
+        await openPrintPreview(blob, "pending_parts", `${system.service_tag} Pending Parts`);
         return;
       }
       // else: fall through to System ID / RMA flow
@@ -3075,8 +3070,7 @@ function SystemPage() {
       ),
     ).toBlob();
 
-    const url = URL.createObjectURL(blob);
-    window.open(url);
+    await openPrintPreview(blob, labelType === "id" ? "system_id" : "rma_label", `${system.service_tag} ${labelType === "id" ? "System ID" : "RMA Label"}`);
   };
 
   // Fetch stations every second
