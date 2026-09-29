@@ -72,7 +72,7 @@ function Header() {
         {/* Left: logo + title */}
         <div className="flex items-center gap-2">
           <img
-            src="wistron_logo.svg"
+            src="/wistron_logo.svg"
             alt="Logo"
             className="h-[25px] md:h-[30px]"
           />

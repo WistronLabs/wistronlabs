@@ -1639,7 +1639,8 @@ function TrackingPage() {
                   dateFormat="MM/dd/yyyy"
                   fixedHeight
                   className="border rounded p-1 text-xs"
-                  popperPlacement="bottom-start"
+                  popperPlacement="top-end"
+                  portalId="tracking-chart-datepicker"
                   showPopperArrow={false}
                 />
               </label>
@@ -1667,7 +1668,8 @@ function TrackingPage() {
                   dateFormat="MM/dd/yyyy"
                   fixedHeight
                   className="border rounded p-1 text-xs"
-                  popperPlacement="bottom-start"
+                  popperPlacement="top-end"
+                  portalId="tracking-chart-datepicker"
                   showPopperArrow={false}
                 />
               </label>

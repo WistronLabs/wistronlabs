@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Select from "react-select";
 import useApi from "../../../hooks/useApi.jsx";
 import AdminActionBar from "../AdminActionBar.jsx";
+import { matchPrintMedia } from "../../../utils/matchPrintMedia.js";
 
 const fieldClass = "mt-1.5 w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-200";
 const labelClass = "block text-sm font-medium text-gray-700";
@@ -121,10 +122,19 @@ export default function PrintingSection() {
 
   function updatePrinter(id, field, value) {
     setMessage("");
-    setSettings((previous) => ({
-      ...previous,
-      printers: previous.printers.map((printer) => printer.id === id ? { ...printer, [field]: value } : printer),
-    }));
+    setError("");
+    setSettings((previous) => {
+      const profiles = field === "queue" ? Object.fromEntries(Object.entries(previous.profiles).map(([kind, profile]) => {
+        if (profile.printer !== id) return [kind, profile];
+        const matched = matchPrintMedia(profile.media, mediaByQueue[value] || []);
+        return [kind, matched ? { ...profile, media: matched } : profile];
+      })) : previous.profiles;
+      return {
+        ...previous,
+        printers: previous.printers.map((printer) => printer.id === id ? { ...printer, [field]: value } : printer),
+        profiles,
+      };
+    });
   }
 
   function addPrinter() {
@@ -154,10 +164,16 @@ export default function PrintingSection() {
 
   function setProfile(kind, field, value) {
     setMessage("");
-    setSettings((previous) => ({
-      ...previous,
-      profiles: { ...previous.profiles, [kind]: { ...previous.profiles[kind], [field]: value } },
-    }));
+    setError("");
+    setSettings((previous) => {
+      const profile = { ...previous.profiles[kind], [field]: value };
+      if (field === "printer") {
+        const queue = previous.printers.find((printer) => printer.id === value)?.queue;
+        const matched = matchPrintMedia(profile.media, mediaByQueue[queue] || []);
+        if (matched) profile.media = matched;
+      }
+      return { ...previous, profiles: { ...previous.profiles, [kind]: profile } };
+    });
   }
 
   function discard() {
@@ -169,6 +185,16 @@ export default function PrintingSection() {
   async function save(event) {
     event.preventDefault();
     if (!hasChanges || busy) return;
+    const invalid = Object.entries(settings.profiles).find(([, profile]) => {
+      const queue = settings.printers.find((printer) => printer.id === profile.printer)?.queue;
+      const supported = mediaByQueue[queue] || [];
+      return queue && supported.length && !supported.includes(profile.media);
+    });
+    if (invalid) {
+      setError(`Choose a supported paper / label size for ${settings.documents[invalid[0]].name} before saving.`);
+      setMessage("");
+      return;
+    }
     setBusy(true);
     setError("");
     setMessage("");
@@ -311,8 +337,7 @@ export default function PrintingSection() {
       </div>
     </section>
 
-    {error && <p role="alert" className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</p>}
-    {message && <p role="status" className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{message}</p>}
-    <AdminActionBar onDiscard={discard} saving={busy} hasChanges={hasChanges} saveLabel="Save printer settings" />
+    <AdminActionBar onDiscard={discard} saving={busy} hasChanges={hasChanges} saveLabel="Save printer settings"
+      error={error} message={message} />
   </form>;
 }
