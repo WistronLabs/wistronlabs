@@ -23,6 +23,8 @@ const terminalSelectStyles = {
       };
 
 const layoutOptions = Object.entries(terminalModes).map(([value, { label }]) => ({ value, label }));
+const isBios = (id) => id?.startsWith("bios:");
+const terminalLabel = (id) => isBios(id) ? `BIOS ${id.slice(5).toUpperCase()}` : `Station ${id}`;
 
 function LayoutIcon({ mode }) {
   return <svg className="h-4 w-4 shrink-0" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
@@ -34,10 +36,10 @@ function LayoutIcon({ mode }) {
 
 function viewLabel(view) {
   if (view.name) return view.name;
-  const stations = view.slots.filter(Boolean);
-  return stations.length === 0 ? "New view"
-    : stations.length === 1 ? `Station ${stations[0]}`
-      : stations.length === 2 ? `Stations ${stations.join(", ")}` : `${stations.length} stations`;
+  const terminals = view.slots.filter(Boolean);
+  return terminals.length === 0 ? "New view"
+    : terminals.length === 1 ? terminalLabel(terminals[0])
+      : terminals.length === 2 ? terminals.map(terminalLabel).join(" + ") : `${terminals.length} terminals`;
 }
 
 function ViewTab({ view, selected, previewed, onSelect, onClose, onNavigate, onRename }) {
@@ -56,7 +58,7 @@ function ViewTab({ view, selected, previewed, onSelect, onClose, onNavigate, onR
       {view.name && <button type="button" className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100" onClick={() => { onRename(""); setEditing(false); }}>Reset to default</button>}
     </form> : <>
     <button role="tab" aria-selected={selected} tabIndex={selected ? 0 : -1}
-      aria-label={`View: ${label}`} title={`${terminalModes[view.mode].label}${view.slots.some(Boolean) ? ` · Stations ${view.slots.filter(Boolean).join(", ")}` : ""}`}
+      aria-label={`View: ${label}`} title={`${terminalModes[view.mode].label}${view.slots.some(Boolean) ? ` · ${view.slots.filter(Boolean).map(terminalLabel).join(", ")}` : ""}`}
       className="flex items-center gap-2 rounded-tl-md px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500"
       onClick={onSelect} onDoubleClick={startRename} onKeyDown={onNavigate}>
       <LayoutIcon mode={view.mode} /><span className="max-w-56 truncate">{label}</span>
@@ -79,56 +81,76 @@ function NewViewButton({ onClick, disabled }) {
     className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border text-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-40 ${isOver ? "border-blue-500 bg-blue-100 text-blue-700" : "border-gray-200 bg-white text-gray-500 hover:bg-gray-50"}`}>+</button>;
 }
 
-function EmptyPanel({ index, stations, layout, onChoose }) {
+function EmptyPanel({ index, stations, biosSessions, biosError, layout, onChoose }) {
   const used = new Set(layout.groups.flatMap((g) => g.slots).filter(Boolean));
+  const options = [
+    ...stations.filter((s) => !used.has(String(s.station_name)))
+      .sort((a, b) => String(a.station_name).localeCompare(String(b.station_name), undefined, { numeric: true }))
+      .map((s) => ({ value: String(s.station_name), label: `Station ${s.station_name}${s.system_service_tag ? ` ${s.system_service_tag}` : ""}`, station: s })),
+    ...biosSessions.filter((mac) => !used.has(`bios:${mac}`))
+      .map((mac) => ({ value: `bios:${mac}`, label: `BIOS ${mac.toUpperCase()}` })),
+  ];
   return <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6">
     <TerminalIcon className="h-6 w-6 text-gray-400" />
     <Select
-      aria-label={`Panel ${index + 1} station`}
-      instanceId={`terminal-station-${index}`}
+      aria-label={`Panel ${index + 1} terminal`}
+      instanceId={`terminal-select-${index}`}
       className="w-full max-w-sm text-sm"
       classNamePrefix="terminal-station-select"
-      placeholder="Search stations…"
+      placeholder="Search stations or BIOS sessions…"
       value={null}
       isSearchable
       isDisabled={used.size >= 32}
       maxMenuHeight={240}
       menuPlacement="auto"
-      noOptionsMessage={() => "No available stations"}
-      options={stations.filter((s) => !used.has(String(s.station_name)))
-        .sort((a, b) => String(a.station_name).localeCompare(String(b.station_name), undefined, { numeric: true }))
-        .map((s) => ({ value: String(s.station_name), label: `Station ${s.station_name}${s.system_service_tag ? ` ${s.system_service_tag}` : ""}`, station: s }))}
+      noOptionsMessage={() => "No available terminals"}
+      options={options}
       onChange={(option) => { if (option) onChoose(option.value); }}
-      formatOptionLabel={({ station }) => <div className="flex items-center justify-between gap-3">
-        <span className="font-medium">Station {station.station_name}</span>
-        <span className="truncate text-xs text-gray-500">{station.system_service_tag || "No System Attached"}</span>
+      formatOptionLabel={({ station, label }) => <div className="flex items-center justify-between gap-3">
+        <span className="font-medium">{station ? `Station ${station.station_name}` : label}</span>
+        {station && <span className="truncate text-xs text-gray-500">{station.system_service_tag || "No System Attached"}</span>}
       </div>}
       styles={terminalSelectStyles}
     />
+    {biosError && <p role="alert" className="text-xs text-red-700">BIOS sessions: {biosError}</p>}
+    <p className="text-center text-xs text-gray-500">Run bios_serial.sh in a station to start a BIOS session.</p>
   </div>;
 }
 
-function PanelSlot({ view, index, station, visible, columns, dragging, stations, layout, request, onClose, onChoose }) {
-  const id = station ? `station:${station.station_name}` : `empty:${view.id}:${index}`;
-  const data = { group: view.id, index, station: station ? String(station.station_name) : null };
-  const draggable = useDraggable({ id, data, disabled: !station || !visible });
+function PanelSlot({ view, index, terminal, station, biosSessions, biosLoaded, biosError, visible, columns, dragging, stations, layout, request, onClose, onChoose }) {
+  const id = terminal ? `terminal:${terminal}` : `empty:${view.id}:${index}`;
+  const data = { group: view.id, index, terminal };
+  const draggable = useDraggable({ id, data, disabled: !terminal || !visible });
   const droppable = useDroppable({ id, data, disabled: !visible });
   // Keep drag registrations mounted while hovering another view. Hidden panels
   // disconnect; the drag overlay remains available until the user drops/cancels.
   return <div hidden={!visible} ref={(node) => { draggable.setNodeRef(node); droppable.setNodeRef(node); }}
     className={`min-h-0 min-w-0 rounded-lg ${dragging ? "pointer-events-none" : ""} ${draggable.isDragging ? "opacity-40" : ""} ${droppable.isOver ? "ring-2 ring-blue-400" : ""}`}
     style={{ gridColumn: columns ? index % 2 + 1 : 1, gridRow: columns ? Math.floor(index / 2) + 1 : index + 1 }}>
-    {visible && (station ? <TerminalPanel station={station} request={request} onClose={onClose} dragHandle={draggable} singleView={view.mode === "single"} />
-      : <EmptyPanel index={index} stations={stations} layout={layout} onChoose={onChoose} />)}
+    {visible && (isBios(terminal) && biosLoaded && !biosError && !biosSessions.includes(terminal.slice(5))
+      ? <div className="flex h-full flex-col items-center justify-center gap-3 rounded-lg border border-gray-200 bg-gray-50 p-6 text-sm text-gray-600">
+          <p>{terminalLabel(terminal)} is no longer active.</p>
+          <button className={button} onClick={onClose}>Close panel</button>
+        </div>
+      : isBios(terminal) && !biosLoaded
+      ? <div className="flex h-full flex-col items-center justify-center gap-3 rounded-lg border border-gray-200 bg-gray-50 p-6 text-sm text-gray-600">
+          <p>{biosError || "Loading BIOS sessions…"}</p>
+          <button className={button} onClick={onClose}>Close panel</button>
+        </div>
+      : terminal ? <TerminalPanel station={station} biosMac={isBios(terminal) ? terminal.slice(5) : undefined} request={request} onClose={onClose} dragHandle={draggable} singleView={view.mode === "single"} />
+      : <EmptyPanel index={index} stations={stations} biosSessions={biosSessions} biosError={biosError} layout={layout} onChoose={onChoose} />)}
   </div>;
 }
 
 export default function TerminalWorkspace({ stations, initialStation, popout }) {
   const { user } = useContext(AuthContext);
   const request = useTerminalApi();
+  const [biosSessions, setBiosSessions] = useState([]);
+  const [biosLoaded, setBiosLoaded] = useState(false);
+  const [biosError, setBiosError] = useState("");
   const key = `terminal-layout:${import.meta.env.VITE_LOCATION}:${user?.id}${popout ? `:popout:${initialStation}` : ""}`;
   const [layout, setLayout] = useState(() => loadTerminalLayout(key, initialStation));
-  const [draggedStation, setDraggedStation] = useState(null);
+  const [draggedTerminal, setDraggedTerminal] = useState(null);
   const [previewView, setPreviewView] = useState(null);
   const hoverTimer = useRef(null);
   const sensors = useSensors(
@@ -142,6 +164,15 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
   const frame = useRef(null);
   const tabs = useRef(null);
   useEffect(() => {
+    let active = true;
+    const refresh = () => request("/bios/sessions")
+      .then((data) => { if (active) { setBiosSessions(data.bios || []); setBiosLoaded(true); setBiosError(""); } })
+      .catch((error) => { if (active) setBiosError(error.message); });
+    refresh();
+    const timer = setInterval(refresh, 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [request]);
+  useEffect(() => {
     try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* Storage may be disabled. */ }
   }, [key, layout]);
   useEffect(() => {
@@ -153,18 +184,19 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
     tabs.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [layout.activeGroup]);
   const known = new Map(stations.map((s) => [String(s.station_name), s]));
-  const groups = layout.groups.map((g) => ({ ...g, slots: g.slots.map((id) => known.has(id) ? id : null) }));
+  const available = (id) => isBios(id) || known.has(id);
+  const groups = layout.groups.map((g) => ({ ...g, slots: g.slots.map((id) => available(id) ? id : null) }));
   const current = groups.find((g) => g.id === (previewView || layout.activeGroup)) || groups[0];
   const columns = current?.mode === "columns" || current?.mode === "grid";
   const rows = current?.mode === "rows" || current?.mode === "grid";
   function change(operation) {
-    setLayout((previous) => normalizeTerminalLayout(operation({ ...previous, groups: previous.groups.map((g) => ({ ...g, slots: g.slots.map((id) => known.has(id) ? id : null) })) })));
+    setLayout((previous) => normalizeTerminalLayout(operation({ ...previous, groups: previous.groups.map((g) => ({ ...g, slots: g.slots.map((id) => available(id) ? id : null) })) })));
   }
   const selectView = (id) => change((state) => ({ ...state, activeGroup: id }));
-  const place = (station, viewId, index) => change((state) => placeTerminal(state, station, viewId, index));
+  const place = (terminal, viewId, index) => change((state) => placeTerminal(state, terminal, viewId, index));
   function finishDrag() {
     clearTimeout(hoverTimer.current);
-    setDraggedStation(null);
+    setDraggedTerminal(null);
     setPreviewView(null);
   }
   function resize(event, axis) {
@@ -192,7 +224,7 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
     <section ref={frame} className="space-y-3 bg-white [&:fullscreen]:overflow-y-auto [&:fullscreen]:p-4">
       <DndContext sensors={sensors}
         collisionDetection={(args) => args.pointerCoordinates ? pointerWithin(args) : closestCenter(args)}
-        onDragStart={({ active }) => { setDraggedStation(active.data.current?.station); setPreviewView(null); }}
+        onDragStart={({ active }) => { setDraggedTerminal(active.data.current?.terminal); setPreviewView(null); }}
         onDragOver={({ over }) => {
           clearTimeout(hoverTimer.current);
           const targetView = over?.data.current?.view;
@@ -200,12 +232,12 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
         }}
         onDragCancel={finishDrag}
         onDragEnd={({ active, over }) => {
-          const station = draggedStation || active.data.current?.station;
+          const terminal = draggedTerminal || active.data.current?.terminal;
           const target = over?.data.current;
           finishDrag();
-          if (!station || !over || active.id === over.id) return;
-          if (target?.newView) change((state) => addSingle(state, station));
-          else if (target?.group) place(station, target.group, target.index);
+          if (!terminal || !over || active.id === over.id) return;
+          if (target?.newView) change((state) => addSingle(state, terminal));
+          else if (target?.group) place(terminal, target.group, target.index);
         }}>
         <div className="flex items-center gap-2 border-b border-gray-200 pb-1">
           <div ref={tabs} className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="Terminal views">
@@ -240,7 +272,7 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
                 </span>
               )}
               isSearchable={false}
-              isDisabled={!current || !!draggedStation}
+              isDisabled={!current || !!draggedTerminal}
               styles={terminalSelectStyles}
               onChange={(option) => { if (option && current) change((state) => changeTerminalMode(state, current.id, option.value)); }}
             />
@@ -268,13 +300,13 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
           gridTemplateColumns: columns ? `minmax(0, ${current.column}fr) minmax(0, ${100 - current.column}fr)` : "minmax(0, 1fr)",
           gridTemplateRows: rows ? `minmax(0, ${current.row}fr) minmax(0, ${100 - current.row}fr)` : "minmax(0, 1fr)",
         }}>
-          {/* Stable station keys and DOM order preserve visible iframe connections
+          {/* Stable terminal keys and DOM order preserve visible iframe connections
               when swapping panels or changing a layout. Hidden views disconnect. */}
           {groups.flatMap((view) => view.slots.map((id, index) => ({ view, id, index, key: id || `empty-${view.id}-${index}` })))
             .sort((a, b) => a.key.localeCompare(b.key)).map(({ view, id, index, key: panelKey }) => (
-              <PanelSlot key={panelKey} view={view} index={index} station={known.get(id)} visible={view.id === current.id}
-                columns={columns} dragging={dragging || !!draggedStation} stations={stations} layout={layout} request={request}
-                onClose={() => change((state) => closeTerminal(state, id))} onChoose={(station) => place(station, view.id, index)} />
+              <PanelSlot key={panelKey} view={view} index={index} terminal={id} station={known.get(id)} biosSessions={biosSessions} biosLoaded={biosLoaded} biosError={biosError} visible={view.id === current.id}
+                columns={columns} dragging={dragging || !!draggedTerminal} stations={stations} layout={layout} request={request}
+                onClose={() => change((state) => closeTerminal(state, id))} onChoose={(terminal) => place(terminal, view.id, index)} />
             ))}
             {columns && <div role="separator" aria-label="Resize terminal columns" aria-orientation="vertical" aria-valuenow={current.column} aria-valuemin={25} aria-valuemax={75} tabIndex={0}
               onKeyDown={(e) => { if (["ArrowLeft", "ArrowRight"].includes(e.key)) { e.preventDefault(); change((state) => resizeTerminalGroup(state, current.id, "column", current.column + (e.key === "ArrowRight" ? 2 : -2))); } }}
@@ -287,7 +319,7 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
               className="absolute inset-x-0 z-10 h-2 -translate-y-1/2 cursor-row-resize touch-none rounded outline-none before:absolute before:inset-x-2 before:top-1/2 before:h-0.5 before:-translate-y-1/2 before:rounded-full before:bg-gray-200 before:transition-colors hover:before:bg-blue-400 focus-visible:before:bg-blue-500 active:before:bg-blue-500"
               style={{ top: `calc(${current.row}% + ${4 - current.row * 0.08}px)` }} />}
         </div>}
-        <DragOverlay dropAnimation={null}>{draggedStation && <div className="rounded-lg border border-blue-400 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 shadow-lg">Station {draggedStation}</div>}</DragOverlay>
+        <DragOverlay dropAnimation={null}>{draggedTerminal && <div className="rounded-lg border border-blue-400 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-700 shadow-lg">{terminalLabel(draggedTerminal)}</div>}</DragOverlay>
       </DndContext>
     </section>
   );

@@ -142,9 +142,9 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
           {...(!fullScreen ? dragHandle?.attributes : {})}
           {...(!fullScreen ? dragHandle?.listeners : {})}
           ref={dragHandle?.setActivatorNodeRef}
-          aria-label={!fullScreen && !isBios ? `Move ${terminalName}` : undefined}
-          title={!fullScreen && !isBios ? "Drag to move terminal" : undefined}
-          className={`min-w-0 flex-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${!fullScreen && !isBios ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
+          aria-label={!fullScreen && dragHandle ? `Move ${terminalName}` : undefined}
+          title={!fullScreen && dragHandle ? "Drag to move terminal" : undefined}
+          className={`min-w-0 flex-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 ${!fullScreen && dragHandle ? "touch-none cursor-grab active:cursor-grabbing" : ""}`}
         >
           <div className="flex flex-wrap items-center gap-2">
             <p className="flex items-center gap-2 text-sm font-semibold text-gray-800"><TerminalIcon />{terminalName}</p>

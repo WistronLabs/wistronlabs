@@ -93,7 +93,7 @@ This script opens the system BIOS or serial console using the BMC. It is useful 
 - `-m MAC_ADDRESS` — Specify the BMC by its **MAC address**.
 - `-t SERVICE_TAG` — Specify the system by **service tag** and pull the BMC MAC from backend.
 
-From a station tmux session, the script starts or reuses a separate `bs_<BMC_MAC>` session without attaching it inside `stn_<number>`. Open it with **Stations → Terminals → BIOS serial**. From a terminal outside tmux, the script attaches to the BIOS session as before.
+From a station tmux session, the script starts or reuses a separate `bs_<BMC_MAC>` session without attaching it inside `stn_<number>`. In **Stations → Terminals**, add or select an empty panel and choose the BIOS session alongside the station terminals. From a terminal outside tmux, the script attaches to the BIOS session as before.
 
 ---
 
@@ -114,7 +114,7 @@ This script prepares PXE boot configuration, waits for BMC and host readiness, a
 - `-b, --bmc-mac BMC_MAC` — Manual BMC MAC input.
 - `-s, --sys-mac SYS_MAC` — Manual host MAC input.
 - `-c CONFIG` — Manual config value when booting by MAC.
-- `-l, --live` — Start a separate BIOS serial session while booting. Open it from the website's BIOS serial selector.
+- `-l, --live` — Start a separate BIOS serial session while booting. Choose it in a website terminal panel.
 
 ## Notes
 

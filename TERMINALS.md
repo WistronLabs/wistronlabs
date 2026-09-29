@@ -4,7 +4,7 @@
 
 - Stations → **Terminals**, or **Open Terminal** on a station row.
 - Shared typing into the existing `falab` tmux session `stn_<station number>`.
-- BIOS serial uses a separate `bs_<BMC MAC>` tmux session. Run `bios_serial.sh` in a station terminal, then choose its MAC from the **BIOS serial** selector. The BIOS panel opens beside the station workspace on wide screens and below it on smaller screens. Opening or closing the BIOS panel does not change the station session.
+- BIOS serial uses a separate `bs_<BMC MAC>` tmux session. Run `bios_serial.sh` in a station terminal, then choose its MAC in an empty **Stations → Terminals** panel. BIOS panels use the same single, side by side, stacked, four panel, and tabbed views as stations. Opening or closing a BIOS panel does not change the station session.
 - Terminal Access permits opening any active BIOS session on that site, just as it permits opening any station terminal on that site. The website only lists existing BIOS sessions and never creates one from a BMC MAC.
 - Create the session if missing. Opening a terminal never starts a test automatically.
 - One strip of terminal views. Each view has its own Single, Side by side, Stacked, or Four panels layout. Stacked and four-panel views have double height; dividers resize only the current view.
@@ -165,7 +165,7 @@ The frontend Proxy Host needs no new terminal route because it embeds the termin
 6. Remove a non-admin user's Terminal Access and save. Verify their active browser terminal disconnects within about 10 seconds.
 7. Log out and verify pop-out browser terminals disconnect. Existing ordinary SSH sessions remain unaffected.
 8. Verify a user without Terminal Access cannot open the terminal, including by copying its URL.
-9. In a station terminal, run `./bios_serial.sh -m 001a2b3c4d5e` with a real BMC MAC. The station prompt should report `bs_001a2b3c4d5e` without an attach error. Select that MAC under **BIOS serial** and confirm the separate panel is interactive while `tmux display-message -p '#S'` in the station still reports its `stn_` session.
+9. In a station terminal, run `./bios_serial.sh -m 001a2b3c4d5e` with a real BMC MAC. The station prompt should report `bs_001a2b3c4d5e` without an attach error. Add an empty panel or view, select that BIOS session, and confirm it is interactive while `tmux display-message -p '#S'` in the station still reports its `stn_` session.
 10. Close the BIOS panel and confirm `tmux has-session -t '=bs_001a2b3c4d5e'` still succeeds. Reopen the same MAC and confirm the existing serial session is reused.
 
 A sudo prompt behaves as in a normal shared terminal. The website does not store or automatically enter the sudo password.

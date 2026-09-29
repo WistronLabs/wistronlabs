@@ -138,3 +138,18 @@ test("view names persist through layout changes and reset to automatic titles", 
   assert.equal(Object.hasOwn(layout.groups[0], "name"), false);
   assert.deepEqual(stations(layout), ["1", "2", "3", "4"]);
 });
+
+test("BIOS sessions share views with stations and survive saved layout changes", () => {
+  const bios = "bios:001a2b3c4d5e";
+  let layout = normalizeTerminalLayout({ open: ["1", bios], mode: "columns" });
+  assert.deepEqual(layout.groups[0].slots, ["1", bios]);
+  assert.deepEqual(loadTerminalLayout("key", null, storage(layout)), layout);
+  layout = addTerminalGroup(layout, "grid");
+  layout = placeTerminal(layout, bios, layout.activeGroup, 2);
+  assert.deepEqual(layout.groups.find((g) => g.mode === "grid").slots, [null, null, bios, null]);
+  layout = changeTerminalMode(layout, layout.activeGroup, "single");
+  assert.deepEqual(stations(layout).sort(), ["1", bios]);
+  layout = closeTerminal(layout, bios);
+  assert.deepEqual(stations(layout), ["1"]);
+  assert.equal(placeTerminal(layout, "bios:../../bad", layout.activeGroup, 0), layout);
+});
