@@ -12,6 +12,7 @@ import HistoryPage from "./pages/HistoryPage";
 import AdminPage from "./pages/AdminPage";
 import PartsPage from "./pages/PartsPage";
 import PhotoUploadPage from "./pages/PhotoUploadPage";
+import PrintPreviewPage from "./pages/PrintPreviewPage";
 
 import ScrollToTop from "./helpers/ScrollToTop";
 
@@ -37,6 +38,7 @@ function App() {
     else if (pathname === "/user") pageTitle = "User";
     else if (pathname === "/auth") pageTitle = "Login";
     else if (pathname === "/reset-password") pageTitle = "Reset Password";
+    else if (pathname.startsWith("/print-preview/")) pageTitle = "Print Preview";
     else if (matchPath("/locationHistory/:id", pathname)) pageTitle = "Location History";
     else if (matchPath("/photo-upload/:serviceTag", pathname)) pageTitle = "Photo Upload";
     else {
@@ -59,6 +61,7 @@ function App() {
           <Route path="/stations" element={protectedPage(<StationPage />)} />
           <Route path="/auth" element={<Auth />} />
           <Route path="/shipping" element={protectedPage(<ShippingPage />)} />
+          <Route path="/print-preview/:id" element={protectedPage(<PrintPreviewPage />)} />
           <Route path="/:serviceTag" element={protectedPage(<SystemPage />)} />
           <Route path="/parts" element={protectedPage(<PartsPage />)} />
           <Route path="/photo-upload/:serviceTag" element={protectedPage(<PhotoUploadPage />)} />

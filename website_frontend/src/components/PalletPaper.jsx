@@ -110,7 +110,7 @@ const styles = StyleSheet.create({
 const PalletPaper = ({ pallet }) => {
   return (
     <Document>
-      <Page style={styles.page}>
+      <Page size="LETTER" style={styles.page}>
         <View style={styles.titleBlock}>
           <Text style={styles.title}>{pallet.pallet_number}</Text>
           {pallet.pallet_number_barcode && (

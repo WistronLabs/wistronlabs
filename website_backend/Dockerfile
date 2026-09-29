@@ -2,7 +2,7 @@
 FROM node:20
 
 # Standard-library ZIP/TAR reader for batch L11 uploads.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 \
+RUN apt-get update && apt-get install -y --no-install-recommends python3 cups-client \
     && rm -rf /var/lib/apt/lists/*
 
 # set timezone to Central Time (Chicago)

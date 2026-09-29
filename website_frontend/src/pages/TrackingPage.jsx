@@ -14,6 +14,7 @@ import { AuthContext } from "../context/AuthContext.jsx";
 
 import { pdf } from "@react-pdf/renderer";
 import SystemPDFLabel from "../components/SystemPDFLabel.jsx";
+import { openPrintPreview } from "../utils/printPreview.js";
 
 import AddSystemModal from "../components/AddSystemModal.jsx";
 import DownloadReportModal from "../components/DownloadReportModal.jsx";
@@ -857,8 +858,7 @@ function TrackingPage() {
           const blob = await pdf(
             <SystemPDFLabel systems={systemsPDF} />,
           ).toBlob();
-          const url = URL.createObjectURL(blob);
-          window.open(url, "_blank");
+          await openPrintPreview(blob, "system_id", "Received System Labels");
         } catch (err) {
           console.error("Failed to generate PDF", err);
         }
@@ -1028,8 +1028,7 @@ function TrackingPage() {
             <SystemPDFLabel systems={[printable]} />,
           ).toBlob();
 
-          const url = URL.createObjectURL(blob);
-          window.open(url, "_blank");
+          await openPrintPreview(blob, "system_id", `${printable.service_tag} System ID`);
         } catch (err) {
           console.error("Failed to generate PDF", err);
         }

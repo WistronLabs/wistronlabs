@@ -105,6 +105,18 @@ function useApi() {
   }
 
   const getBatchUpdateSystems = (flow) => fetchJSON(`/systems/batch-updates?flow=${encodeURIComponent(flow)}`);
+  const getPrintSettings = () => fetchJSON("/printing/settings");
+  const getPrinterQueues = () => fetchJSON("/printing/queues");
+  const savePrintSettings = (settings) => fetchJSON("/printing/settings", {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings),
+  });
+  const submitPrintJob = (blob, kind, options) => {
+    const form = new FormData();
+    form.append("pdf", blob, `${kind}.pdf`);
+    form.append("kind", kind);
+    form.append("options", JSON.stringify(options));
+    return fetchJSON("/printing/jobs", { method: "POST", body: form });
+  };
   const moveBatchSystems = (payload) => fetchJSON("/systems/batch-updates/move", {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
   });
@@ -1025,6 +1037,7 @@ function useApi() {
     });
 
   return {
+    getPrintSettings, getPrinterQueues, savePrintSettings, submitPrintJob,
     getBatchUpdateSystems, moveBatchSystems, previewBatchL11Archive, uploadBatchL11Archive, getMrbApprovals, uploadMrbApproval,
     getSystems,
     getHistory,
