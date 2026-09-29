@@ -94,8 +94,9 @@ function ActiveUnitsCustomerChart({
   );
   function toggleLocation(id) {
     const current = selectedLocations.map((option) => option.value);
-    onLocationSelectionChange(current.length === 0 ? [id]
-      : current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+    const next = current.length === 0 ? [id]
+      : current.includes(id) ? current.filter((value) => value !== id) : [...current, id];
+    onLocationSelectionChange(next.length === locationOptions.length ? [] : next);
   }
 
   return (
