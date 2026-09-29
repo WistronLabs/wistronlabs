@@ -32,3 +32,27 @@ test("customer breakdown follows active location snapshots and daily movements",
     assert.equal(customerTotal, locationTotal);
   });
 });
+
+test("customer breakdown counts only selected active locations", () => {
+  const snapshot = [
+    { service_tag: "A", location: "Received", dell_customer: "Alpha" },
+    { service_tag: "B", location: "Pending Parts", dell_customer: "Beta" },
+    { service_tag: "C", location: "In L10", dell_customer: "Alpha" },
+  ];
+  const history = [
+    { service_tag: "A", to_location: "Pending Parts", dell_customer: "Alpha", changed_at: "2026-09-21T15:00:00Z" },
+  ];
+  const args = [snapshot, history, "America/Chicago", { localtime: "09/22/2026, 09:00:00 PM" }, "2026-09-20", "2026-09-21"];
+
+  const all = computeActiveLocationsPerDay(args[0], args[1], ["Received", "Pending Parts", "In L10"], ...args.slice(2));
+  const selected = computeActiveLocationsPerDay(args[0], args[1], ["Received", "In L10"], ...args.slice(2));
+
+  assert.deepEqual(all.map((day) => day.customerCounts), [
+    { Alpha: 2, Beta: 1 },
+    { Alpha: 2, Beta: 1 },
+  ]);
+  assert.deepEqual(selected.map((day) => day.customerCounts), [
+    { Alpha: 2 },
+    { Alpha: 1 },
+  ]);
+});

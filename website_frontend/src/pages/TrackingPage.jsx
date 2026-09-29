@@ -168,6 +168,7 @@ function TrackingPage() {
   const [chartEndDate, setChartEndDate] = useState("");
   const [chartMinDate, setChartMinDate] = useState("");
   const [chartTab, setChartTab] = useState("operations");
+  const [customerChartLocationIDs, setCustomerChartLocationIDs] = useState([]);
   const [chartsLoading, setChartsLoading] = useState(false);
   const [chartsError, setChartsError] = useState(null);
   const [exportingChartsPng, setExportingChartsPng] = useState(false);
@@ -1571,6 +1572,8 @@ function TrackingPage() {
                         chartStartDate={chartStartDate}
                         chartEndDate={chartEndDate}
                         customerNames={dellCustomers}
+                        selectedLocationIDs={customerChartLocationIDs}
+                        onLocationSelectionChange={setCustomerChartLocationIDs}
                         printFriendly={printFriendly}
                       />
                       {pendingDoaError ? (
