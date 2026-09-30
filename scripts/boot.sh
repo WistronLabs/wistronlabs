@@ -42,6 +42,8 @@ source "$LIB_DIR/fetch_station_list.sh"
 source "$LIB_DIR/backend_curl.sh"
 # shellcheck disable=SC1091
 source "$LIB_DIR/ipmi.sh"
+# shellcheck disable=SC1091
+source "$LIB_DIR/terminal_client_handoff.sh"
 
 LIVE_MODE=0
 LIVE_CHILD=0
@@ -75,7 +77,7 @@ Options:
   -c CONFIG
       Config of the unit. Field mode only supports ${FIELD_DEFAULT_CONFIG:-the configured default}.
   -l, --live
-      Split the current station tmux pane and show BIOS serial on the right.
+      Show boot progress beside BIOS serial, then move to BIOS on success.
   -h, --help
       Show this help and exit.
 
@@ -108,7 +110,7 @@ Options:
   -c CONFIG
       Config of the unit, needed when booting via MAC address.
   -l, --live
-      Split the current station tmux pane and show BIOS serial on the right.
+      Show boot progress beside BIOS serial, then move to BIOS on success.
   -h, --help
       Show this help and exit.
 
@@ -126,8 +128,9 @@ Mode rules:
   - -t/--tag cannot be used with manual options.
 
 Live mode:
-  Keeps the current station pane on the left, opens BIOS serial on the right,
-  and switches to the bs_<BMC_MAC> session when boot completes successfully.
+  Shows boot progress and BIOS serial side by side, then moves ordinary
+  terminal clients to bs_<BMC_MAC> when boot succeeds. Website viewers
+  can open BIOS beside the station from the website prompt.
 
 Examples:
   ./boot.sh
@@ -427,7 +430,7 @@ require_station_tmux_session() {
 
 report_live_status() {
   local boot_status="$1"
-  local bios_session_name
+  local bios_session_name event_value
 
   if [[ -n "$LIVE_RIGHT_PANE_ID" ]]; then
     tmux kill-pane -t "$LIVE_RIGHT_PANE_ID" 2>/dev/null || true
@@ -437,9 +440,17 @@ report_live_status() {
   echo
   if [[ "$boot_status" -eq 0 ]]; then
     echo "Boot status: complete"
-    bios_session_name="bs_${BMC_MAC}"
-    if tmux has-session -t "$bios_session_name" 2>/dev/null; then
-      tmux switch-client -t "$bios_session_name"
+    bios_session_name="bs_$(printf '%s' "$BMC_MAC" | tr '[:upper:]' '[:lower:]')"
+    if tmux has-session -t "=$bios_session_name" 2>/dev/null; then
+      event_value="${bios_session_name#bs_}:$(date +%s%N)"
+      if [[ "${SERVICE_TAG:-}" =~ ^[A-Za-z0-9-]{1,32}$ ]]; then
+        event_value+=":$(printf '%s' "$SERVICE_TAG" | tr '[:lower:]' '[:upper:]')"
+      fi
+      tmux set-option -t "=$STATION_SESSION_NAME:" @wistron_bios_open "$event_value" 2>/dev/null || true
+      if ! wistron_switch_native_clients "$STATION_SESSION_NAME" "$bios_session_name"; then
+        echo "WARNING - BIOS is ready, but a terminal client could not switch automatically." >&2
+      fi
+      echo "BIOS serial session $bios_session_name is ready. Website viewers can open it beside the station."
     else
       echo "INFO - No BIOS session found; staying in $STATION_SESSION_NAME."
     fi
@@ -562,7 +573,7 @@ run_live_bios_child() {
 
   echo
   echo "==> Opening BIOS serial session for BMC $BMC_MAC"
-  exec env -u TMUX WISTRON_MODE="$WISTRON_MODE" FIELD_STATIONS_FILE="$FIELD_STATIONS_FILE" FIELD_DEFAULT_CONFIG="${FIELD_DEFAULT_CONFIG:-}" SERVER_LOCATION="${SERVER_LOCATION:-}" "$script_dir/bios_serial.sh" -m "$BMC_MAC"
+  exec env -u TMUX WISTRON_BIOS_DEFER_ANNOUNCE=1 WISTRON_MODE="$WISTRON_MODE" FIELD_STATIONS_FILE="$FIELD_STATIONS_FILE" FIELD_DEFAULT_CONFIG="${FIELD_DEFAULT_CONFIG:-}" SERVER_LOCATION="${SERVER_LOCATION:-}" "$script_dir/bios_serial.sh" -m "$BMC_MAC"
 }
 
 write_grub_config() {

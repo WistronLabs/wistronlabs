@@ -6,6 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
+const vm = require("node:vm");
 const express = require("express");
 const { PGlite } = require("@electric-sql/pglite");
 const { createTerminals } = require("../src/services/terminals");
@@ -52,20 +53,25 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   await pg.exec(
     "ALTER TABLE users ADD COLUMN super_admin boolean DEFAULT false; ALTER TABLE users ADD COLUMN enabled boolean DEFAULT true; ALTER TABLE users ADD COLUMN must_change_password boolean DEFAULT false; ALTER TABLE users ADD COLUMN session_version integer DEFAULT 1;",
   );
+  await pg.exec("CREATE TABLE system(service_tag text, bmc_mac char(12)); INSERT INTO system VALUES('TAG123','AABBCCDDEEFF');");
   await pg.exec("UPDATE users SET terminal_access=true WHERE id=2");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-"));
   const socketPath = path.join(dir, "control.sock");
   let forwarded;
+  let forwardedPath;
   const hostSockets = new Set();
   const host = http.createServer((req, res) => {
     forwarded = req.headers;
+    forwardedPath = req.url;
     if (req.url.endsWith("/sessions"))
-      res.writeHead(200, { "content-type": "application/json" }).end('{"stations":["12"]}');
+      res.writeHead(200, { "content-type": "application/json" }).end(req.url.includes("/bios/") ? '{"bios":["aabbccddeeff"],"opens":[{"station":"12","mac":"aabbccddeeff","event":"1234567890123456789"}]}' : '{"stations":["12"]}');
     else if (req.url.endsWith("/preview")) {
       if (req.url.includes("/stations/12/"))
         res.writeHead(200, { "content-type": "application/json" }).end('{"output":"L10 Diagnostic Test\\n"}');
       else res.writeHead(404, { "content-type": "application/json" }).end('{"error":"No session"}');
     }
+    else if (req.url.endsWith("/ensure") && req.url.includes("/bios/") && !req.url.includes("aabbccddeeff"))
+      res.writeHead(404, { "content-type": "application/json" }).end('{"error":"BIOS session not found"}');
     else if (req.url.endsWith("/ensure"))
       res
         .writeHead(200, { "content-type": "application/json" })
@@ -80,6 +86,7 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   });
   host.on("upgrade", (req, socket) => {
     forwarded = req.headers;
+    forwardedPath = req.url;
     hostSockets.add(socket);
     socket.on("close", () => hostSockets.delete(socket));
     const accept = crypto
@@ -144,6 +151,17 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   assert.equal((await call("/sessions")).status, 401);
   assert.equal((await call("/sessions", 1)).status, 403);
   assert.deepEqual((await (await call("/sessions", 2)).json()).stations, ["12"]);
+  assert.equal((await call("/bios/sessions", 3)).status, 403);
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).bios, ["aabbccddeeff"]);
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).opens,
+    [{ station: "12", mac: "aabbccddeeff", event: "1234567890123456789" }]);
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).serviceTags,
+    { aabbccddeeff: "TAG123" });
+  await pg.exec("UPDATE system SET bmc_mac='112233445566'");
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).serviceTags,
+    {}, "an unassigned BIOS session falls back to its MAC in the frontend");
+  assert.equal((await call("/bios/not-a-mac/connect", 2, "POST")).status, 400);
+  assert.equal((await call("/bios/000000000000/connect", 2, "POST")).status, 404);
   assert.equal((await call("/stations/12/preview", 3)).status, 403);
   assert.equal((await call("/stations/abc/preview", 2)).status, 400);
   assert.equal((await call("/stations/18/preview", 2)).status, 404);
@@ -165,6 +183,42 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   const html = await call(`/views/${grant.id}/`, null, "GET", { cookie });
   const htmlBody = await html.text();
   assert.match(htmlBody, /terminal-scroll-containment/);
+  assert.match(htmlBody, /terminal-clipboard-bridge/);
+  assert.match(htmlBody, /https:\/\/frontend\.test/);
+  assert.match(htmlBody, /wistron-terminal-paste/);
+  const bridge = /<script id="terminal-clipboard-bridge">([\s\S]*?)<\/script>/.exec(htmlBody)?.[1];
+  const listeners = {};
+  const messages = [];
+  const parent = { postMessage: (value, origin) => { assert.equal(origin, "https://frontend.test"); messages.push(value); } };
+  const pasted = [];
+  let focused = 0;
+  const term = { options: {}, getSelection: () => "selected output", onSelectionChange: (callback) => callback(), paste: (value) => pasted.push(value), focus: () => { focused += 1; } };
+  const clipboard = [];
+  vm.runInNewContext(bridge, { window: { term, parent, navigator: { clipboard: { writeText: async (value) => { clipboard.push(value); } } }, addEventListener: (type, callback) => { listeners[type] = callback; } } });
+  assert.equal(term.options.macOptionClickForcesSelection, true);
+  listeners.pointerdown();
+  assert.equal(messages.at(-1).type, "wistron-terminal-selection-clear");
+  listeners.message({ source: parent, origin: "https://other.test", data: { type: "wistron-terminal-paste", text: "rejected" } });
+  listeners.message({ source: parent, origin: "https://frontend.test", data: { type: "wistron-terminal-paste", text: "pasted text" } });
+  assert.deepEqual(pasted, ["pasted text"]);
+  listeners.message({ source: parent, origin: "https://other.test", data: { type: "wistron-terminal-focus" } });
+  listeners.message({ source: parent, origin: "https://frontend.test", data: { type: "wistron-terminal-focus" } });
+  assert.equal(focused, 1);
+  let copied;
+  listeners.copy({ clipboardData: { setData: (_type, value) => { copied = value; } }, preventDefault() {} });
+  assert.equal(copied, "selected output");
+  let prevented = false;
+  listeners.keydown({ metaKey: true, key: "c", preventDefault() { prevented = true; }, stopImmediatePropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prevented, true);
+  assert.deepEqual(clipboard, ["selected output"]);
+  assert.equal(messages.at(-1).type, "wistron-terminal-copy-status");
+  assert.equal(messages.at(-1).success, true);
+  listeners.keydown({ ctrlKey: true, shiftKey: true, key: "C", preventDefault() {}, stopImmediatePropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(clipboard, ["selected output", "selected output"], "Ctrl+Shift+C copies on Windows and Linux");
+  listeners.keydown({ ctrlKey: true, shiftKey: false, key: "c", preventDefault() { throw new Error("Ctrl+C must remain an interrupt"); } });
+  assert.equal(clipboard.length, 2);
   assert.match(htmlBody, /overscroll-behavior:contain!important/);
   assert.match(htmlBody, /<body>terminal html<\/body>/);
   assert.equal(forwarded["accept-encoding"], "identity");
@@ -221,6 +275,20 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   const presence = await (await call(`/leases/${grant.id}`, 2, "POST")).json();
   assert.deepEqual(presence.users, ["tech@test"]);
   assert.equal(presence.connected, true);
+  const biosResponse = await call("/bios/aabbccddeeff/connect", 2, "POST");
+  assert.equal(biosResponse.status, 200);
+  const biosGrant = await biosResponse.json();
+  const biosCookie = biosResponse.headers.get("set-cookie").split(";")[0];
+  assert.equal((await call(`/views/${biosGrant.id}/`, null, "GET", { cookie: biosCookie })).status, 200);
+  assert.equal(forwardedPath, "/api/v1/terminals/bios/aabbccddeeff/");
+  const biosWs = await upgrade(port, biosCookie, "https://backend.test", biosGrant.id);
+  assert.equal(biosWs.res.statusCode, 101);
+  assert.equal(forwardedPath, "/api/v1/terminals/bios/aabbccddeeff/ws");
+  assert.equal(terminals.grants.get(biosGrant.id).targetPath, "/api/v1/terminals/bios/aabbccddeeff");
+  assert.deepEqual((await (await call(`/leases/${grant.id}`, 2, "POST")).json()).users, ["tech@test"],
+    "station presence is separate from BIOS presence");
+  biosWs.socket.destroy();
+  await call(`/leases/${biosGrant.id}`, 2, "DELETE");
   assert.equal((await call(`/leases/${grant.id}`, 1, "POST")).status, 403);
   await call(`/leases/${grant.id}`, 1, "DELETE");
   assert.equal(

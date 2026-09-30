@@ -59,7 +59,7 @@ Options:
   -s, --sys-mac SYS_MAC
       Provide the system MAC instead of being prompted.
   -l, --live
-      Show BIOS serial on the right until SSH is fully up, then return to one pane.
+      Show BIOS serial beside the test until host SSH is ready.
   -o, --options
       Open interactive module picker.
   -f, --fru-only
@@ -99,7 +99,7 @@ Options:
   -s, --sys-mac SYS_MAC
       Manual mode only: provide the system MAC instead of being prompted.
   -l, --live
-      Show BIOS serial on the right until SSH is fully up, then return to one pane.
+      Show BIOS serial beside the test until host SSH is ready.
   -o, --options
       Open interactive module picker.
   -f, --fru-only
@@ -176,7 +176,7 @@ start_live_bios_pane() {
 
   current_pane_id="$(tmux display-message -p '#{pane_id}')"
   window_target="$(tmux display-message -p '#S:#I')"
-  right_cmd="cd '$script_dir' && env -u TMUX WISTRON_MODE='$WISTRON_MODE' FIELD_STATIONS_FILE='$FIELD_STATIONS_FILE' FIELD_DEFAULT_CONFIG='${FIELD_DEFAULT_CONFIG:-}' SERVER_LOCATION='${SERVER_LOCATION:-}' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
+  right_cmd="cd '$script_dir' && env -u TMUX WISTRON_BIOS_DEFER_ANNOUNCE=1 WISTRON_MODE='$WISTRON_MODE' FIELD_STATIONS_FILE='$FIELD_STATIONS_FILE' FIELD_DEFAULT_CONFIG='${FIELD_DEFAULT_CONFIG:-}' SERVER_LOCATION='${SERVER_LOCATION:-}' '$script_dir/bios_serial.sh' -m '$BMC_MAC'"
 
   LIVE_RIGHT_PANE_ID="$(tmux split-window -h -P -F '#{pane_id}' -t "$current_pane_id" "$right_cmd")"
   tmux select-layout -t "$window_target" even-horizontal
@@ -328,6 +328,7 @@ fi
 # A new run must not inherit progress from the previous unit.
 tmux set-option -u -t "$SESSION_NAME" @l10_progress_plan 2>/dev/null || true
 tmux set-option -u -t "$SESSION_NAME" @l10_progress_run 2>/dev/null || true
+tmux set-option -u -t "$SESSION_NAME" @l10_progress_log 2>/dev/null || true
 
 if is_backend_mode; then
   http_code="$(backend_curl -s -o /dev/null -w "%{http_code}" \
@@ -979,6 +980,11 @@ LOG_DIR="/var/www/html/l10_logs/$SERVICE_TAG/${START_TS}/"
 mkdir -p "$LOG_DIR"
 
 LOG_FILE="$LOG_DIR/run_${SERVICE_TAG}_${START_TS}.log"
+if [[ "$FRU_ONLY_MODE" -eq 0 ]]; then
+    PROGRESS_LOG="$LOG_DIR/.live_progress.log"
+    : > "$PROGRESS_LOG"
+    tmux set-option -t "$SESSION_NAME" @l10_progress_log "$PROGRESS_LOG"
+fi
 
 # Save the original terminal FDs
 exec 3>&1 4>&2
@@ -1322,7 +1328,7 @@ else
             '"$TEST_ARG"' \
             2>&1 | tee /home/nvidia/output.log
         '"$REMOTE_POST_RUN_CMD"'
-    "'
+    "' | tee -a "$PROGRESS_LOG"
 
     sleep 1
     log_on
@@ -1365,6 +1371,10 @@ if is_backend_mode; then
 fi
 rm -f -- "$OUT"
 echo "logs are located at $LOG_DIR"
+if [[ -n "${PROGRESS_LOG:-}" ]]; then
+    tmux set-option -u -t "$SESSION_NAME" @l10_progress_log 2>/dev/null || true
+    rm -f -- "$PROGRESS_LOG"
+fi
 
 # Authors:
 #   Giovanni Leon - giovanni_leon@wistron.com

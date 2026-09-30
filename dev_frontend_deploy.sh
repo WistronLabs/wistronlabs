@@ -6,7 +6,7 @@ if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
   echo "Error: This script requires bash 4+." >&2
   echo "On macOS:" >&2
   echo "  brew install bash" >&2
-  echo "  /opt/homebrew/bin/bash ./dev_frontend_deploy.sh TSS_DEV" >&2
+  echo "  /opt/homebrew/bin/bash ./dev_frontend_deploy.sh TSS" >&2
   exit 1
 fi
 
@@ -25,15 +25,15 @@ usage() {
   cat <<EOF
 Usage:
   $0 list
-  $0 <DEV_BACKEND_NAME> [--clean-install]
+  $0 <SITE> [--clean-install]
 
 Examples:
-  $0 TSS_DEV
-  $0 FRK_DEV
-  $0 TSS_DEV --clean-install
+  $0 TSS
+  $0 FRK
+  $0 TSS --clean-install
 
 This will:
-  - Map DEV backend -> source prod (e.g. TSS_DEV -> TSS)
+  - Select the DEV backend configured for SITE (e.g. TSS -> TSS_DEV)
   - Tunnel the DEV backend through SSH to its configured tailnet host and port
   - Write website_frontend/.env:
       VITE_BACKEND_URL=http://127.0.0.1:14100/api/v1
@@ -81,11 +81,11 @@ done < "$CONF"
 
 print_dev_locations() {
   echo ""
-  echo "Available DEV backends (is_dev=1):"
+  echo "Available dev sites:"
   for k in "${!HOST[@]}"; do
     [[ "${IS_DEV[$k]:-}" == "1" ]] || continue
     local src="${SOURCE_PROD[$k]:-}"
-    echo "  - $k   (source_prod=${src:-<none>})"
+    echo "  - ${src:-<unmapped>} (config: $k)"
   done | sort
   echo ""
 }
@@ -95,10 +95,17 @@ if [[ "$cmd" == "list" ]]; then
   exit 0
 fi
 
-DEV_NAME="$cmd"
-
-[[ -n "${HOST[$DEV_NAME]:-}" ]] || die "Unknown backend '$DEV_NAME' (check backend_locations.conf)"
-[[ "${IS_DEV[$DEV_NAME]:-}" == "1" ]] || die "Refusing non-dev backend '$DEV_NAME'"
+DEV_NAME=""
+if [[ "${IS_DEV[$cmd]:-}" == "1" ]]; then
+  DEV_NAME="$cmd" # Backward compatible config key.
+else
+  for key in "${!HOST[@]}"; do
+    [[ "${IS_DEV[$key]:-}" == "1" && "${SOURCE_PROD[$key]:-}" == "$cmd" ]] || continue
+    [[ -z "$DEV_NAME" ]] || die "Site '$cmd' maps to multiple DEV backends; use a unique config key"
+    DEV_NAME="$key"
+  done
+fi
+[[ -n "$DEV_NAME" ]] || die "No DEV backend configured for site '$cmd'"
 
 SITE="${SOURCE_PROD[$DEV_NAME]:-}"
 [[ -n "$SITE" ]] || die "Config missing source_prod for '$DEV_NAME' (need TSS/FRK/etc)"
@@ -185,4 +192,4 @@ if [[ "$CLEAN_INSTALL" == "1" ]]; then
 fi
 
 echo "Starting Vite dev server..."
-npm run dev -- --host 0.0.0.0
+npm run dev -- --host 0.0.0.0 --port 5173 --strictPort

@@ -4,6 +4,60 @@ const zlib = require("node:zlib");
 // Applied inside the iframe, not to the surrounding website. Its own scroll
 // containers must stop scroll chaining; styling the iframe element cannot.
 const scrollContainment = '<style id="terminal-scroll-containment">html,body,.xterm-viewport,.xterm-scrollable-element{overscroll-behavior:contain!important}</style>';
+function clipboardBridge(origin) {
+  if (!origin) return "";
+  const parentOrigin = JSON.stringify(origin).replace(/</g, "\\u003c");
+  return `<script id="terminal-clipboard-bridge">(${function setupClipboard(parentOrigin) {
+    const sendSelection = () => {
+      const term = window.term;
+      if (!term?.getSelection) return;
+      window.parent.postMessage({ type: "wistron-terminal-selection", text: term.getSelection().slice(0, 65536) }, parentOrigin);
+    };
+    const connect = () => {
+      if (!window.term?.onSelectionChange) return false;
+      // Keep tmux mouse support while letting Mac users select browser text.
+      window.term.options.macOptionClickForcesSelection = true;
+      window.term.onSelectionChange(sendSelection);
+      sendSelection();
+      return true;
+    };
+    if (!connect()) {
+      const timer = setInterval(() => { if (connect()) clearInterval(timer); }, 100);
+      setTimeout(() => clearInterval(timer), 30000);
+    }
+    window.addEventListener("pointerdown", () => {
+      window.parent.postMessage({ type: "wistron-terminal-selection-clear" }, parentOrigin);
+    }, true);
+    window.addEventListener("copy", (event) => {
+      const text = window.term?.getSelection?.();
+      if (!text || !event.clipboardData) return;
+      event.clipboardData.setData("text/plain", text);
+      event.preventDefault();
+    }, true);
+    window.addEventListener("keydown", (event) => {
+      const copyShortcut = event.metaKey || (event.ctrlKey && event.shiftKey);
+      if (!copyShortcut || event.key?.toLowerCase() !== "c") return;
+      const text = window.term?.getSelection?.();
+      if (!text || !window.navigator.clipboard?.writeText) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      window.navigator.clipboard.writeText(text).then(
+        () => window.parent.postMessage({ type: "wistron-terminal-copy-status", success: true }, parentOrigin),
+        () => window.parent.postMessage({ type: "wistron-terminal-copy-status", success: false }, parentOrigin),
+      );
+    }, true);
+    window.addEventListener("message", (event) => {
+      if (event.source !== window.parent || event.origin !== parentOrigin) return;
+      if (event.data?.type === "wistron-terminal-focus") {
+        window.term?.focus?.();
+        return;
+      }
+      if (event.data?.type !== "wistron-terminal-paste") return;
+      const text = event.data.text;
+      if (typeof text === "string" && text.length <= 65536) window.term?.paste?.(text);
+    });
+  }.toString()})(${parentOrigin});</script>`;
+}
 function relay(req, destination, socketPath, path, head, onConnect, options = {}) {
   const headers = { host: "localhost" };
   for (const name of [
@@ -22,7 +76,7 @@ function relay(req, destination, socketPath, path, head, onConnect, options = {}
     headers.connection = "Upgrade";
     headers.upgrade = "websocket";
   }
-  if (options.containScroll) headers["accept-encoding"] = "identity";
+  if (options.containScroll || options.clipboardOrigin) headers["accept-encoding"] = "identity";
   const upstream = http.request({ socketPath, path, method: "GET", headers });
   const fail = () => {
     if (head !== undefined) destination.destroy();
@@ -62,7 +116,7 @@ function relay(req, destination, socketPath, path, head, onConnect, options = {}
     upstream.on("response", (response) => {
       const clean = { ...response.headers };
       delete clean["set-cookie"];
-      if (options.containScroll && response.statusCode === 200 && /^text\/html\b/i.test(clean["content-type"] || "")) {
+      if ((options.containScroll || options.clipboardOrigin) && response.statusCode === 200 && /^text\/html\b/i.test(clean["content-type"] || "")) {
         const encoding = clean["content-encoding"];
         const decoder = encoding === "gzip" ? zlib.createGunzip()
           : encoding === "br" ? zlib.createBrotliDecompress()
@@ -86,9 +140,10 @@ function relay(req, destination, socketPath, path, head, onConnect, options = {}
         });
         stream.on("end", () => {
           const html = Buffer.concat(chunks).toString("utf8");
+          const additions = (options.containScroll ? scrollContainment : "") + clipboardBridge(options.clipboardOrigin);
           const result = /<\/head>/i.test(html)
-            ? html.replace(/<\/head>/i, scrollContainment + "</head>")
-            : scrollContainment + html;
+            ? html.replace(/<\/head>/i, additions + "</head>")
+            : additions + html;
           for (const name of ["content-encoding", "content-length", "etag", "last-modified", "transfer-encoding"]) delete clean[name];
           destination.writeHead(response.statusCode, clean);
           destination.end(result);

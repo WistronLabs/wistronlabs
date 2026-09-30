@@ -5,6 +5,7 @@ export const terminalModes = {
   grid: { label: "Four panels", size: 4 },
 };
 const stationId = (id) => /^[1-9]\d{0,5}$/.test(String(id)) ? String(id) : null;
+const terminalId = (id) => /^bios:[0-9a-f]{12}$/.test(String(id)) ? String(id) : stationId(id);
 const ratio = (value) => Number.isFinite(Number(value))
   ? Math.min(75, Math.max(25, Number(value))) : 50;
 const newId = (groups) => {
@@ -24,7 +25,7 @@ export function normalizeTerminalLayout(value = {}) {
   let input = value.groups;
   // Migrate the previous ordered-tab layout into explicit groups once.
   if (!Array.isArray(input)) {
-    const open = [...new Set((Array.isArray(value.open) ? value.open : []).map(stationId).filter(Boolean))].slice(0, 32);
+    const open = [...new Set((Array.isArray(value.open) ? value.open : []).map(terminalId).filter(Boolean))].slice(0, 32);
     const mode = Object.hasOwn(terminalModes, value.mode) ? value.mode : "single";
     const size = terminalModes[mode].size;
     input = Array.from({ length: Math.ceil(open.length / size) }, (_, i) => ({
@@ -38,7 +39,7 @@ export function normalizeTerminalLayout(value = {}) {
     const id = typeof item.id === "string" && /^[\w-]{1,64}$/.test(item.id) && !groups.some((g) => g.id === item.id)
       ? item.id : newId(groups);
     const slots = Array.from({ length: terminalModes[mode].size }, (_, index) => {
-      const station = stationId(item.slots?.[index]);
+      const station = terminalId(item.slots?.[index]);
       if (!station || seen.has(station) || seen.size >= 32) return null;
       seen.add(station);
       return station;
@@ -71,7 +72,7 @@ export function addTerminalGroup(layout, mode) {
 }
 
 export function placeTerminal(layout, station, groupId, slot) {
-  station = stationId(station);
+  station = terminalId(station);
   const target = layout.groups.find((g) => g.id === groupId);
   if (!station || !target || !Number.isInteger(slot) || slot < 0 || slot >= target.slots.length) return layout;
   const source = layout.groups.find((g) => g.slots.includes(station));
@@ -96,6 +97,36 @@ export function addSingle(layout, station) {
   const added = addTerminalGroup(layout, "single");
   if (added === layout) return layout;
   return placeTerminal(added, station, added.activeGroup, 0);
+}
+
+export function openBiosBesideStation(layout, station, mac) {
+  station = stationId(station);
+  const bios = terminalId(`bios:${mac}`);
+  if (!station || !bios || !bios.startsWith("bios:")) return layout;
+  const source = layout.groups.find((g) => g.slots.includes(station));
+  if (!source) return layout;
+  if (source.mode === "columns" && source.slots[0] === station && source.slots[1] === bios)
+    return { ...layout, activeGroup: source.id };
+  const groups = layout.groups.map((g) => ({ ...g, slots: [...g.slots] }));
+  const biosSource = groups.find((g) => g.slots.includes(bios));
+  for (const group of groups) group.slots = group.slots.map((id) => id === bios ? null : id);
+  const target = groups.find((g) => g.id === source.id);
+  if (source.mode === "single") {
+    target.mode = "columns";
+    target.slots = [station, bios];
+    return normalizeTerminalLayout({ ...layout, groups: groups.filter((g) => g.id !== biosSource?.id || g.id === target.id || g.slots.some(Boolean)), activeGroup: target.id });
+  }
+  target.slots = target.slots.map((id) => id === station ? null : id);
+  const kept = groups.filter((g) => g.id !== source.id && g.id !== biosSource?.id || g.slots.some(Boolean));
+  while (kept.length >= 32) {
+    const empty = kept.findIndex((g) => g.slots.every((id) => !id));
+    if (empty < 0) return layout;
+    kept.splice(empty, 1);
+  }
+  const sourceIndex = kept.findIndex((g) => g.id === source.id);
+  const next = makeGroup(newId(kept), "columns", [station, bios]);
+  kept.splice(sourceIndex < 0 ? layout.groups.findIndex((g) => g.id === source.id) : sourceIndex + 1, 0, next);
+  return normalizeTerminalLayout({ ...layout, groups: kept, activeGroup: next.id });
 }
 
 // Closing a view disconnects its panels; it never creates replacement views.

@@ -93,6 +93,8 @@ This script opens the system BIOS or serial console using the BMC. It is useful 
 - `-m MAC_ADDRESS` — Specify the BMC by its **MAC address**.
 - `-t SERVICE_TAG` — Specify the system by **service tag** and pull the BMC MAC from backend.
 
+From a station tmux session, the script starts or reuses a separate `bs_<BMC_MAC>` session without attaching it inside `stn_<number>`. Website viewers of that station automatically get a side by side station and BIOS view when the BIOS session opens. In SSH tmux, press `Ctrl-b`, then `s` to select the BIOS session. From a terminal outside tmux, the script attaches to the BIOS session as before.
+
 ---
 
 # `boot.sh`
@@ -112,7 +114,7 @@ This script prepares PXE boot configuration, waits for BMC and host readiness, a
 - `-b, --bmc-mac BMC_MAC` — Manual BMC MAC input.
 - `-s, --sys-mac SYS_MAC` — Manual host MAC input.
 - `-c CONFIG` — Manual config value when booting by MAC.
-- `-l, --live` — Split the current station tmux pane and show BIOS serial on the right.
+- `-l, --live` — Start a separate BIOS serial session while booting. Choose it in a website terminal panel.
 
 ## Notes
 
@@ -268,7 +270,7 @@ Must be run inside a valid station tmux session. To join one, use [`join_station
 - `-m, --manual` — Skip backend MAC pull and prompt for any missing MACs.
 - `-b, --bmc-mac BMC_MAC` — Manual mode only: provide BMC MAC.
 - `-s, --sys-mac SYS_MAC` — Manual mode only: provide host MAC.
-- `-l, --live` — Show BIOS serial in the right pane until SSH is fully up.
+- `-l, --live` — Start a separate BIOS serial session while the test runs.
 - `-o, --options` — Open the interactive module picker.
 - `-f, --fru-only` — Skip diag upload and L10 validation run.
 - `-p, --power-on` — Keep the unit powered on after the script ends.

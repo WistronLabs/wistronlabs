@@ -5,7 +5,7 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "test:batch": "node --test test/batchUpdates.test.js test/l11Scans.test.js test/evidenceHistory.test.js && python3 -B -m unittest discover -s test -p \"*_test.py\"",
-    "test:terminals": "node --test test/terminals.test.js test/terminalHost.test.js"
+    "test:terminals": "node --test test/terminals.test.js test/terminalHost.test.js test/biosIdle.test.js"
   },
   "dependencies": {
     "@simplewebauthn/server": "^13.3.3",

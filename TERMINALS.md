@@ -4,9 +4,12 @@
 
 - Stations → **Terminals**, or **Open Terminal** on a station row.
 - Shared typing into the existing `falab` tmux session `stn_<station number>`.
+- BIOS serial uses a separate `bs_<BMC MAC>` tmux session. Running `bios_serial.sh` directly in a station announces BIOS when it is ready. `boot.sh -l` shows boot progress and BIOS in a shared tmux split, then announces BIOS when boot completes successfully. `l10_test.sh -l` shows a temporary split and closes its BIOS pane when host SSH is ready; it does not announce BIOS. Website viewers showing the station get a 60-second drawer prompt only for the two announcements. Each viewer can independently open a Station + BIOS side by side view or dismiss the prompt. BIOS can also be selected manually in an empty panel.
+- The station tmux pane is shared between SSH and website viewers. At a BIOS handoff, ordinary SSH tmux clients move automatically to `bs_<BMC MAC>` while website ttyd clients stay attached to `stn_<station number>`. The website opens its own authenticated BIOS connection only if the viewer accepts the prompt. BIOS sessions with no attached tmux clients for 24 hours are closed by the host service; attached website and SSH clients keep a session active. The 24 hour clock starts on the first cleanup scan and resets after a host-service restart.
+- Terminal Access permits opening any active BIOS session on that site, just as it permits opening any station terminal on that site. The website only lists existing BIOS sessions and never creates one from a BMC MAC.
 - Create the session if missing. Opening a terminal never starts a test automatically.
 - One strip of terminal views. Each view has its own Single, Side by side, Stacked, or Four panels layout. Stacked and four-panel views have double height; dividers resize only the current view.
-- **+** creates an empty view. Add stations in its empty panels. Drag terminal headers to move into empty panels or swap occupied ones; hover another view tab to reveal it, or drop onto **+** to create a one-panel view. Hidden views disconnect; tmux continues running.
+- **+** creates an empty view. Add stations or BIOS sessions in its empty panels. Drag terminal headers to move into empty panels or swap occupied ones; hover another view tab to reveal it, or drop onto **+** to create a one-panel view. Hidden views disconnect; tmux continues running.
 - Views, panel assignments, selection, and divider sizes are saved per website user/location in that browser. Existing saved groups become views without losing their assignments. Pop-out windows have separate saved layouts.
 - Closing a view disconnects its panels and removes the view. Closing a terminal removes only that panel; a view disappears when its last terminal is closed or moved away. Neither action stops tmux.
 - Use the pencil beside a view tab (or double-click its title) to rename that view. **Reset to default** restores its automatic title, such as “4 stations.” View names are saved with the layout and survive panel moves and layout changes. Individual stations retain their station numbers.
@@ -163,6 +166,8 @@ The frontend Proxy Host needs no new terminal route because it embeds the termin
 6. Remove a non-admin user's Terminal Access and save. Verify their active browser terminal disconnects within about 10 seconds.
 7. Log out and verify pop-out browser terminals disconnect. Existing ordinary SSH sessions remain unaffected.
 8. Verify a user without Terminal Access cannot open the terminal, including by copying its URL.
+9. In a website station terminal, run `./bios_serial.sh -m 001a2b3c4d5e` with a real BMC MAC. The station should stay attached to `stn_<number>` and show a 60-second BIOS drawer prompt. Click **Open beside station** and confirm both terminals are interactive. Repeat with `boot.sh -l` using an idle test unit: its tmux split should show boot and BIOS during the run, and the drawer prompt should appear only when boot completes successfully. With `l10_test.sh -l`, confirm the temporary split closes when host SSH is ready and no drawer prompt appears. From an ordinary SSH tmux client, confirm `boot.sh -l` moves that client to `bs_<BMC MAC>` on successful completion.
+10. Close the BIOS panel and confirm `tmux has-session -t '=bs_001a2b3c4d5e'` still succeeds. Reopen the same MAC and confirm the existing serial session is reused.
 
 A sudo prompt behaves as in a normal shared terminal. The website does not store or automatically enter the sudo password.
 
@@ -173,7 +178,7 @@ A sudo prompt behaves as in a normal shared terminal. The website does not store
 - **Connecting / disconnected with a working HTML frame:** inspect browser Network for the terminal `/ws` request. It should upgrade to **101**. Check NPM Websockets Support, forwarded paths, cookies and origin settings.
 - **Frame refused:** check frontend `frame-src`, backend `frame-ancestors` and proxy-injected X-Frame-Options.
 - **Unexpected session:** the service uses `falab`'s default tmux socket. Confirm that regular users are not using a custom `tmux -L` or `-S` socket.
-- **Terminal size differs across viewers:** tmux uses the largest attached viewport. Smaller panels may display only part of that shared terminal; maximize the panel when needed. Website splits and tmux's own BIOS/test splits are separate.
+- **Terminal size differs across viewers:** tmux uses the largest attached viewport. Smaller panels may display only part of that shared terminal; maximize the panel when needed. The station and BIOS panels use separate tmux sessions.
 - **Browser resumes after sleep:** use Reconnect. Expired leases do not silently regain access.
 
 ## Development verification
@@ -186,6 +191,8 @@ npm run build --prefix website_frontend
 
 The gateway tests exercise authenticated HTTP and WebSocket relays over an actual Unix socket, including logout and permission revocation. The host tests use substitute tmux/ttyd executables to verify session/process lifecycle. A live Ubuntu/ttyd/NPM smoke test is still required after setup.
 
+The BIOS view and automatic pairing need the updated station scripts on each testing host, the updated frontend and backend, and a reinstall of `terminal_host/server.cjs` and `terminal_host/biosIdle.cjs` using `sudo bash terminal_host/install.sh --node "$(command -v node)"`. The host installer restarts ttyd connections but leaves tmux sessions running. Update the development and production backend if both serve terminal views from the same host.
+
 References: [ttyd reverse proxy](https://github.com/tsl0922/ttyd/wiki/Nginx-reverse-proxy), [ttyd client options](https://github.com/tsl0922/ttyd/wiki/Client-Options), [NodeSource installation](https://github.com/nodesource/distributions).
 
 ## Local development cookie fix
@@ -193,8 +200,8 @@ References: [ttyd reverse proxy](https://github.com/tsl0922/ttyd/wiki/Nginx-reve
 If an older dev build shows **Terminal access expired** inside the iframe, update the dev backend and restart the frontend:
 
 ```bash
-/opt/homebrew/bin/bash ./dev_backend_deploy.sh TSS_DEV
-/opt/homebrew/bin/bash ./dev_frontend_deploy.sh TSS_DEV
+/opt/homebrew/bin/bash ./dev_backend_deploy.sh TSS
+/opt/homebrew/bin/bash ./dev_frontend_deploy.sh TSS
 ```
 
 Keep the remote dev backend's `FRONTEND_URL=http://localhost:5173` and `TERMINAL_PUBLIC_ORIGIN=https://devbackend.tss.wistronlabs.com`. Sign out and back in at `http://localhost:5173`. Network requests and the terminal iframe should now use `http://localhost:5173/api/v1/...`; Vite forwards them to the dev backend over HTTPS. No third-party cookie exception is needed. The backend still checks WebSocket Origin against its configured backend or frontend origin. Host-service reinstallation and NPM changes are not needed for this fix.
@@ -225,3 +232,7 @@ overflow. The backend proxy adds scroll containment CSS inside the terminal HTML
 Deploy both frontend and backend for this fix; no new host-service reinstall is
 needed if station mouse support is already installed. Existing browser frames
 need to be reopened to load the updated HTML.
+
+### Terminal clipboard
+
+The Stations page has a **Terminal help** button with copy instructions. Hold Option while dragging on macOS, or Shift while dragging on Windows and Linux, to select browser text while tmux mouse mode is on. Release the mouse to copy the selection through ttyd. A yellow tmux copy-mode selection is not browser text; press Esc and select again with the modifier key. Focus the terminal and use the browser's paste shortcut to paste. The backend injects a small bridge into the ttyd page to enable Option selection on Mac and copy shortcuts as a fallback; this requires updated backend and frontend code, but no terminal host reinstall.

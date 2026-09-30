@@ -3,16 +3,12 @@ import { AuthContext } from "../context/AuthContext";
 import useTerminalApi from "../hooks/useTerminalApi";
 import TerminalWorkspace from "../components/TerminalWorkspace";
 import TerminalSessionContext from "../context/TerminalSessionContext";
-import React, { useEffect, useState, useContext } from "react";
-import SearchContainer from "../components/SearchContainer.jsx";
-
-import useIsMobile from "../hooks/useIsMobile.jsx";
+import React, { useEffect, useState, useContext, useRef } from "react";
 import useApi from "../hooks/useApi.jsx";
 
 import Rack from "../components/Rack.jsx";
 import Table from "../components/Table.jsx";
 
-import { formatDateHumanReadable } from "../utils/date_format.js";
 
 function StationTableSkeleton({ rows }) {
   return (
@@ -59,6 +55,37 @@ function StationStatusSkeleton({ isTss }) {
         ))}
       </div>
     </div>
+  );
+}
+
+function TerminalHelp() {
+  const help = useRef(null);
+  useEffect(() => {
+    const dismiss = (event) => {
+      if (event.type === "keydown" && event.key !== "Escape") return;
+      if (help.current && (event.type === "keydown" || !help.current.contains(event.target))) help.current.open = false;
+    };
+    document.addEventListener("pointerdown", dismiss);
+    document.addEventListener("keydown", dismiss);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss);
+      document.removeEventListener("keydown", dismiss);
+    };
+  }, []);
+
+  return (
+    <details ref={help} className="relative z-30 shrink-0">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 [&::-webkit-details-marker]:hidden">
+        <span aria-hidden="true" className="flex h-4 w-4 items-center justify-center rounded-full border border-current text-[10px] font-bold">?</span>
+        Terminal help
+      </summary>
+      <div className="absolute right-0 top-full mt-2 w-80 max-w-[calc(100vw-3rem)] rounded-lg border border-gray-200 bg-white p-4 text-sm text-gray-700 shadow-lg">
+        <h2 className="font-semibold text-gray-900">Copy from a terminal</h2>
+        <p className="mt-2"><strong>Mac:</strong> Hold Option and drag across the text. Release to copy.</p>
+        <p className="mt-2"><strong>Windows / Linux:</strong> Hold Shift and drag across the text. Release to copy.</p>
+        <p className="mt-3 border-t border-gray-100 pt-3 text-gray-600">A yellow highlight is tmux copy mode. Press Esc, then select again with the modifier key above. To paste, focus the terminal and use your browser’s paste shortcut.</p>
+      </div>
+    </details>
   );
 }
 
@@ -118,21 +145,12 @@ function StationPage() {
   const openTerminal = terminalAccess
     ? (station) => setParams({ terminal: String(station) })
     : undefined;
-  const FRONTEND_URL = import.meta.env.VITE_URL;
   const LOCATION = import.meta.env.VITE_LOCATION;
 
   const { getStations } = useApi();
   const [stations, setStations] = useState([]);
   const [error, setError] = useState("");
-  const [downloads, setDownloads] = useState([]);
   const [loading, setLoading] = useState(false);
-
-  const isMobile = useIsMobile();
-
-  const baseUrl =
-    import.meta.env.MODE === "development"
-      ? FRONTEND_URL // is "/l10_logs/" in development
-      : FRONTEND_URL; // is "/l10_logs/" in production
 
   const fetchStations = async () => {
     try {
@@ -164,67 +182,14 @@ function StationPage() {
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => {
-    // fetch downloads once
-    const fetchDownloads = async () => {
-      try {
-        const link = `${baseUrl}/l10_logs/`;
-        const res = await fetch(link);
-        const text = await res.text();
-        const parser = new DOMParser();
-        const htmlDoc = parser.parseFromString(text, "text/html");
-        const rows = htmlDoc.querySelectorAll("tr");
-        const entries = [];
-        rows.forEach((row, rowIndex) => {
-          if (rowIndex >= 3 && rowIndex < rows.length - 1) {
-            let rawDate = "";
-            let name = "";
-            let href = "";
-            const cols = row.querySelectorAll("td");
-            cols.forEach((col, colIndex) => {
-              // get folder name and href
-              if (colIndex == 1) {
-                name = Array.from(col.querySelectorAll("a"))[0]
-                  .textContent.trim()
-                  .replace(/\/$/, "");
-                href = Array.from(col.querySelectorAll("a"))[0].getAttribute(
-                  "href",
-                );
-              }
-
-              // get raw date data
-              if (colIndex == 2) {
-                rawDate = col.textContent.trim();
-              }
-            });
-
-            const formattedDate = formatDateHumanReadable(
-              new Date(rawDate + "Z"),
-            );
-
-            //push entry
-            entries.push({
-              name,
-              href: link + href,
-              name_title: "File Name",
-              date: formattedDate,
-              date_title: "Date Modified",
-            });
-          }
-        });
-        setDownloads(entries);
-      } catch (err) {
-        console.error("Failed to fetch downloads:", err);
-      }
-    };
-    fetchDownloads();
-  }, []);
-
   return (
     <>
       {/* Testing Stations */}
       <main className="md:max-w-10/12  mx-auto mt-10 bg-white rounded-2xl shadow-lg p-6 space-y-6">
-        <h1 className="text-3xl font-semibold text-gray-800">Testing Stations</h1>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <h1 className="text-3xl font-semibold text-gray-800">Testing Stations</h1>
+          {terminalAccess && <TerminalHelp />}
+        </div>
         <div className="flex gap-2 border-b border-gray-200 pb-3">
           <button
             className={`rounded-md px-4 py-2 text-sm font-medium ${!terminalTab ? "bg-blue-600 text-white" : "text-gray-600 hover:bg-gray-100"}`}
@@ -386,22 +351,6 @@ function StationPage() {
           </TerminalSessionContext.Provider>
         )}
       </main>
-      {/* Available Downloads */}
-      {/* <section className="md:max-w-10/12 mx-auto mt-8 bg-white rounded shadow-md p-4">
-        <SearchContainer
-          data={downloads}
-          title={"Available Logs"}
-          displayOrder={["name", "date"]}
-          defaultSortBy={"date"}
-          defaultSortAsc={false}
-          fieldStyles={{
-            name: "text-blue-600 font-medium",
-            date: "text-gray-500 text-sm",
-          }}
-          linkType="external"
-          visibleFields={isMobile ? ["name", "date"] : ["name", "date"]}
-        />
-      </section> */}
     </>
   );
 }

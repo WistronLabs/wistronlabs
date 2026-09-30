@@ -46,6 +46,7 @@ fi
 pane=$(tmux capture-pane -p -t "$STATION_NAME" | grep -v -e '^\s*$' -e 'falab@franklin:~' -e '0:bash.*localhost\"')
 progress_plan=$(tmux show-options -v -t "$STATION_NAME" @l10_progress_plan 2>/dev/null || true)
 progress_run=$(tmux show-options -v -t "$STATION_NAME" @l10_progress_run 2>/dev/null || true)
+progress_log=$(tmux show-options -v -t "$STATION_NAME" @l10_progress_log 2>/dev/null || true)
 
 CURRENT_STATION_TAG=""
 if is_backend_mode && [[ -n "${SERVER_LOCATION:-}" ]]; then
@@ -137,18 +138,28 @@ if [[ "$CODE" != "1" && $(echo "$pane" | grep -c "logs are located at ") -gt 0 ]
 fi
 
 if [ "$CODE" == "1" ]; then
-  # Only count results from this run. Missing tmux history means progress is
-  # unknown, rather than an elapsed-time estimate.
+  # The per-run log survives tmux scrollback. Older runs still use the pane
+  # marker when they have no progress log configured.
   progress_pane=""
-  if [[ -n "$progress_run" ]]; then
+  progress_available=0
+  if [[ -n "$progress_log" && -f "$progress_log" && -r "$progress_log" ]]; then
+    progress_available=1
+    finished_tests=$(tr '\r' '\n' < "$progress_log" |
+      sed -E 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g' |
+      grep -E "^(Testing|Dumping).*\[ [0-9]+\:[0-9]{2}s \]" |
+      sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ \[ [0-9]+\:[0-9]{2}s \]$//g" || true)
+  elif [[ -n "$progress_run" ]]; then
     full_pane=$(tmux capture-pane -p -S - -t "$STATION_NAME" 2>/dev/null || true)
     progress_pane=$(printf '%s\n' "$full_pane" | awk -v marker="L10_PROGRESS_START=$progress_run" '
       $0 == marker { seen=1; next }
       seen { print }
     ')
+    if [[ -n "$progress_pane" ]]; then
+      progress_available=1
+      finished_tests=$(printf '%s\n' "$progress_pane" | grep -E "^(Testing|Dumping).*\[ [0-9]+\:[0-9]{2}s \]" | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ \[ [0-9]+\:[0-9]{2}s \]$//g")
+    fi
   fi
-  finished_tests=$(printf '%s\n' "$progress_pane" | grep -P "^(Testing|Dumping).*\[ [0-9]+\:[0-9]{2}s \]" | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ \[ [0-9]+\:[0-9]{2}s \]$//g")
-  test_current=$(printf '%s\n' "$pane" | grep -P "^(Testing|Dumping)" | tail -n1 | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ .*$//g")
+  test_current=$(printf '%s\n' "$pane" | grep -E "^(Testing|Dumping)" | tail -n1 | sed -E "s/^(Testing|Dumping) //g" | sed -E "s/ .*$//g")
   if [[ -n $test_current ]]; then
     MESSAGE="$MESSAGE ($test_current)"
   fi
@@ -169,7 +180,7 @@ if [ "$CODE" == "1" ]; then
     + (if $timeout == "" then {} else {TIMEOUT: ($timeout | lines)} end)
     + (if $skipped == "" then {} else {SKIPPED: ($skipped | lines)} end)
   ')
-  if [[ -n "$progress_plan" && -n "$progress_pane" ]] &&
+  if [[ -n "$progress_plan" && "$progress_available" -eq 1 ]] &&
     jq -e 'type == "array" and length > 0' <<< "$progress_plan" >/dev/null 2>&1; then
     progress=$(jq -nc --argjson plan "$progress_plan" --argjson details "$DETAILS" '
       def completed: (($details.OK // []) + ($details.FAILED // []) + ($details.TIMEOUT // []) + ($details.SKIPPED // []));

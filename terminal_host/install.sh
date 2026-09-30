@@ -30,6 +30,7 @@ ttyd --help 2>&1 | grep -q -- '--writable' || { echo 'ttyd must support -W/--wri
 "$NODE_PATH_FOR_SERVICE" -e 'if (+process.versions.node.split(".")[0] < 20) process.exit(1)' || { echo 'Node.js 20+ required.' >&2; exit 1; }
 install -d -m 0755 /opt/wistron-terminals
 install -m 0644 "$ROOT/terminal_host/server.cjs" /opt/wistron-terminals/server.cjs
+install -m 0644 "$ROOT/terminal_host/biosIdle.cjs" /opt/wistron-terminals/biosIdle.cjs
 install -m 0644 "$ROOT/website_backend/src/services/terminalProxy.js" /opt/wistron-terminals/terminalProxy.js
 # Resolve executable paths instead of assuming distribution-specific install locations.
 TTYD_PATH=$(command -v ttyd)
