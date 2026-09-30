@@ -90,7 +90,12 @@ function createTerminals({
     try {
       const result = await hostJson(`${PREFIX}/bios/sessions`);
       if (result.status !== 200 || !Array.isArray(result.data.bios)) throw new Error();
-      res.set("Cache-Control", "no-store").json({ bios: result.data.bios });
+      const opens = Array.isArray(result.data.opens) ? result.data.opens.filter((item) =>
+        /^[1-9]\d{0,5}$/.test(item?.station) &&
+        /^[a-f0-9]{12}$/.test(item?.mac) &&
+        /^\d{19}$/.test(item?.event) && result.data.bios.includes(item.mac),
+      ) : [];
+      res.set("Cache-Control", "no-store").json({ bios: result.data.bios, opens });
     } catch {
       res.status(503).json({ error: "Unable to list BIOS sessions" });
     }

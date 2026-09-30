@@ -439,7 +439,7 @@ report_live_status() {
     echo "Boot status: complete"
     bios_session_name="bs_${BMC_MAC}"
     if tmux has-session -t "=$bios_session_name" 2>/dev/null; then
-      echo "BIOS serial session $bios_session_name is available in Stations → Terminals → BIOS serial."
+      echo "BIOS serial session $bios_session_name is available. Website viewers of this station see it beside the boot terminal. In SSH tmux, press Ctrl-b then s to select it."
     else
       echo "INFO - No BIOS session found; staying in $STATION_SESSION_NAME."
     fi

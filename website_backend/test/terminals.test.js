@@ -62,7 +62,7 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
     forwarded = req.headers;
     forwardedPath = req.url;
     if (req.url.endsWith("/sessions"))
-      res.writeHead(200, { "content-type": "application/json" }).end(req.url.includes("/bios/") ? '{"bios":["aabbccddeeff"]}' : '{"stations":["12"]}');
+      res.writeHead(200, { "content-type": "application/json" }).end(req.url.includes("/bios/") ? '{"bios":["aabbccddeeff"],"opens":[{"station":"12","mac":"aabbccddeeff","event":"1234567890123456789"}]}' : '{"stations":["12"]}');
     else if (req.url.endsWith("/preview")) {
       if (req.url.includes("/stations/12/"))
         res.writeHead(200, { "content-type": "application/json" }).end('{"output":"L10 Diagnostic Test\\n"}');
@@ -151,6 +151,8 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   assert.deepEqual((await (await call("/sessions", 2)).json()).stations, ["12"]);
   assert.equal((await call("/bios/sessions", 3)).status, 403);
   assert.deepEqual((await (await call("/bios/sessions", 2)).json()).bios, ["aabbccddeeff"]);
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).opens,
+    [{ station: "12", mac: "aabbccddeeff", event: "1234567890123456789" }]);
   assert.equal((await call("/bios/not-a-mac/connect", 2, "POST")).status, 400);
   assert.equal((await call("/bios/000000000000/connect", 2, "POST")).status, 404);
   assert.equal((await call("/stations/12/preview", 3)).status, 403);

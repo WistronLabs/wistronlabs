@@ -93,7 +93,7 @@ This script opens the system BIOS or serial console using the BMC. It is useful 
 - `-m MAC_ADDRESS` — Specify the BMC by its **MAC address**.
 - `-t SERVICE_TAG` — Specify the system by **service tag** and pull the BMC MAC from backend.
 
-From a station tmux session, the script starts or reuses a separate `bs_<BMC_MAC>` session without attaching it inside `stn_<number>`. In **Stations → Terminals**, add or select an empty panel and choose the BIOS session alongside the station terminals. From a terminal outside tmux, the script attaches to the BIOS session as before.
+From a station tmux session, the script starts or reuses a separate `bs_<BMC_MAC>` session without attaching it inside `stn_<number>`. Website viewers of that station automatically get a side by side station and BIOS view when the BIOS session opens. In SSH tmux, press `Ctrl-b`, then `s` to select the BIOS session. From a terminal outside tmux, the script attaches to the BIOS session as before.
 
 ---
 

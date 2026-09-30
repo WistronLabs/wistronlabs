@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   normalizeTerminalLayout, loadTerminalLayout, addTerminalGroup, placeTerminal,
-  addSingle, removeTerminalGroup, closeTerminal, resizeTerminalGroup, changeTerminalMode, renameTerminalView,
+  addSingle, openBiosBesideStation, removeTerminalGroup, closeTerminal, resizeTerminalGroup, changeTerminalMode, renameTerminalView,
 } from "../src/utils/terminalLayout.js";
 const stations = (layout) => layout.groups.flatMap((g) => g.slots).filter(Boolean);
 const storage = (value) => ({ getItem: () => JSON.stringify(value) });
@@ -152,4 +152,29 @@ test("BIOS sessions share views with stations and survive saved layout changes",
   layout = closeTerminal(layout, bios);
   assert.deepEqual(stations(layout), ["1"]);
   assert.equal(placeTerminal(layout, "bios:../../bad", layout.activeGroup, 0), layout);
+});
+
+test("opening BIOS beside a single station makes a side by side view", () => {
+  let layout = normalizeTerminalLayout({ open: ["1", "2"] });
+  const original = layout.groups[0].id;
+  layout = openBiosBesideStation(layout, "1", "aabbccddeeff");
+  assert.equal(layout.activeGroup, original);
+  assert.deepEqual(layout.groups[0].slots, ["1", "bios:aabbccddeeff"]);
+  assert.equal(layout.groups[0].mode, "columns");
+  assert.deepEqual(layout.groups[1].slots, ["2"]);
+  assert.deepEqual(openBiosBesideStation(layout, "1", "aabbccddeeff"), layout);
+});
+
+test("opening BIOS from a multi panel view moves its station into a new side by side view", () => {
+  let layout = normalizeTerminalLayout({ groups: [
+    { id: "work", mode: "grid", slots: ["1", "2", "3", "4"] },
+    { id: "bios", mode: "single", slots: ["bios:aabbccddeeff"] },
+    { id: "other", mode: "single", slots: ["5"] },
+  ], activeGroup: "work" });
+  layout = openBiosBesideStation(layout, "1", "aabbccddeeff");
+  assert.deepEqual(layout.groups[0].slots, [null, "2", "3", "4"]);
+  assert.deepEqual(layout.groups[1].slots, ["1", "bios:aabbccddeeff"]);
+  assert.equal(layout.groups[1].mode, "columns");
+  assert.deepEqual(layout.groups[2].slots, ["5"]);
+  assert.equal(layout.activeGroup, layout.groups[1].id);
 });

@@ -11,7 +11,7 @@ import TerminalPanel from "./TerminalPanel";
 import { button, TerminalIcon } from "./terminalControls";
 import {
   loadTerminalLayout, normalizeTerminalLayout, terminalModes, addTerminalGroup,
-  placeTerminal, addSingle, removeTerminalGroup, closeTerminal,
+  placeTerminal, addSingle, openBiosBesideStation, removeTerminalGroup, closeTerminal,
   resizeTerminalGroup, changeTerminalMode, renameTerminalView,
 } from "../utils/terminalLayout";
 
@@ -149,6 +149,8 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
   const [biosLoaded, setBiosLoaded] = useState(false);
   const [biosError, setBiosError] = useState("");
   const key = `terminal-layout:${import.meta.env.VITE_LOCATION}:${user?.id}${popout ? `:popout:${initialStation}` : ""}`;
+  const eventKey = `terminal-bios-events:${import.meta.env.VITE_LOCATION}:${user?.id}`;
+  const seenBiosEvents = useRef(null);
   const [layout, setLayout] = useState(() => loadTerminalLayout(key, initialStation));
   const [draggedTerminal, setDraggedTerminal] = useState(null);
   const [previewView, setPreviewView] = useState(null);
@@ -165,13 +167,39 @@ export default function TerminalWorkspace({ stations, initialStation, popout }) 
   const tabs = useRef(null);
   useEffect(() => {
     let active = true;
-    const refresh = () => request("/bios/sessions")
-      .then((data) => { if (active) { setBiosSessions(data.bios || []); setBiosLoaded(true); setBiosError(""); } })
-      .catch((error) => { if (active) setBiosError(error.message); });
+    let busy = false;
+    try {
+      const saved = JSON.parse(sessionStorage.getItem(eventKey) || "{}");
+      seenBiosEvents.current = saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
+    }
+    catch { seenBiosEvents.current = {}; }
+    const refresh = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const data = await request("/bios/sessions");
+        if (!active) return;
+        setBiosSessions(data.bios || []);
+        setBiosLoaded(true);
+        setBiosError("");
+        for (const open of data.opens || []) {
+          const event = `${open.mac}:${open.event}`;
+          if (seenBiosEvents.current[open.station] === event) continue;
+          seenBiosEvents.current[open.station] = event;
+          try { sessionStorage.setItem(eventKey, JSON.stringify(seenBiosEvents.current)); } catch { /* Storage may be disabled. */ }
+          setLayout((previous) => {
+            const visible = previous.groups.find((g) => g.id === previous.activeGroup);
+            return visible?.slots.includes(open.station)
+              ? openBiosBesideStation(previous, open.station, open.mac) : previous;
+          });
+        }
+      } catch (error) { if (active) setBiosError(error.message); }
+      finally { busy = false; }
+    };
     refresh();
-    const timer = setInterval(refresh, 5000);
+    const timer = setInterval(refresh, 1000);
     return () => { active = false; clearInterval(timer); };
-  }, [request]);
+  }, [request, eventKey]);
   useEffect(() => {
     try { localStorage.setItem(key, JSON.stringify(layout)); } catch { /* Storage may be disabled. */ }
   }, [key, layout]);

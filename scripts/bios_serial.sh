@@ -168,10 +168,21 @@ if [[ -n "${TMUX:-}" ]]; then
     IN_STATION_TMUX=1
 fi
 
+announce_bios_session() {
+    local station_session
+    [[ "$IN_STATION_TMUX" == "1" ]] || return 0
+    station_session="$(tmux display-message -p '#S' 2>/dev/null)" || return 0
+    [[ "$station_session" =~ ^stn_[1-9][0-9]{0,5}$ ]] || return 0
+    # The website polls this station-scoped tmux option and opens the BIOS
+    # terminal while boot/L10 is still running. This never switches tmux clients.
+    tmux set-option -t "=$station_session:" @wistron_bios_open "${MAC_NO_COLONS}:$(date +%s%N)" 2>/dev/null || true
+}
+
 # A station pane must never attach another tmux client inside itself.
 if tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
     if [[ "$IN_STATION_TMUX" == "1" ]]; then
-        echo "BIOS serial session $SESSION_NAME is ready. Open it in Stations → Terminals → BIOS serial."
+        announce_bios_session
+        echo "BIOS serial session $SESSION_NAME is ready. Website viewers of this station will see it beside the station. In SSH tmux, press Ctrl-b then s to select it."
     else
         tmux attach-session -t "=$SESSION_NAME"
     fi
@@ -230,7 +241,8 @@ if ! tmux has-session -t "=$SESSION_NAME" 2>/dev/null; then
 fi
 
 if [[ "$IN_STATION_TMUX" == "1" ]]; then
-    echo "BIOS serial session $SESSION_NAME is ready. Open it in Stations → Terminals → BIOS serial."
+    announce_bios_session
+    echo "BIOS serial session $SESSION_NAME is ready. Website viewers of this station will see it beside the station. In SSH tmux, press Ctrl-b then s to select it."
 else
     tmux attach-session -t "=$SESSION_NAME"
 fi

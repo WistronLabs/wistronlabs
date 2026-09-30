@@ -4,11 +4,12 @@
 
 - Stations → **Terminals**, or **Open Terminal** on a station row.
 - Shared typing into the existing `falab` tmux session `stn_<station number>`.
-- BIOS serial uses a separate `bs_<BMC MAC>` tmux session. Run `bios_serial.sh` in a station terminal, then choose its MAC in an empty **Stations → Terminals** panel. BIOS panels use the same single, side by side, stacked, four panel, and tabbed views as stations. Opening or closing a BIOS panel does not change the station session.
+- BIOS serial uses a separate `bs_<BMC MAC>` tmux session. Running `bios_serial.sh`, `boot.sh -l`, or `l10_test.sh -l` in a station terminal automatically opens BIOS beside that station for website viewers already showing the station. A single view becomes side by side. From a multi panel view, the station moves to a new side by side tab with BIOS on the right; other panels remain in their prior view. BIOS can also be selected manually in an empty panel. Opening or closing a BIOS panel does not change the station session.
+- The station tmux pane is shared between SSH and website viewers. A BIOS command run from SSH will also open the paired view for website viewers showing that station. SSH clients stay in their current session and can use `Ctrl-b`, then `s` to select BIOS. BIOS sessions with no attached tmux clients for 24 hours are closed by the host service; attached website and SSH clients keep a session active. The 24 hour clock starts on the first cleanup scan and resets after a host-service restart.
 - Terminal Access permits opening any active BIOS session on that site, just as it permits opening any station terminal on that site. The website only lists existing BIOS sessions and never creates one from a BMC MAC.
 - Create the session if missing. Opening a terminal never starts a test automatically.
 - One strip of terminal views. Each view has its own Single, Side by side, Stacked, or Four panels layout. Stacked and four-panel views have double height; dividers resize only the current view.
-- **+** creates an empty view. Add stations in its empty panels. Drag terminal headers to move into empty panels or swap occupied ones; hover another view tab to reveal it, or drop onto **+** to create a one-panel view. Hidden views disconnect; tmux continues running.
+- **+** creates an empty view. Add stations or BIOS sessions in its empty panels. Drag terminal headers to move into empty panels or swap occupied ones; hover another view tab to reveal it, or drop onto **+** to create a one-panel view. Hidden views disconnect; tmux continues running.
 - Views, panel assignments, selection, and divider sizes are saved per website user/location in that browser. Existing saved groups become views without losing their assignments. Pop-out windows have separate saved layouts.
 - Closing a view disconnects its panels and removes the view. Closing a terminal removes only that panel; a view disappears when its last terminal is closed or moved away. Neither action stops tmux.
 - Use the pencil beside a view tab (or double-click its title) to rename that view. **Reset to default** restores its automatic title, such as “4 stations.” View names are saved with the layout and survive panel moves and layout changes. Individual stations retain their station numbers.
@@ -165,7 +166,7 @@ The frontend Proxy Host needs no new terminal route because it embeds the termin
 6. Remove a non-admin user's Terminal Access and save. Verify their active browser terminal disconnects within about 10 seconds.
 7. Log out and verify pop-out browser terminals disconnect. Existing ordinary SSH sessions remain unaffected.
 8. Verify a user without Terminal Access cannot open the terminal, including by copying its URL.
-9. In a station terminal, run `./bios_serial.sh -m 001a2b3c4d5e` with a real BMC MAC. The station prompt should report `bs_001a2b3c4d5e` without an attach error. Add an empty panel or view, select that BIOS session, and confirm it is interactive while `tmux display-message -p '#S'` in the station still reports its `stn_` session.
+9. In a station terminal, run `./bios_serial.sh -m 001a2b3c4d5e` with a real BMC MAC. The station prompt should report `bs_001a2b3c4d5e` without an attach error. Within a second or two, the website should open a side by side station and BIOS view. Confirm both are interactive while `tmux display-message -p '#S'` in the station still reports its `stn_` session. Repeat with `boot.sh -l` and `l10_test.sh -l` using an idle test unit; the BIOS view should open when the session starts, while those scripts continue.
 10. Close the BIOS panel and confirm `tmux has-session -t '=bs_001a2b3c4d5e'` still succeeds. Reopen the same MAC and confirm the existing serial session is reused.
 
 A sudo prompt behaves as in a normal shared terminal. The website does not store or automatically enter the sudo password.
@@ -190,7 +191,7 @@ npm run build --prefix website_frontend
 
 The gateway tests exercise authenticated HTTP and WebSocket relays over an actual Unix socket, including logout and permission revocation. The host tests use substitute tmux/ttyd executables to verify session/process lifecycle. A live Ubuntu/ttyd/NPM smoke test is still required after setup.
 
-The BIOS view needs the updated station scripts on each testing host, the updated frontend and backend, and a reinstall of `terminal_host/server.cjs` using `sudo bash terminal_host/install.sh --node "$(command -v node)"`. The host installer restarts ttyd connections but leaves tmux sessions running. Update the development and production backend if both serve terminal views from the same host.
+The BIOS view and automatic pairing need the updated station scripts on each testing host, the updated frontend and backend, and a reinstall of `terminal_host/server.cjs` and `terminal_host/biosIdle.cjs` using `sudo bash terminal_host/install.sh --node "$(command -v node)"`. The host installer restarts ttyd connections but leaves tmux sessions running. Update the development and production backend if both serve terminal views from the same host.
 
 References: [ttyd reverse proxy](https://github.com/tsl0922/ttyd/wiki/Nginx-reverse-proxy), [ttyd client options](https://github.com/tsl0922/ttyd/wiki/Client-Options), [NodeSource installation](https://github.com/nodesource/distributions).
 

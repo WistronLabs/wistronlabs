@@ -30,6 +30,10 @@ test("host service reuses station processes, recreates missing sessions, and det
     path.join(__dirname, "../src/services/terminalProxy.js"),
     path.join(root, "terminalProxy.js"),
   );
+  await fs.copyFile(
+    path.join(__dirname, "../../terminal_host/biosIdle.cjs"),
+    path.join(root, "biosIdle.cjs"),
+  );
   const state = path.join(root, "state.json");
   await fs.writeFile(state, "{}");
   const log = path.join(root, "calls.jsonl");
@@ -40,7 +44,14 @@ const fs = require('fs'); const args = process.argv.slice(2);
 fs.appendFileSync(process.env.CALL_LOG, JSON.stringify(args)+'\\n');
 const state = JSON.parse(fs.readFileSync(process.env.STATE));
 const name = args[args.indexOf('-t')+1]?.replace(/^=/,'').replace(/:$/,'') || args[args.indexOf('-s')+1];
-if (args[0] === 'list-sessions') { process.stdout.write(Object.keys(state).filter((key)=>state[key]).join('\\n')); process.exit(Object.values(state).some(Boolean) ? 0 : 1); }
+if (args[0] === 'list-sessions') {
+  const format = args[args.indexOf('-F')+1] || '';
+  const names = Object.keys(state).filter((key)=>state[key]);
+  process.stdout.write(names.map((key, index) => format.includes('|')
+    ? format.includes('session_id') ? key+'|$'+(index+1)+'|1234567890|0|0' : key+'|'+(state[key].event || '')
+    : key).join('\\n'));
+  process.exit(names.length ? 0 : 1);
+}
 if (args[0] === 'has-session') process.exit(state[name] ? 0 : 1);
 if (args[0] === 'capture-pane') { if (!state[name]) process.exit(1); process.stdout.write('L10 Diagnostic Test\\nStation output\\n'); process.exit(0); }
 if (args[0] === 'set-option' || args[0] === 'set-window-option') {
@@ -122,6 +133,10 @@ http.createServer((req,res)=>res.end('station screen')).listen(args[args.indexOf
   assert.equal((await get(control, `${biosBase}/ensure`)).status, 404);
   await fs.writeFile(state, JSON.stringify({ stn_12: true, bs_aabbccddeeff: true }));
   assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).bios, ["aabbccddeeff"]);
+  const event = String(Date.now()) + "000000";
+  await fs.writeFile(state, JSON.stringify({ stn_12: { event: `aabbccddeeff:${event}` }, bs_aabbccddeeff: true }));
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).opens,
+    [{ station: "12", mac: "aabbccddeeff", event }]);
   assert.equal((await get(control, `${biosBase}/ensure`)).status, 200);
   assert.equal((await get(control, `${biosBase}/ensure`)).status, 200);
   assert.equal((await get(control, `${biosBase}/`)).body, "station screen");

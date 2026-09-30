@@ -99,6 +99,36 @@ export function addSingle(layout, station) {
   return placeTerminal(added, station, added.activeGroup, 0);
 }
 
+export function openBiosBesideStation(layout, station, mac) {
+  station = stationId(station);
+  const bios = terminalId(`bios:${mac}`);
+  if (!station || !bios || !bios.startsWith("bios:")) return layout;
+  const source = layout.groups.find((g) => g.slots.includes(station));
+  if (!source) return layout;
+  if (source.mode === "columns" && source.slots[0] === station && source.slots[1] === bios)
+    return { ...layout, activeGroup: source.id };
+  const groups = layout.groups.map((g) => ({ ...g, slots: [...g.slots] }));
+  const biosSource = groups.find((g) => g.slots.includes(bios));
+  for (const group of groups) group.slots = group.slots.map((id) => id === bios ? null : id);
+  const target = groups.find((g) => g.id === source.id);
+  if (source.mode === "single") {
+    target.mode = "columns";
+    target.slots = [station, bios];
+    return normalizeTerminalLayout({ ...layout, groups: groups.filter((g) => g.id !== biosSource?.id || g.id === target.id || g.slots.some(Boolean)), activeGroup: target.id });
+  }
+  target.slots = target.slots.map((id) => id === station ? null : id);
+  const kept = groups.filter((g) => g.id !== source.id && g.id !== biosSource?.id || g.slots.some(Boolean));
+  while (kept.length >= 32) {
+    const empty = kept.findIndex((g) => g.slots.every((id) => !id));
+    if (empty < 0) return layout;
+    kept.splice(empty, 1);
+  }
+  const sourceIndex = kept.findIndex((g) => g.id === source.id);
+  const next = makeGroup(newId(kept), "columns", [station, bios]);
+  kept.splice(sourceIndex < 0 ? layout.groups.findIndex((g) => g.id === source.id) : sourceIndex + 1, 0, next);
+  return normalizeTerminalLayout({ ...layout, groups: kept, activeGroup: next.id });
+}
+
 // Closing a view disconnects its panels; it never creates replacement views.
 export function removeTerminalGroup(layout, id) {
   const index = layout.groups.findIndex((g) => g.id === id);
