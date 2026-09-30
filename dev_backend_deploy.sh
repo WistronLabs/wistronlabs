@@ -38,11 +38,18 @@ usage() {
 Usage:
   $0 list
   $0 all
-  $0 <DEV_NAME> [MORE...]
-  $0 reset <DEV_NAME|all>
+  $0 <SITE> [MORE...]
+  $0 reset <SITE|all>
+  $0 recover <SITE> <ACCOUNT_EMAIL>
+
+Examples:
+  $0 TSS
+  $0 reset TSS
+  $0 recover TSS someone@example.com
 
 Notes:
-- Only backends with is_dev=1 are allowed here.
+- SITE is the production site name (for example TSS); this script selects its DEV backend.
+- The distinct DEV names in backend_locations.conf remain internal config keys.
 - Lock enforcement: if the dev lock file is missing, deploy/reset will auto-create it using your local git user.email.
 
 Deploy:
@@ -57,9 +64,15 @@ Deploy:
 
 Reset (simple, same-host only):
   - Copies PROD db-data volume -> DEV db-data volume
+  - Restores DEV passwords, account roles, passkeys, and access codes by username
+  - Removes copied PROD passkeys and refresh sessions
   - Preserves DEV runtime config: .env + env/* + lock file
   - Starts the full DEV stack
   - Does NOT apply migrations (reset reflects the current PROD DB snapshot)
+
+Recover:
+  - Issues a temporary password and one-use DEV recovery code for one account
+  - The account uses both to set a new password and enroll a DEV passkey
 EOF
   exit 1
 }
@@ -87,10 +100,10 @@ done < "$CONF"
 
 print_dev_locations() {
   echo ""
-  echo "Available dev backends (is_dev=1):"
+  echo "Available dev sites:"
   for k in "${!HOST[@]}"; do
     if [[ "${IS_DEV[$k]}" == "1" ]]; then
-      echo "  - $k"
+      echo "  - $(infer_source_prod "$k") (config: $k)"
       echo "      host: ${HOST[$k]}"
       echo "      dir:  ${DIR[$k]}"
       echo "      proj: ${PROJ[$k]}"
@@ -103,6 +116,22 @@ print_dev_locations() {
 
 is_known() { [[ -n "${HOST[$1]:-}" ]]; }
 is_dev_target() { [[ "${IS_DEV[$1]:-}" == "1" ]]; }
+
+resolve_dev_target() {
+  local input="$1" match="" key source
+  # Existing DEV config keys remain accepted for older commands and links.
+  if is_dev_target "$input"; then echo "$input"; return 0; fi
+  for key in "${!HOST[@]}"; do
+    [[ "${IS_DEV[$key]}" == "1" ]] || continue
+    source="${SOURCE_PROD[$key]:-${key%_DEV}}"
+    if [[ "$source" == "$input" ]]; then
+      [[ -z "$match" ]] || die "Site '$input' maps to multiple DEV backends; use a unique config key"
+      match="$key"
+    fi
+  done
+  [[ -n "$match" ]] || die "No DEV backend configured for site '$input'"
+  echo "$match"
+}
 
 require_dev_targets() {
   for n in "$@"; do
@@ -185,12 +214,15 @@ infer_source_prod() {
 targets=()
 want_all=0
 reset_mode=0
+recover_mode=0
+recover_email=""
 
 case "$cmd" in
   "" ) usage ;;
   list ) print_dev_locations; exit 0 ;;
   all ) want_all=1 ;;
-  reset ) reset_mode=1; shift || true ;;
+  reset ) reset_mode=1; shift || true; [[ $# -eq 1 ]] || usage ;;
+  recover ) recover_mode=1; shift || true; [[ $# -eq 2 ]] || usage; targets=("$1"); recover_email="$2" ;;
   * ) targets=("$@") ;;
 esac
 
@@ -215,6 +247,9 @@ if [[ $reset_mode -eq 1 ]]; then
 fi
 
 [[ ${#targets[@]} -gt 0 ]] || usage
+for i in "${!targets[@]}"; do
+  targets[$i]="$(resolve_dev_target "${targets[$i]}")"
+done
 require_dev_targets "${targets[@]}"
 require_targets_reachable "${targets[@]}"
 
@@ -788,7 +823,7 @@ EOF
 }
 
 ###############################################################################
-# Reset (simple same-host db volume copy; no password changes)
+# Reset (same-host DB copy with DEV authentication state restored)
 ###############################################################################
 do_reset_one() {
   local dev="$1"
@@ -796,6 +831,7 @@ do_reset_one() {
   local dev_dir="${DIR[$dev]}"
   local dev_proj="${PROJ[$dev]}"
   local dev_lock="${LOCKFILE[$dev]}"
+  local dev_origin="${FRONTEND[$dev]}"
 
   local prod
   prod="$(infer_source_prod "$dev")"
@@ -836,7 +872,7 @@ do_reset_one() {
   enforce_lock_or_exit "$dev_host" "$dev_lock" "$dev"
 
   remote_bash "$dev_host" \
-    "DEV_DIR='$dev_dir' DEV_PROJ='$dev_proj' PROD_PROJ='$prod_proj'" <<'REMOTE'
+    "DEV_DIR='$dev_dir' DEV_PROJ='$dev_proj' PROD_PROJ='$prod_proj' DEV_ORIGIN='$dev_origin'" <<'REMOTE'
 set -euo pipefail
 die(){ echo "Error: $*" >&2; exit 1; }
 
@@ -855,14 +891,51 @@ DEV_VOL="${DEV_PROJ}_db-data"
 PROD_VOL="${PROD_PROJ}_db-data"
 
 cd "$DEV_DIR" || die "Missing DEV dir: $DEV_DIR"
+configured_origin="$(sed -n 's/^FRONTEND_URL=//p' env/site.env | tail -n 1)"
+[[ "$configured_origin" == "$DEV_ORIGIN" ]] || die "DEV FRONTEND_URL is '$configured_origin'; expected '$DEV_ORIGIN'. Fix env/site.env before resetting."
+d volume inspect "$PROD_VOL" >/dev/null || die "Missing PROD volume: $PROD_VOL"
+
+# Keep the DEV authentication state outside the database volume while it is replaced.
+# The snapshot contains password hashes and passkey public keys; remove it on exit.
+snapshot="$(mktemp)"
+chmod 600 "$snapshot"
+snapshot_restored=0
+trap 'if [[ "$snapshot_restored" -eq 1 ]]; then rm -f "$snapshot"; else echo "DEV authentication snapshot retained at $snapshot (mode 600)" >&2; fi' EXIT
+dc -p "$DEV_PROJ" exec -T db sh -c 'exec psql -X -qAt -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' > "$snapshot" <<'SQL'
+SELECT encode(convert_to(payload::text, 'UTF8'), 'hex') FROM (
+SELECT jsonb_build_object(
+  'users', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'username', username, 'display_name', display_name, 'password_hash', password_hash,
+    'admin', admin, 'super_admin', super_admin, 'terminal_access', terminal_access,
+    'enabled', enabled, 'must_change_password', must_change_password,
+    'session_version', session_version, 'mfa_enrolled_at', mfa_enrolled_at,
+    'temp_password_expires_at', temp_password_expires_at, 'created_at', created_at))
+    FROM users), '[]'::jsonb),
+  'passkeys', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'id', p.id, 'username', u.username, 'public_key_hex', encode(p.public_key, 'hex'),
+    'counter', p.counter, 'transports', p.transports, 'device_type', p.device_type,
+    'backed_up', p.backed_up, 'created_at', p.created_at, 'last_used_at', p.last_used_at))
+    FROM user_passkeys p JOIN users u ON u.id = p.user_id), '[]'::jsonb),
+  'codes', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+    'id', c.id, 'kind', c.kind, 'code_hash', c.code_hash, 'email', c.email,
+    'display_name', c.display_name, 'recipient', recipient.username,
+    'creator', creator.username, 'created_at', c.created_at,
+    'expires_at', c.expires_at, 'used_at', c.used_at, 'revoked_at', c.revoked_at))
+    FROM account_codes c LEFT JOIN users recipient ON recipient.id = c.user_id
+    LEFT JOIN users creator ON creator.id = c.created_by), '[]'::jsonb)
+) AS payload) snapshot;
+SQL
+[[ -s "$snapshot" && "$(wc -l < "$snapshot")" -eq 1 ]] || die "DEV authentication snapshot failed"
 
 echo ""
 echo "1) Stopping DEV stack..."
-dc -p "$DEV_PROJ" down >/dev/null 2>&1 || true
+dc -p "$DEV_PROJ" down
 
 echo ""
 echo "2) Removing DEV database volume: $DEV_VOL"
-d volume rm "$DEV_VOL" >/dev/null 2>&1 || true
+if d volume inspect "$DEV_VOL" >/dev/null 2>&1; then
+  d volume rm "$DEV_VOL" >/dev/null
+fi
 
 echo ""
 echo "3) Creating DEV database volume: $DEV_VOL"
@@ -880,11 +953,82 @@ d run --rm \
   '
 
 echo ""
-echo "5) Starting full DEV stack..."
+echo "5) Starting DEV database and restoring DEV authentication..."
+dc -p "$DEV_PROJ" up -d db
+ready=0
+for attempt in {1..30}; do
+  if dc -p "$DEV_PROJ" exec -T db sh -c 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1; then ready=1; break; fi
+  sleep 2
+done
+[[ "$ready" -eq 1 ]] || die "DEV database did not become ready; authentication snapshot remains in $snapshot until this command exits"
+{
+  cat <<'SQL'
+BEGIN;
+CREATE TEMP TABLE dev_auth_snapshot (payload_hex text);
+\copy dev_auth_snapshot FROM STDIN
+SQL
+  cat "$snapshot"
+  printf '\\.\n'
+  cat <<'SQL'
+CREATE TEMP VIEW snapshot_data AS
+SELECT convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb AS payload
+FROM dev_auth_snapshot;
+CREATE TEMP TABLE saved_users AS
+SELECT * FROM jsonb_to_recordset((SELECT payload->'users' FROM snapshot_data)) AS x(
+  username text, display_name text, password_hash text, admin boolean, super_admin boolean,
+  terminal_access boolean, enabled boolean, must_change_password boolean,
+  session_version integer, mfa_enrolled_at timestamptz,
+  temp_password_expires_at timestamptz, created_at timestamp);
+CREATE TEMP TABLE saved_keys AS
+SELECT * FROM jsonb_to_recordset((SELECT payload->'passkeys' FROM snapshot_data)) AS x(
+  id text, username text, public_key_hex text, counter bigint, transports jsonb,
+  device_type text, backed_up boolean, created_at timestamptz, last_used_at timestamptz);
+CREATE TEMP TABLE saved_codes AS
+SELECT * FROM jsonb_to_recordset((SELECT payload->'codes' FROM snapshot_data)) AS x(
+  id text, kind text, code_hash text, email text, display_name text,
+  recipient text, creator text, created_at timestamptz, expires_at timestamptz,
+  used_at timestamptz, revoked_at timestamptz);
+DELETE FROM refresh_sessions;
+DELETE FROM account_codes;
+DELETE FROM user_passkeys;
+UPDATE users AS u SET
+  display_name = s.display_name, password_hash = s.password_hash,
+  admin = s.admin, super_admin = s.super_admin, terminal_access = s.terminal_access,
+  enabled = s.enabled, must_change_password = s.must_change_password,
+  session_version = GREATEST(u.session_version, s.session_version) + 1,
+  mfa_enrolled_at = s.mfa_enrolled_at,
+  temp_password_expires_at = s.temp_password_expires_at
+FROM saved_users AS s WHERE u.username = s.username;
+INSERT INTO users (username, display_name, password_hash, admin, super_admin,
+  terminal_access, enabled, must_change_password, session_version, mfa_enrolled_at,
+  temp_password_expires_at, created_at)
+SELECT s.username, s.display_name, s.password_hash, s.admin, s.super_admin,
+  s.terminal_access, s.enabled, s.must_change_password, s.session_version + 1,
+  s.mfa_enrolled_at, s.temp_password_expires_at, s.created_at
+FROM saved_users AS s WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.username = s.username);
+INSERT INTO user_passkeys (id, user_id, public_key, counter, transports,
+  device_type, backed_up, created_at, last_used_at)
+SELECT k.id, u.id, decode(k.public_key_hex, 'hex'), k.counter, k.transports,
+  k.device_type, k.backed_up, k.created_at, k.last_used_at
+FROM saved_keys k JOIN users u ON u.username = k.username;
+INSERT INTO account_codes (id, kind, code_hash, email, display_name, user_id,
+  created_by, created_at, expires_at, used_at, revoked_at)
+SELECT c.id, c.kind, c.code_hash, c.email, c.display_name, recipient.id,
+  creator.id, c.created_at, c.expires_at, c.used_at, c.revoked_at
+FROM saved_codes c LEFT JOIN users recipient ON recipient.username = c.recipient
+LEFT JOIN users creator ON creator.username = c.creator;
+UPDATE users SET must_change_password = true, session_version = session_version + 1
+WHERE username NOT IN (SELECT username FROM saved_users) AND username LIKE '%@%';
+COMMIT;
+SQL
+} | dc -p "$DEV_PROJ" exec -T db sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+snapshot_restored=1
+
+echo "6) Starting full DEV stack..."
 dc -p "$DEV_PROJ" up -d --build
 
 echo ""
-echo "6) Stack status:"
+echo "7) Stack status:"
 dc -p "$DEV_PROJ" ps
 
 echo ""
@@ -895,12 +1039,69 @@ REMOTE
   echo "RESET complete: $dev DB volume copied from $prod."
 }
 
+do_recover_one() {
+  local dev="$1" email="$2"
+  [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die "Invalid account email"
+  email="${email,,}"
+  command -v node >/dev/null || die "Node.js is required to generate a temporary password"
+  command -v openssl >/dev/null || die "OpenSSL is required to generate a recovery code"
+  local temporary_password code password_hash code_hash
+  temporary_password="$(openssl rand -hex 24)"
+  code="$(openssl rand -hex 24)"
+  password_hash="$(PASSWORD_TO_HASH="$temporary_password" node -e '
+    const crypto = require("node:crypto");
+    const salt = crypto.randomBytes(24);
+    const hash = crypto.scryptSync(process.env.PASSWORD_TO_HASH, salt, 32,
+      { N: 32768, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+    process.stdout.write(`scrypt-v1$${salt.toString("base64url")}$${hash.toString("base64url")}`);
+  ')"
+  code_hash="$(printf '%s' "$code" | openssl dgst -sha256 -r | awk '{print $1}')"
+
+  enforce_lock_or_exit "${HOST[$dev]}" "${LOCKFILE[$dev]}" "$dev"
+  remote_bash "${HOST[$dev]}" \
+    "DEV_DIR='${DIR[$dev]}' DEV_PROJ='${PROJ[$dev]}' DEV_ORIGIN='${FRONTEND[$dev]}' RECOVERY_EMAIL='$email' PASSWORD_HASH='$password_hash' CODE_HASH='$code_hash'" <<'REMOTE'
+set -euo pipefail
+cd "$DEV_DIR"
+configured_origin="$(sed -n 's/^FRONTEND_URL=//p' env/site.env | tail -n 1)"
+[[ "$configured_origin" == "$DEV_ORIGIN" ]] || { echo "DEV FRONTEND_URL is '$configured_origin'; expected '$DEV_ORIGIN'" >&2; exit 1; }
+if docker info >/dev/null 2>&1; then D="docker"; else D="sudo -n docker"; fi
+$D compose -p "$DEV_PROJ" exec -T db sh -c 'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" "$@"' sh \
+  -v email="$RECOVERY_EMAIL" -v password_hash="$PASSWORD_HASH" -v code_hash="$CODE_HASH" <<'SQL'
+BEGIN;
+SELECT set_config('dev_recovery.email', :'email', true);
+UPDATE users SET password_hash = :'password_hash', must_change_password = true,
+  temp_password_expires_at = NULL, session_version = session_version + 1
+WHERE username = :'email' AND enabled = true;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM users WHERE username = current_setting('dev_recovery.email') AND enabled) THEN
+    RAISE EXCEPTION 'Account not found';
+  END IF;
+END $$;
+DELETE FROM user_passkeys WHERE user_id = (SELECT id FROM users WHERE username = :'email');
+DELETE FROM refresh_sessions WHERE user_id = (SELECT id FROM users WHERE username = :'email');
+UPDATE account_codes SET revoked_at = now()
+WHERE user_id = (SELECT id FROM users WHERE username = :'email')
+  AND used_at IS NULL AND revoked_at IS NULL;
+INSERT INTO account_codes (id, kind, code_hash, email, user_id, expires_at)
+SELECT gen_random_uuid()::text, 'recovery', :'code_hash', username, id, now() + interval '7 days'
+FROM users WHERE username = :'email' AND enabled = true;
+COMMIT;
+SQL
+REMOTE
+  echo "DEV account recovery prepared for $email on $dev."
+  echo "Temporary password: $temporary_password"
+  echo "Recovery code: $code"
+  echo "On the dev website, sign in with the temporary password, then set a new password and enroll a dev passkey with the recovery code."
+}
+
 ###############################################################################
 # Main
 ###############################################################################
 for name in "${targets[@]}"; do
   if [[ $reset_mode -eq 1 ]]; then
     do_reset_one "$name"
+  elif [[ $recover_mode -eq 1 ]]; then
+    do_recover_one "$name" "$recover_email"
   else
     do_deploy_one "$name"
   fi

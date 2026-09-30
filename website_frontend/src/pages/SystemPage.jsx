@@ -41,6 +41,7 @@ import AddTagModal from "../components/system-page/AddTagModal.jsx";
 import AllTagsModal from "../components/system-page/AllTagsModal.jsx";
 import GoodPPIDOption from "../components/system-page/GoodPPIDOption.jsx";
 import GoodPPIDSingleValue from "../components/system-page/GoodPPIDSingleValue.jsx";
+import LocationHistory from "../components/system-page/LocationHistory.jsx";
 import PartGroupLabel from "../components/system-page/PartGroupLabel.jsx";
 import PartOption from "../components/system-page/PartOption.jsx";
 import TagBubblesRow from "../components/system-page/TagBubblesRow.jsx";
@@ -3805,6 +3806,12 @@ function SystemPage() {
                                           instanceId={`donor-unit-${block.id}`}
                                           classNamePrefix="react-select"
                                           styles={select40Styles}
+                                          menuPortalTarget={
+                                            typeof document !== "undefined"
+                                              ? document.body
+                                              : null
+                                          }
+                                          menuPosition="fixed"
                                           placeholder="Select donor unit"
                                           isClearable
                                           isSearchable
@@ -5252,109 +5259,11 @@ function SystemPage() {
                   allowSearch={false}
                 />
               ) : tab === "history" ? (
-                <>
-                  <SearchContainer
-                    key="system-history-search"
-                    data={history.map((entry) => ({
-                      ...entry,
-                      from_location_title: "From",
-                      to_location_title: "To",
-                      note_title: "Note",
-                      changed_at_title: "Updated At",
-                      changed_at: formatDateHumanReadable(
-                        entry.changed_at,
-                        serverTimeZone,
-                      ),
-                      moved_by_title: "Moved By",
-                      moved_by:
-                        entry.moved_by === "deleted_user@example.com"
-                          ? "Unknown"
-                          : entry.moved_by,
-                      link: `locationHistory/${entry.id}`, // add link to each history entry
-                    }))}
-                    title=""
-                    displayOrder={[
-                      "to_location",
-                      "note",
-                      "moved_by",
-                      "changed_at",
-                    ]}
-                    visibleFields={
-                      isMobile
-                        ? ["to_location", "note"]
-                        : ["to_location", "note", "moved_by", "changed_at"]
-                    }
-                    defaultSortBy={"changed_at"}
-                    defaultSortAsc={true}
-                    fieldStyles={{
-                      to_location: (val) =>
-                        val === "Sent to L11" ||
-                        val === "Sent for Dell Repair" ||
-                        val === "RMA CID" ||
-                        val === "RMA VID" ||
-                        val === "RMA PID"
-                          ? {
-                              type: "pill",
-                              color: "bg-green-100 text-green-800",
-                            }
-                          : val === "Received" ||
-                              val === "In Debug - Wistron" ||
-                              val === "In L10"
-                            ? { type: "pill", color: "bg-red-100 text-red-800" }
-                            : {
-                                type: "pill",
-                                color: "bg-yellow-100 text-yellow-800",
-                              },
-                      from_location: (val) =>
-                        val === "Sent to L11" ||
-                        val === "Sent for Dell Repair" ||
-                        val === "RMA CID" ||
-                        val === "RMA VID" ||
-                        val === "RMA PID"
-                          ? {
-                              type: "pill",
-                              color: "bg-green-100 text-green-800",
-                            }
-                          : val === "Received" ||
-                              val === "In Debug - Wistron" ||
-                              val === "In L10"
-                            ? { type: "pill", color: "bg-red-100 text-red-800" }
-                            : {
-                                type: "pill",
-                                color: "bg-yellow-100 text-yellow-800",
-                              },
-                      note: (val) =>
-                        val?.includes(
-                          "Moving back to received from Inactive",
-                        ) ||
-                        val?.includes("Moving back to processed from Inactive")
-                          ? "font-semibold"
-                          : "",
-                    }}
-                    alignByField={{
-                      note: "left",
-                      moved_by: "right",
-                      changed_at: "right",
-                      to_location: "left",
-                    }}
-                    linkType={isMobile ? "internal" : "none"}
-                    allowSort={false}
-                    allowSearch={false}
-                    defaultPage="last"
-                    truncate={isMobile ?? true}
-                    onAction={token && handleDeleteLastHistoryEntry}
-                    actionButtonClass={
-                      token && "ml-2 text-xs text-grey-200 hover:text-red-400"
-                    }
-                    actionButtonVisibleIf={{
-                      field: "changed_at",
-                      equals: formatDateHumanReadable(
-                        history[0]?.changed_at,
-                        serverTimeZone,
-                      ), // only show action button for the most recent entry
-                    }}
-                  />
-                </>
+                <LocationHistory
+                  history={history}
+                  serverTimeZone={serverTimeZone}
+                  onRemoveLatest={token ? handleDeleteLastHistoryEntry : null}
+                />
               ) : tab === "logs" ? (
                 <>
                   <L11ScanHistory jobs={scanJobs.jobs} timeZone={serverTimeZone} />

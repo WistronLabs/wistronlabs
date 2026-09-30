@@ -53,6 +53,7 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   await pg.exec(
     "ALTER TABLE users ADD COLUMN super_admin boolean DEFAULT false; ALTER TABLE users ADD COLUMN enabled boolean DEFAULT true; ALTER TABLE users ADD COLUMN must_change_password boolean DEFAULT false; ALTER TABLE users ADD COLUMN session_version integer DEFAULT 1;",
   );
+  await pg.exec("CREATE TABLE system(service_tag text, bmc_mac char(12)); INSERT INTO system VALUES('TAG123','AABBCCDDEEFF');");
   await pg.exec("UPDATE users SET terminal_access=true WHERE id=2");
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "terminal-"));
   const socketPath = path.join(dir, "control.sock");
@@ -154,6 +155,11 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   assert.deepEqual((await (await call("/bios/sessions", 2)).json()).bios, ["aabbccddeeff"]);
   assert.deepEqual((await (await call("/bios/sessions", 2)).json()).opens,
     [{ station: "12", mac: "aabbccddeeff", event: "1234567890123456789" }]);
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).serviceTags,
+    { aabbccddeeff: "TAG123" });
+  await pg.exec("UPDATE system SET bmc_mac='112233445566'");
+  assert.deepEqual((await (await call("/bios/sessions", 2)).json()).serviceTags,
+    {}, "an unassigned BIOS session falls back to its MAC in the frontend");
   assert.equal((await call("/bios/not-a-mac/connect", 2, "POST")).status, 400);
   assert.equal((await call("/bios/000000000000/connect", 2, "POST")).status, 404);
   assert.equal((await call("/stations/12/preview", 3)).status, 403);
@@ -182,16 +188,37 @@ test("terminal gateway: permissions, station isolation, proxy traffic, presence,
   assert.match(htmlBody, /wistron-terminal-paste/);
   const bridge = /<script id="terminal-clipboard-bridge">([\s\S]*?)<\/script>/.exec(htmlBody)?.[1];
   const listeners = {};
-  const parent = { postMessage: (value, origin) => { assert.equal(origin, "https://frontend.test"); assert.equal(value.text, "selected output"); } };
+  const messages = [];
+  const parent = { postMessage: (value, origin) => { assert.equal(origin, "https://frontend.test"); messages.push(value); } };
   const pasted = [];
-  const term = { getSelection: () => "selected output", onSelectionChange: (callback) => callback(), paste: (value) => pasted.push(value) };
-  vm.runInNewContext(bridge, { window: { term, parent, addEventListener: (type, callback) => { listeners[type] = callback; } } });
+  let focused = 0;
+  const term = { options: {}, getSelection: () => "selected output", onSelectionChange: (callback) => callback(), paste: (value) => pasted.push(value), focus: () => { focused += 1; } };
+  const clipboard = [];
+  vm.runInNewContext(bridge, { window: { term, parent, navigator: { clipboard: { writeText: async (value) => { clipboard.push(value); } } }, addEventListener: (type, callback) => { listeners[type] = callback; } } });
+  assert.equal(term.options.macOptionClickForcesSelection, true);
+  listeners.pointerdown();
+  assert.equal(messages.at(-1).type, "wistron-terminal-selection-clear");
   listeners.message({ source: parent, origin: "https://other.test", data: { type: "wistron-terminal-paste", text: "rejected" } });
   listeners.message({ source: parent, origin: "https://frontend.test", data: { type: "wistron-terminal-paste", text: "pasted text" } });
   assert.deepEqual(pasted, ["pasted text"]);
+  listeners.message({ source: parent, origin: "https://other.test", data: { type: "wistron-terminal-focus" } });
+  listeners.message({ source: parent, origin: "https://frontend.test", data: { type: "wistron-terminal-focus" } });
+  assert.equal(focused, 1);
   let copied;
   listeners.copy({ clipboardData: { setData: (_type, value) => { copied = value; } }, preventDefault() {} });
   assert.equal(copied, "selected output");
+  let prevented = false;
+  listeners.keydown({ metaKey: true, key: "c", preventDefault() { prevented = true; }, stopImmediatePropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(prevented, true);
+  assert.deepEqual(clipboard, ["selected output"]);
+  assert.equal(messages.at(-1).type, "wistron-terminal-copy-status");
+  assert.equal(messages.at(-1).success, true);
+  listeners.keydown({ ctrlKey: true, shiftKey: true, key: "C", preventDefault() {}, stopImmediatePropagation() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(clipboard, ["selected output", "selected output"], "Ctrl+Shift+C copies on Windows and Linux");
+  listeners.keydown({ ctrlKey: true, shiftKey: false, key: "c", preventDefault() { throw new Error("Ctrl+C must remain an interrupt"); } });
+  assert.equal(clipboard.length, 2);
   assert.match(htmlBody, /overscroll-behavior:contain!important/);
   assert.match(htmlBody, /<body>terminal html<\/body>/);
   assert.equal(forwarded["accept-encoding"], "identity");

@@ -137,6 +137,13 @@ http.createServer((req,res)=>res.end('station screen')).listen(args[args.indexOf
   await fs.writeFile(state, JSON.stringify({ stn_12: { event: `aabbccddeeff:${event}` }, bs_aabbccddeeff: true }));
   assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).opens,
     [{ station: "12", mac: "aabbccddeeff", event }]);
+  const recentEvent = String(Date.now() - 45000) + "000000";
+  await fs.writeFile(state, JSON.stringify({ stn_12: { event: `aabbccddeeff:${recentEvent}:TAG123` }, bs_aabbccddeeff: true }));
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).opens,
+    [{ station: "12", mac: "aabbccddeeff", event: recentEvent, serviceTag: "TAG123" }], "handoff stays available for 60 seconds");
+  const expiredEvent = String(Date.now() - 65000) + "000000";
+  await fs.writeFile(state, JSON.stringify({ stn_12: { event: `aabbccddeeff:${expiredEvent}` }, bs_aabbccddeeff: true }));
+  assert.deepEqual(JSON.parse((await get(control, "/api/v1/terminals/bios/sessions")).body).opens, []);
   assert.equal((await get(control, `${biosBase}/ensure`)).status, 200);
   assert.equal((await get(control, `${biosBase}/ensure`)).status, 200);
   assert.equal((await get(control, `${biosBase}/`)).body, "station screen");

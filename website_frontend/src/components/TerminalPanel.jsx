@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { button, iconButton, TerminalIcon } from "./terminalControls";
 
-export default function TerminalPanel({ station, biosMac, request, onClose, dragHandle, singleView = false }) {
+function focusTerminalFrame(frame, url) {
+  if (!frame || !url) return;
+  frame.focus({ preventScroll: true });
+  const origin = new URL(url, window.location.href).origin;
+  frame.contentWindow?.postMessage({ type: "wistron-terminal-focus" }, origin);
+}
+
+export default function TerminalPanel({ station, biosMac, biosServiceTag, biosPrompt, biosPromptServiceTag, onOpenBios, onDismissBios, request, onClose, dragHandle, singleView = false }) {
   const isBios = !!biosMac;
-  const terminalName = isBios ? `BIOS ${biosMac.toUpperCase()}` : `Station ${station.station_name}`;
+  const terminalName = isBios ? `BIOS ${biosServiceTag || biosMac.toUpperCase()}` : `Station ${station.station_name}`;
   const connectPath = isBios ? `/bios/${biosMac}/connect` : `/stations/${station.station_name}/connect`;
   const [controlled, onControl] = useState(false);
   const panel = useRef(null);
@@ -45,9 +53,10 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
   }
   const terminalArea = useRef(null);
   const terminalFrame = useRef(null);
+  const [connection, setConnection] = useState(null);
   useEffect(() => {
     if (!controlled) return;
-    terminalFrame.current?.focus({ preventScroll: true });
+    focusTerminalFrame(terminalFrame.current, connection?.url);
     const releaseOutside = (event) => {
       if (!terminalArea.current?.contains(event.target)) onControl(false);
     };
@@ -57,49 +66,11 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
       document.removeEventListener("pointerdown", releaseOutside);
       document.removeEventListener("focusin", releaseOutside);
     };
-  }, [controlled, onControl]);
-  const [connection, setConnection] = useState(null);
+  }, [controlled, connection?.url]);
   const [error, setError] = useState("");
   const [users, setUsers] = useState([]);
   const [connected, setConnected] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [selection, setSelection] = useState("");
-  const [clipboardMessage, setClipboardMessage] = useState("");
-  useEffect(() => {
-    setSelection("");
-    if (!connection?.url) return;
-    const frameOrigin = new URL(connection.url, window.location.href).origin;
-    const receive = (event) => {
-      if (event.source !== terminalFrame.current?.contentWindow || event.origin !== frameOrigin ||
-          event.data?.type !== "wistron-terminal-selection" || typeof event.data.text !== "string") return;
-      setSelection(event.data.text.slice(0, 65536));
-    };
-    window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
-  }, [connection?.url]);
-  async function copySelection() {
-    setClipboardMessage("");
-    if (!selection) {
-      setClipboardMessage("Select text in the terminal first. Hold Shift while dragging if tmux captures the mouse.");
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(selection);
-      setClipboardMessage("Copied selection");
-    } catch { setClipboardMessage("Clipboard access was denied. Try selecting text and using your browser's Copy command."); }
-  }
-  async function pasteClipboard() {
-    setClipboardMessage("");
-    try {
-      const value = await navigator.clipboard.readText();
-      if (!value) return setClipboardMessage("Clipboard is empty.");
-      if (value.length > 65536) return setClipboardMessage("Paste is limited to 64 KB.");
-      const origin = new URL(connection.url, window.location.href).origin;
-      terminalFrame.current?.contentWindow?.postMessage({ type: "wistron-terminal-paste", text: value }, origin);
-      onControl(true);
-      setClipboardMessage("Pasted into terminal");
-    } catch { setClipboardMessage("Clipboard access was denied. Click the terminal and use your browser's Paste command."); }
-  }
   useEffect(() => {
     let disposed = false;
     let lease;
@@ -200,20 +171,17 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
             )}
           </div>
           {!isBios && <p className="mt-1">
-            <span
-              className={`inline-block rounded px-2 py-0.5 text-xs ${
-                station.system_service_tag
-                  ? "bg-blue-50 font-medium text-blue-700"
-                  : "bg-gray-50 text-gray-500"
-              }`}
-            >
-              {station.system_service_tag || "No System Attached"}
-            </span>
+            {station.system_service_tag ? <Link
+              to={`/${encodeURIComponent(station.system_service_tag)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open ${station.system_service_tag} in a new tab`}
+              onPointerDown={(event) => event.stopPropagation()}
+              className="inline-block rounded bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 hover:bg-blue-100 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+            >{station.system_service_tag}</Link> : <span className="inline-block rounded bg-gray-50 px-2 py-0.5 text-xs text-gray-500">No System Attached</span>}
           </p>}
         </div>
         <div className="flex items-center gap-1">
-          <button className={`${button} px-2 py-1 text-xs`} disabled={!connection} onClick={copySelection} title="Copy selected terminal text">Copy</button>
-          <button className={`${button} px-2 py-1 text-xs`} disabled={!connection} onClick={pasteClipboard} title="Paste clipboard into terminal">Paste</button>
           {fullScreen ? <button className={`${button} inline-flex items-center gap-2`} onClick={toggleFullscreen}><TerminalIcon kind="fullscreen" />Close full screen</button> : <>
           {isBios ? <button className={`${button} inline-flex items-center gap-2`} onClick={toggleFullscreen}>
             <TerminalIcon kind="fullscreen" />Full screen
@@ -262,7 +230,6 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
           </>}
         </div>
       </header>
-      {clipboardMessage && <p role="status" className="shrink-0 px-4 py-1 text-xs text-gray-600">{clipboardMessage}</p>}
       {viewError && <p role="alert" className="shrink-0 px-4 py-2 text-xs text-red-700">{viewError}</p>}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {error ? (
@@ -278,6 +245,7 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
           <div ref={terminalArea} className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
           <iframe
             ref={terminalFrame}
+            onLoad={() => { if (controlled) focusTerminalFrame(terminalFrame.current, connection.url); }}
             tabIndex={controlled ? 0 : -1}
             className={`min-h-0 w-full flex-1 border-0 ${controlled ? "" : "pointer-events-none"}`}
             title={`${terminalName} terminal`}
@@ -293,6 +261,26 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
               <span className="rounded-md border border-gray-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm">Click to control terminal</span>
             </button>
           )}
+          {biosPrompt && <div role="status" className="bios-serial-prompt absolute inset-y-0 right-0 z-20 flex w-44 max-w-full flex-col border-l border-blue-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-1 border-b border-blue-100 px-3 py-3">
+              <p className="text-sm font-semibold leading-5 text-blue-800">BIOS serial is ready</p>
+              <button type="button" aria-label="Dismiss BIOS serial prompt" onClick={onDismissBios} className="-mr-1 -mt-1 rounded-md px-2 py-1 text-lg leading-5 text-gray-500 hover:bg-blue-50 hover:text-gray-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">×</button>
+            </div>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">Station</p>
+                <p className="mt-1 text-sm font-semibold text-gray-800">{station.station_name}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">BIOS serial</p>
+                <p className="mt-1 break-words text-sm font-semibold text-gray-800">{biosPrompt.serviceTag || biosPromptServiceTag || biosPrompt.mac.toUpperCase()}</p>
+                {(biosPrompt.serviceTag || biosPromptServiceTag) && <p className="mt-1 break-all font-mono text-xs text-gray-500">{biosPrompt.mac.toUpperCase()}</p>}
+              </div>
+            </div>
+            <div className="border-t border-blue-100 p-3">
+              <button type="button" onClick={onOpenBios} className="w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2">Open beside station</button>
+            </div>
+          </div>}
           </div>
         ) : (
           <p className="flex flex-1 items-center justify-center p-6 text-sm text-gray-500">Connecting…</p>

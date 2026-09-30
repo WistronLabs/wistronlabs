@@ -93,9 +93,19 @@ function createTerminals({
       const opens = Array.isArray(result.data.opens) ? result.data.opens.filter((item) =>
         /^[1-9]\d{0,5}$/.test(item?.station) &&
         /^[a-f0-9]{12}$/.test(item?.mac) &&
-        /^\d{19}$/.test(item?.event) && result.data.bios.includes(item.mac),
+        /^\d{19}$/.test(item?.event) && result.data.bios.includes(item.mac) &&
+        (item.serviceTag === undefined || /^[A-Z0-9-]{1,32}$/.test(item.serviceTag)),
       ) : [];
-      res.set("Cache-Control", "no-store").json({ bios: result.data.bios, opens });
+      const bios = result.data.bios.filter((mac) => /^[a-f0-9]{12}$/.test(mac));
+      const serviceTags = {};
+      if (bios.length) {
+        const { rows } = await db.query(
+          "SELECT bmc_mac, service_tag FROM system WHERE bmc_mac = ANY($1::char(12)[])",
+          [bios.map((mac) => mac.toUpperCase())],
+        );
+        for (const row of rows) serviceTags[row.bmc_mac.trim().toLowerCase()] = row.service_tag;
+      }
+      res.set("Cache-Control", "no-store").json({ bios, opens, serviceTags });
     } catch {
       res.status(503).json({ error: "Unable to list BIOS sessions" });
     }

@@ -154,11 +154,11 @@ function biosSnapshot() {
   });
   const active = new Set(bios);
   const opens = lines.flatMap((line) => {
-    const match = /^stn_([1-9]\d{0,5})\|([a-f0-9]{12}):(\d{19})$/.exec(line);
+    const match = /^stn_([1-9]\d{0,5})\|([a-f0-9]{12}):(\d{19})(?::([A-Z0-9-]{1,32}))?$/.exec(line);
     if (!match || !active.has(match[2])) return [];
     const age = Date.now() - Number(match[3].slice(0, 13));
-    return age >= 0 && age <= 30000
-      ? [{ station: match[1], mac: match[2], event: match[3] }] : [];
+    return age >= 0 && age <= 60000
+      ? [{ station: match[1], mac: match[2], event: match[3], ...(match[4] ? { serviceTag: match[4] } : {}) }] : [];
   });
   return { bios, opens };
 }

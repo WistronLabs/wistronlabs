@@ -15,6 +15,8 @@ function clipboardBridge(origin) {
     };
     const connect = () => {
       if (!window.term?.onSelectionChange) return false;
+      // Keep tmux mouse support while letting Mac users select browser text.
+      window.term.options.macOptionClickForcesSelection = true;
       window.term.onSelectionChange(sendSelection);
       sendSelection();
       return true;
@@ -23,14 +25,34 @@ function clipboardBridge(origin) {
       const timer = setInterval(() => { if (connect()) clearInterval(timer); }, 100);
       setTimeout(() => clearInterval(timer), 30000);
     }
+    window.addEventListener("pointerdown", () => {
+      window.parent.postMessage({ type: "wistron-terminal-selection-clear" }, parentOrigin);
+    }, true);
     window.addEventListener("copy", (event) => {
       const text = window.term?.getSelection?.();
       if (!text || !event.clipboardData) return;
       event.clipboardData.setData("text/plain", text);
       event.preventDefault();
     }, true);
+    window.addEventListener("keydown", (event) => {
+      const copyShortcut = event.metaKey || (event.ctrlKey && event.shiftKey);
+      if (!copyShortcut || event.key?.toLowerCase() !== "c") return;
+      const text = window.term?.getSelection?.();
+      if (!text || !window.navigator.clipboard?.writeText) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      window.navigator.clipboard.writeText(text).then(
+        () => window.parent.postMessage({ type: "wistron-terminal-copy-status", success: true }, parentOrigin),
+        () => window.parent.postMessage({ type: "wistron-terminal-copy-status", success: false }, parentOrigin),
+      );
+    }, true);
     window.addEventListener("message", (event) => {
-      if (event.source !== window.parent || event.origin !== parentOrigin || event.data?.type !== "wistron-terminal-paste") return;
+      if (event.source !== window.parent || event.origin !== parentOrigin) return;
+      if (event.data?.type === "wistron-terminal-focus") {
+        window.term?.focus?.();
+        return;
+      }
+      if (event.data?.type !== "wistron-terminal-paste") return;
       const text = event.data.text;
       if (typeof text === "string" && text.length <= 65536) window.term?.paste?.(text);
     });
