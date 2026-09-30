@@ -232,3 +232,7 @@ overflow. The backend proxy adds scroll containment CSS inside the terminal HTML
 Deploy both frontend and backend for this fix; no new host-service reinstall is
 needed if station mouse support is already installed. Existing browser frames
 need to be reopened to load the updated HTML.
+
+### Terminal clipboard
+
+Each station and BIOS panel has **Copy** and **Paste** buttons. Select text in the terminal, then click Copy; Paste reads the browser clipboard and sends it to that panel. With tmux mouse mode on, hold Shift while dragging to select in the browser instead of tmux. Normal browser copy and paste shortcuts also work when the terminal has focus. The backend injects a small, origin-checked bridge into the ttyd page; this requires updated backend and frontend code, but no terminal host reinstall. Browser clipboard permission may be requested for the Paste button.

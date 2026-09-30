@@ -63,6 +63,43 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
   const [users, setUsers] = useState([]);
   const [connected, setConnected] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [selection, setSelection] = useState("");
+  const [clipboardMessage, setClipboardMessage] = useState("");
+  useEffect(() => {
+    setSelection("");
+    if (!connection?.url) return;
+    const frameOrigin = new URL(connection.url, window.location.href).origin;
+    const receive = (event) => {
+      if (event.source !== terminalFrame.current?.contentWindow || event.origin !== frameOrigin ||
+          event.data?.type !== "wistron-terminal-selection" || typeof event.data.text !== "string") return;
+      setSelection(event.data.text.slice(0, 65536));
+    };
+    window.addEventListener("message", receive);
+    return () => window.removeEventListener("message", receive);
+  }, [connection?.url]);
+  async function copySelection() {
+    setClipboardMessage("");
+    if (!selection) {
+      setClipboardMessage("Select text in the terminal first. Hold Shift while dragging if tmux captures the mouse.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection);
+      setClipboardMessage("Copied selection");
+    } catch { setClipboardMessage("Clipboard access was denied. Try selecting text and using your browser's Copy command."); }
+  }
+  async function pasteClipboard() {
+    setClipboardMessage("");
+    try {
+      const value = await navigator.clipboard.readText();
+      if (!value) return setClipboardMessage("Clipboard is empty.");
+      if (value.length > 65536) return setClipboardMessage("Paste is limited to 64 KB.");
+      const origin = new URL(connection.url, window.location.href).origin;
+      terminalFrame.current?.contentWindow?.postMessage({ type: "wistron-terminal-paste", text: value }, origin);
+      onControl(true);
+      setClipboardMessage("Pasted into terminal");
+    } catch { setClipboardMessage("Clipboard access was denied. Click the terminal and use your browser's Paste command."); }
+  }
   useEffect(() => {
     let disposed = false;
     let lease;
@@ -175,6 +212,8 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
           </p>}
         </div>
         <div className="flex items-center gap-1">
+          <button className={`${button} px-2 py-1 text-xs`} disabled={!connection} onClick={copySelection} title="Copy selected terminal text">Copy</button>
+          <button className={`${button} px-2 py-1 text-xs`} disabled={!connection} onClick={pasteClipboard} title="Paste clipboard into terminal">Paste</button>
           {fullScreen ? <button className={`${button} inline-flex items-center gap-2`} onClick={toggleFullscreen}><TerminalIcon kind="fullscreen" />Close full screen</button> : <>
           {isBios ? <button className={`${button} inline-flex items-center gap-2`} onClick={toggleFullscreen}>
             <TerminalIcon kind="fullscreen" />Full screen
@@ -223,6 +262,7 @@ export default function TerminalPanel({ station, biosMac, request, onClose, drag
           </>}
         </div>
       </header>
+      {clipboardMessage && <p role="status" className="shrink-0 px-4 py-1 text-xs text-gray-600">{clipboardMessage}</p>}
       {viewError && <p role="alert" className="shrink-0 px-4 py-2 text-xs text-red-700">{viewError}</p>}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {error ? (

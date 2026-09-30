@@ -270,6 +270,7 @@ function createTerminals({
       const path = upstreamPath(req.url, grant.targetPath);
       relay(req, res, socketPath, path, undefined, undefined, {
         containScroll: path.split("?")[0] === `${grant.targetPath}/`,
+        clipboardOrigin: path.split("?")[0] === `${grant.targetPath}/` ? frontendOrigin : undefined,
       });
     } catch {
       res.status(503).send("Terminal unavailable");
