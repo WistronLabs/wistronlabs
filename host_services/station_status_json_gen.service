@@ -1,0 +1,14 @@
+[Unit]
+Description=Generate station status JSON
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=falab
+Group=falab
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=SERVER_LOCATION=SITE_PLACEHOLDER
+EnvironmentFile=/home/falab/.config/wistron-station-status.env
+WorkingDirectory=/home/falab
+ExecStart=/usr/bin/flock -n /tmp/station_status_json_gen.lock /opt/wistron-host-services/scripts/station_status_json_gen.sh

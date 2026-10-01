@@ -38,6 +38,11 @@ if [[ -z "${BASH_VERSINFO:-}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOST_SERVICES_MODE="${HOST_SERVICES_MODE:-auto}"
+[[ "$HOST_SERVICES_MODE" == auto || "$HOST_SERVICES_MODE" == manual ]] || {
+  echo "HOST_SERVICES_MODE must be auto or manual." >&2
+  exit 2
+}
 USER="falab"
 SSH_OPTS="-o BatchMode=yes -o PasswordAuthentication=no -o ConnectTimeout=8 -o StrictHostKeyChecking=accept-new"
 
@@ -1042,7 +1047,9 @@ backend_deploy_one() {
   fi
   remote_prepare_dir "$host" "$remote_dir"
   remote_seed_runtime_config_if_missing "$host" "$remote_dir" "$site" "$fe_url" "$app_port"
-  bash "$SCRIPT_DIR/host_services_deploy.sh" --prod "$site" --prepare
+  if [[ "$HOST_SERVICES_MODE" == auto ]]; then
+    bash "$SCRIPT_DIR/host_services_deploy.sh" --prod "$site" --prepare
+  fi
 
   echo ""
   echo "------------------------------------------------------------"
@@ -1142,6 +1149,15 @@ preflight_auth_and_prereqs() {
       echo "Checking docker & docker compose runnable on $host ..."
       if ! remote_check_docker_compose_runnable "$host" >/dev/null 2>&1; then
         err "docker/compose not runnable for $USER@$host (need docker group or sudoers NOPASSWD)"
+        failed+=("$site")
+      fi
+    fi
+
+    if is_backend_deploy_target "$site" && [[ "$HOST_SERVICES_MODE" == auto ]] &&
+       { deploys backend || deploys scripts; }; then
+      echo "Checking noninteractive sudo for host services on $host ..."
+      if ! ssh -T $SSH_OPTS "$USER@$host" 'sudo -n bash -c true' >/dev/null 2>&1; then
+        err "Host service install requires noninteractive sudo on $host. Use HOST_SERVICES_MODE=manual and follow HOST_SERVICES.md."
         failed+=("$site")
       fi
     fi
@@ -1253,8 +1269,10 @@ for site in "${targets[@]}"; do
     fi
     if deploys backend; then backend_deploy_one "$site"; fi
     if deploys scripts; then deploy_scripts_to_site "$site"; fi
-    if deploys backend || deploys scripts; then
+    if [[ "$HOST_SERVICES_MODE" == auto ]] && { deploys backend || deploys scripts; }; then
       bash "$SCRIPT_DIR/host_services_deploy.sh" --prod "$site"
+    elif [[ "$HOST_SERVICES_MODE" == manual ]] && { deploys backend || deploys scripts; }; then
+      echo "Host services were not refreshed for $site (HOST_SERVICES_MODE=manual)."
     fi
   fi
 

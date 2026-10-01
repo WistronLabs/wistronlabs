@@ -1,78 +1,92 @@
 # Onsite host services
 
-TSS and FRK each run three host-level facilities alongside the Docker backend:
+TSS and FRK run the website backend in Docker and these services on the host:
 
-| Facility | Unit | Managed by deploy? | Site-specific state |
-| --- | --- | --- | --- |
-| Website terminal relay | `wistron-terminals.service` | Code and unit updated after a production backend/scripts deploy | Existing `falab` tmux sessions are preserved |
-| Printing | `cups.service` | CUPS installed/enabled if missing; existing queues are preserved | Printer drivers, queue names, IPs, ports, media defaults |
-| Station status posting | `wistron-station-status.timer` and `.service` | Script, unit, and key refreshed after a production backend/scripts deploy | Production and optional development machine keys |
+| Service | Existing site setup | Deployment behavior |
+| --- | --- | --- |
+| Web terminals | `wistron-terminals.service` | Install or update relay code and unit; restart only when changed |
+| Printing | `cups.service` | Install/enable CUPS if missing; preserve drivers and queues |
+| Station status | `station_status_json_gen.service` + `.timer` | Keep the existing 10-second timer and unit name; update the status script and machine keys |
+| System-created hook | `host-runner.service` invoking `/opt/hooks/on-system-created.sh` | Update runner and hook code; keep site rclone configuration |
 
-The backend Compose file mounts the host's `/run/cups`, `/etc/cups/ppd`, and
-`/run/wistron-terminals`. Both production and development backends on the
-same server see the same host CUPS queues and terminal relay.
+The status timer and host runner already existed on both servers before this
+feature. TSS and FRK use the same hook script, but TSS has a newer host runner
+that exposes stdout/stderr while a job is running. This repository uses that
+version for both sites. The backend calls the hook through host runner on port
+9000 when a system is created. The hook retrieves matching L11 logs using
+rclone. TSS calls its remote `dell-mft:`; FRK calls the same configured
+SFTP endpoint `dell:`. The installer sets `HOOK_RCLONE_REMOTE` for each site.
 
-Other host dependencies are already outside the website deployment: Docker
-and its Compose stacks, Tailscale/SSH connectivity, and the PXE services
-`isc-dhcp-server`, `tftpd-hpa`, and `apache2`. Check their health during
-site maintenance. Do not automatically install or restart the PXE services
-as part of a website deploy: their DHCP, boot, and web-root configuration is
-site-specific and a restart can interrupt active testing.
+Host runner's token comes from the production backend's `WEBHOOK_TOKEN`.
+The installer writes it to a root-only environment file; it does not print
+the token. The status script uses the production backend's
+`INTERNAL_API_KEY` and, if available, the development backend's separate
+key. The existing `/home/falab/.config/wistron-station-status.env` remains
+the status service's environment file.
 
-## First bootstrap
+## Production deployment
 
-The host must already have the site backend's
-`/opt/docker/website_backend/env/secrets.env` with `INTERNAL_API_KEY`.
-Install Node.js 20+ on the host if it is missing. The installer uses
-`apt-get` for CUPS, jq, curl, tmux, and ttyd when needed, then validates that
-ttyd supports writable terminals. On Ubuntu versions with an older ttyd,
-install ttyd 1.7.4+ before continuing; see [TERMINALS.md](TERMINALS.md).
+`prod_deploy.sh` prepares CUPS and the terminal socket before starting a
+backend container. After a backend or scripts deployment it updates all four
+host facilities. A frontend-only deployment does not touch them.
 
-From this checkout, after production deployment, run:
+`host_services_deploy.sh` stages this checkout on the site over SSH and runs
+the host installer as root. The installer:
+
+1. Installs missing CUPS, terminal, rclone, Python, and Flask packages that
+   can be obtained from the host's apt repositories. Node.js 20+ and ttyd
+   writable support are checked; unsupported versions need manual setup.
+2. Keeps the host's current terminal Node path, including the nvm versions
+   already used on TSS and FRK. tmux sessions remain intact when the relay
+   restarts.
+3. Preserves all CUPS queues, drivers, and printer assignments. Set up
+   physical queues separately using [PRINTING.md](PRINTING.md).
+4. Keeps the existing `station_status_json_gen.timer` cadence. It points the
+   service at the deployed status script and runs it once as a health check.
+5. Installs the reviewed host runner and hook. It keeps service drop-ins,
+   including TSS's `RCLONE_CONFIG=/etc/rclone/rclone.conf`. The runner
+   restarts only if its code, unit, or token changed. The hook is installed
+   at the actual plural path `/opt/hooks/on-system-created.sh`.
+
+FRK's configured SFTP remote matched TSS's configured host and user, but a
+read-only directory check timed out. Verify the remote can list the expected
+L11 rack path before relying on log collection there.
+
+FRK currently allows `falab` to run the installer with noninteractive
+sudo. TSS does not; it allows passwordless Docker commands but requires a
+password for general sudo. The default deployment checks sudo before
+changing the site, so an automatic TSS deployment will stop at preflight
+until that access is addressed.
+
+For TSS today, use manual host-service mode for the website deploy:
 
 ```bash
-bash host_services_deploy.sh --prod TSS
-bash host_services_deploy.sh --prod FRK
+HOST_SERVICES_MODE=manual /opt/homebrew/bin/bash ./prod_deploy.sh TSS
+bash host_services_deploy.sh --prod TSS --stage-only
 ```
 
-The command stages the current revision over SSH and runs the installer with
-`sudo -n` on the host. If `falab` cannot run this installer with
-noninteractive sudo, stage the files, sign in to that host, and run
-`sudo bash ~/.cache/wistron-host-services/main/host_services/install.sh TSS`
-(or `FRK`). Configure narrowly scoped deployment sudo access before relying
-on automatic deploys through a root-owned deployment entry point; do not
-grant passwordless sudo for a script in `falab`'s writable home directory
-and do not put sudo passwords in scripts.
+Then sign in to TSS and run with your sudo password:
 
-The installer keeps CUPS queues and drivers intact. Install each physical
-printer's driver and queue separately through [PRINTING.md](PRINTING.md).
-TSS's print server uses Brother 9100 and Zebra 9101. FRK's uses Zebra 9100 and
-Brother 9101. The current FRK Brother queue is `HLL2460DW` on 9101; there is
-no need to rename it. The site Admin → Printing page selects the installed
-queue and sets document defaults.
+```bash
+sudo bash /home/falab/.cache/wistron-host-services/main/host_services/install.sh TSS
+```
 
-The station timer runs as `falab` every 30 seconds after the previous run
-finishes. It reads a dedicated `root:falab`, mode 0640 environment file at
-`/etc/wistronlabs/station-status.env`. The installer refreshes the keys from
-production and development backend secret files without printing them.
-Production updates use the local port 4000; a configured development backend
-is mirrored on port 4100. If an older cron job already invokes
-`station_status_json_gen.sh`, the installer leaves the timer disabled to
-avoid duplicate writes. Remove only that legacy cron entry and rerun the
-installer to migrate.
+On a fresh host, stage and run the installer with `--prepare` before the
+website deploy so the backend's CUPS and terminal mounts exist. The full
+installer runs after the backend secrets are created. Do not put a sudo
+password in the deployment scripts or grant passwordless root execution of
+a script in `falab`'s writable home directory.
 
-## Normal production deploy
+For FRK, after this branch is merged, a normal
+`/opt/homebrew/bin/bash ./prod_deploy.sh FRK` runs the host installer
+automatically. FRK's existing Brother queue `HLL2460DW` remains pointed to
+192.168.1.10:9101. TSS and FRK printer port mappings differ; see
+[PRINTING.md](PRINTING.md).
 
-`prod_deploy.sh` now prepares CUPS and the terminal socket before starting
-a backend container, then refreshes all host services after backend or scripts
-deployment on TSS/FRK. The `--only frontend` scope does not touch them.
-Terminal clients briefly reconnect only when relay code or its unit changes;
-the existing tmux sessions and test processes remain. A failed host setup
-causes deploy to exit nonzero so the mismatch is visible.
+## Development
 
-## Development workflow
-
-For a feature branch and site:
+The normal development commands update the dev backend, branch-specific
+station scripts, and local Vite frontend:
 
 ```bash
 /opt/homebrew/bin/bash ./dev_backend_deploy.sh TSS
@@ -80,42 +94,37 @@ For a feature branch and site:
 /opt/homebrew/bin/bash ./dev_frontend_deploy.sh TSS
 ```
 
-Use `FRK` and `FRK_DEV` for Franklin. The frontend command stays running
-for the local Vite/SSH tunnel. These commands do not change the shared host
-terminal relay or CUPS. To explicitly test relay or timer changes from the
-feature branch:
+Use `FRK` and `FRK_DEV` for Franklin. These commands do not touch the
+shared host terminal relay, CUPS, status timer, or host runner. To test a
+changed host service explicitly, stage/apply this branch with
+`bash host_services_deploy.sh --dev TSS` or `--dev FRK`. That updates
+shared host code, so it may briefly reconnect website terminals or restart
+host runner. TSS can use `--stage-only` followed by a manual sudo command.
+
+To test just the status script against the development backend, deploy
+development scripts and run on that site:
 
 ```bash
-bash host_services_deploy.sh --dev TSS
+sudo -u falab bash -c 'set -a; source /home/falab/.config/wistron-station-status.env; set +a; SERVER_LOCATION=TSS STATION_DEV_API_BASE_URL=http://127.0.0.1:4100/api/v1 STATION_STATUS_TARGET=dev /opt/dev_scripts/feat-194/station_status_json_gen.sh'
 ```
 
-This uses the working tree and **does update the shared host relay**. Run it
-when a short website terminal reconnect is acceptable. It does not modify
-printer queues. To test a changed status script only against the development
-backend, first deploy development scripts, then run on the onsite host:
+Replace the site and branch as appropriate. This one-shot mode reads and
+updates only development stations. The regular timer continues its existing
+production flow.
+
+## Checks
 
 ```bash
-sudo -u falab bash -c 'set -a; source /etc/wistronlabs/station-status.env; set +a; STATION_STATUS_TARGET=dev /opt/dev_scripts/feat-194/station_status_json_gen.sh'
-```
-
-Replace `feat-194` with the branch name. This one-shot mode reads the
-development station list and posts only to the development backend.
-The regular timer continues posting to production and mirroring dev.
-
-## Checks and rollback
-
-```bash
-systemctl status wistron-terminals cups wistron-station-status.timer --no-pager
-systemctl list-timers wistron-station-status.timer --no-pager
-journalctl -u wistron-station-status.service -n 50 --no-pager
-journalctl -u wistron-terminals.service -n 50 --no-pager
+systemctl status wistron-terminals cups station_status_json_gen.timer host-runner --no-pager
+systemctl list-timers station_status_json_gen.timer --no-pager
+journalctl -u station_status_json_gen.service -n 50 --no-pager
+journalctl -u host-runner.service -n 50 --no-pager
 lpstat -r
 lpstat -v
 ```
 
-The status service may be inactive between runs; inspect its last exit and
-journal. If the timer is disabled, inspect `crontab -u falab -l`,
-`crontab -u root -l`, and `/etc/cron.d` for a legacy updater.
-To roll back host code, run `host_services_deploy.sh` from the prior
-revision (or reinstall that revision on the host). Queue configuration and
-backend database state are not changed by the host installer.
+The one-shot status service can show `inactive` between runs. The timer
+should be `active`, and the service's last result should be successful.
+Docker/Compose, Tailscale/SSH, and PXE services such as DHCP, TFTP, and
+Apache are separate site dependencies. The website deploy does not restart
+PXE services.

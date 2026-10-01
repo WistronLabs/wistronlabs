@@ -1,0 +1,11 @@
+[Unit]
+Description=Run station_status_json_gen every 10 seconds
+
+[Timer]
+OnBootSec=5
+OnUnitActiveSec=10
+AccuracySec=1
+Unit=station_status_json_gen.service
+
+[Install]
+WantedBy=timers.target

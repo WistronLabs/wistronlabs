@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Deploy host services from this checkout. Development mode is an explicit
 # action because the terminal relay and CUPS are shared with production.
-if [[ $# -lt 2 || $# -gt 3 || ! "$1" =~ ^--(prod|dev)$ || ! "$2" =~ ^(TSS|FRK)$ || ( $# -eq 3 && "$3" != --prepare ) ]]; then
-  echo "Usage: $0 --prod|--dev TSS|FRK [--prepare]" >&2
+if [[ $# -lt 2 || $# -gt 3 || ! "$1" =~ ^--(prod|dev)$ || ! "$2" =~ ^(TSS|FRK)$ || ( $# -eq 3 && "$3" != --prepare && "$3" != --stage-only ) ]]; then
+  echo "Usage: $0 --prod|--dev TSS|FRK [--prepare|--stage-only]" >&2
   exit 2
 fi
 mode="${1#--}"
@@ -42,6 +42,10 @@ ssh "${ssh_opts[@]}" "$remote" "mkdir -p '$remote_dir'"
     website_backend/src/services/terminalProxy.js \
     "$remote:$remote_dir/"
 )
+if [[ "$phase" == --stage-only ]]; then
+  echo "Staged only. On $site, run: sudo bash '$remote_dir/host_services/install.sh' '$site'"
+  exit 0
+fi
 echo "Applying host services. This can briefly reconnect website terminals if relay code changed."
 remote_command="sudo -n bash '$remote_dir/host_services/install.sh' '$site'"
 [[ -z "$phase" ]] || remote_command+=" '$phase'"

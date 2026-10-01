@@ -1,0 +1,17 @@
+[Unit]
+Description=Host webhook to run local scripts
+After=network.target
+
+[Service]
+Type=simple
+Environment=HOST_RUNNER_PORT=9000
+EnvironmentFile=/etc/wistronlabs/host-runner.env
+ExecStart=/usr/bin/python3 -u /usr/local/bin/host-runner.py
+Restart=on-failure
+User=root
+Group=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
