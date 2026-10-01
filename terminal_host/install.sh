@@ -29,15 +29,33 @@ command -v ttyd >/dev/null || { echo 'Install ttyd 1.7.4+ first.' >&2; exit 1; }
 ttyd --help 2>&1 | grep -q -- '--writable' || { echo 'ttyd must support -W/--writable (1.7.4+).' >&2; exit 1; }
 "$NODE_PATH_FOR_SERVICE" -e 'if (+process.versions.node.split(".")[0] < 20) process.exit(1)' || { echo 'Node.js 20+ required.' >&2; exit 1; }
 install -d -m 0755 /opt/wistron-terminals
-install -m 0644 "$ROOT/terminal_host/server.cjs" /opt/wistron-terminals/server.cjs
-install -m 0644 "$ROOT/terminal_host/biosIdle.cjs" /opt/wistron-terminals/biosIdle.cjs
-install -m 0644 "$ROOT/website_backend/src/services/terminalProxy.js" /opt/wistron-terminals/terminalProxy.js
+changed=0
+for name in server.cjs biosIdle.cjs; do
+  source_file="$ROOT/terminal_host/$name"
+  target_file="/opt/wistron-terminals/$name"
+  if ! cmp -s "$source_file" "$target_file"; then
+    install -m 0644 "$source_file" "$target_file"
+    changed=1
+  fi
+done
+if ! cmp -s "$ROOT/website_backend/src/services/terminalProxy.js" /opt/wistron-terminals/terminalProxy.js; then
+  install -m 0644 "$ROOT/website_backend/src/services/terminalProxy.js" /opt/wistron-terminals/terminalProxy.js
+  changed=1
+fi
 # Resolve executable paths instead of assuming distribution-specific install locations.
 TTYD_PATH=$(command -v ttyd)
+unit_tmp="$(mktemp)"
+trap 'rm -f "$unit_tmp"' EXIT
 sed -e "s|ExecStart=/usr/bin/node |ExecStart=$NODE_PATH_FOR_SERVICE |" \
     -e "/Environment=TERMINAL_WORKING_DIRECTORY/a Environment=TTYD_BINARY=$TTYD_PATH" \
-    "$ROOT/terminal_host/wistron-terminals.service" > /etc/systemd/system/wistron-terminals.service
+    "$ROOT/terminal_host/wistron-terminals.service" > "$unit_tmp"
+if ! cmp -s "$unit_tmp" /etc/systemd/system/wistron-terminals.service; then
+  install -m 0644 "$unit_tmp" /etc/systemd/system/wistron-terminals.service
+  changed=1
+fi
 systemctl daemon-reload
 systemctl enable wistron-terminals.service
-systemctl restart wistron-terminals.service
+if [[ "$changed" -eq 1 ]] || ! systemctl is-active --quiet wistron-terminals.service; then
+  systemctl restart wistron-terminals.service
+fi
 systemctl --no-pager status wistron-terminals.service

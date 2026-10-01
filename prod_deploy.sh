@@ -1042,6 +1042,7 @@ backend_deploy_one() {
   fi
   remote_prepare_dir "$host" "$remote_dir"
   remote_seed_runtime_config_if_missing "$host" "$remote_dir" "$site" "$fe_url" "$app_port"
+  bash "$SCRIPT_DIR/host_services_deploy.sh" --prod "$site" --prepare
 
   echo ""
   echo "------------------------------------------------------------"
@@ -1252,6 +1253,9 @@ for site in "${targets[@]}"; do
     fi
     if deploys backend; then backend_deploy_one "$site"; fi
     if deploys scripts; then deploy_scripts_to_site "$site"; fi
+    if deploys backend || deploys scripts; then
+      bash "$SCRIPT_DIR/host_services_deploy.sh" --prod "$site"
+    fi
   fi
 
   echo ""

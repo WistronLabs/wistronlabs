@@ -7,7 +7,7 @@ Each site's backend stores its own printers and document profiles in `global_set
 ## Onsite host setup
 
 1. On each site's Linux server, identify the exact Zebra and Brother model and install working PPD/filter packages for those models. Use the Brother driver specific to that site. Confirm that the onsite server can reach its local `192.168.1.10` on TCP 9100 and 9101.
-2. Run `scripts/setup_site_printers.sh` as root with `ZEBRA_PPD` and `BROTHER_PPD` set to readable paths. It creates `wistron_zebra` at `socket://192.168.1.10:9101` and `wistron_brother` at `socket://192.168.1.10:9100`. Install `cups`, `cups-client`, and `cups-filters` first if the host is not Debian/Ubuntu.
+2. Run `scripts/setup_site_printers.sh` as root with `SITE=TSS` or `SITE=FRK`, and with `ZEBRA_PPD` and `BROTHER_PPD` set to readable paths. TSS uses Brother port 9100 and Zebra port 9101; FRK uses Zebra port 9100 and Brother port 9101. This setup command is for deliberately creating/reconfiguring queues. Routine deploys preserve queue names, drivers, and ports.
 3. Check `lpstat -p` and `lpoptions -p wistron_zebra -l` / `lpoptions -p wistron_brother -l`. Send one test PDF to each queue and verify physical size, margins, orientation, and output. Admin > Printing loads each queue's supported sizes from CUPS and offers them in a dropdown. Select the driver's exact size name, which may differ from the initial `Custom.2x1in` or `Letter` profile value.
 4. Deploy the backend image and Compose change together. The backend container needs the mounted host CUPS socket at `/run/cups/cups.sock`, a read-only mount of `/etc/cups/ppd`, and the `cups-client` package from its Dockerfile. The PPD mount lets the admin page list sizes when `lpoptions` inside the container cannot retrieve the queue's PPD over CUPS. In **Admin > Printing**, select the two installed queues and save each document profile. Print one label and one pallet sheet from the site preview.
 
@@ -17,7 +17,7 @@ The print API accepts authenticated PDFs up to 15 MB. It accepts only the config
 
 ## TSS Zebra proof of concept
 
-TSS runs Ubuntu 22.04 and reaches the print server at `192.168.1.10:9101`. No CUPS scheduler or queues are currently installed. Start with the Zebra only; the Brother port `9100` did not accept a connection during the initial check.
+TSS runs Ubuntu 22.04 and reaches its Zebra through `192.168.1.10:9101`. The original proof of concept started with the Zebra; check the current CUPS queues and printer connectivity before changing them.
 
 Install this queue on the onsite host `tss` (the host running the TSS dev backend), rather than on `leonserver`. The backend container mounts `tss`'s `/run/cups` socket, so a queue installed only on `leonserver` will not appear in TSS Admin > Printing. In the sample Zebra ZPL driver, `w144h72` is the exact 2 × 1 inch PageSize; its initial default may be a different size. Confirm the printer's actual DPI and media tracking before choosing queue defaults.
 

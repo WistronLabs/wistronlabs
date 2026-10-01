@@ -312,6 +312,9 @@ sudo ./restart_pxe_services.sh
 
 # `station_status_json_gen.sh`
 
+Onsite CUPS, web terminal, and station status service deployment is described
+in [HOST_SERVICES.md](HOST_SERVICES.md).
+
 This script collects JSON status from each station and PATCHes the latest state back to backend.
 It also checks the location's development backend once per run and mirrors each
 status to matching development stations when that backend is reachable and

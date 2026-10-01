@@ -31,6 +31,17 @@ require_field_mode_disabled "$(basename "$0")"
 require_server_location
 require_cmd curl
 require_cmd jq
+case "${STATION_STATUS_TARGET:-prod}" in
+  prod) mirror_dev=1 ;;
+  dev)
+    : "${DEV_INTERNAL_API_KEY:?DEV_INTERNAL_API_KEY is required for a dev-only status run}"
+    INTERNAL_API_KEY="$DEV_INTERNAL_API_KEY"
+    STATION_API_BASE_URL="${STATION_DEV_API_BASE_URL:-https://devbackend.$SERVER_LOCATION.wistronlabs.com/api/v1}"
+    export INTERNAL_API_KEY STATION_API_BASE_URL
+    mirror_dev=0
+    ;;
+  *) echo "Error: STATION_STATUS_TARGET must be prod or dev." >&2; exit 2 ;;
+esac
 require_internal_api_key
 
 export STATION_API_BASE_URL="${STATION_API_BASE_URL:-https://backend.$SERVER_LOCATION.wistronlabs.com/api/v1}"
@@ -62,11 +73,12 @@ fi
 mapfile -t stations <<< "$station_list"
 failed=0
 dev_available=0
-if dev_stations_json=$(dev_backend_curl -fsS --connect-timeout 2 --max-time 5 "$DEV_API_URL" 2>/dev/null) &&
+if [[ "$mirror_dev" -eq 1 ]] &&
+    dev_stations_json=$(dev_backend_curl -fsS --connect-timeout 2 --max-time 5 "$DEV_API_URL" 2>/dev/null) &&
     printf '%s\n' "$dev_stations_json" | jq -e 'type == "array" and all(.[]; .station_name != null)' >/dev/null 2>&1; then
     dev_available=1
     echo "Development backend available; mirroring station statuses."
-else
+elif [[ "$mirror_dev" -eq 1 ]]; then
     echo "Development backend unavailable or unauthorized; skipping development updates." >&2
 fi
 
